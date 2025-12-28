@@ -8,7 +8,7 @@ from pathlib import Path
 from django.core.exceptions import ObjectDoesNotExist
 from django.http import FileResponse, Http404
 
-from openedx_learning.apps.authoring.components.api import look_up_component_version_content
+from openedx_learning.apps.openedx_content.applets.components.api import look_up_component_version_content
 
 
 def component_asset(

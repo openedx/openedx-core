@@ -9,7 +9,7 @@ import ddt  # type: ignore[import]
 import pytest
 from django.test import TestCase, override_settings
 
-from openedx_learning.apps.authoring.publishing.models import LearningPackage
+from openedx_learning.apps.openedx_content.applets.publishing.models import LearningPackage
 from openedx_tagging.core.tagging import api
 from openedx_tagging.core.tagging.models import Taxonomy
 from openedx_tagging.core.tagging.models.system_defined import ModelSystemDefinedTaxonomy, UserSystemDefinedTaxonomy

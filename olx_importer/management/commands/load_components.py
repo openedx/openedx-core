@@ -28,9 +28,9 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 # Model references to remove
-from openedx_learning.apps.authoring.components import api as components_api
-from openedx_learning.apps.authoring.contents import api as contents_api
-from openedx_learning.apps.authoring.publishing import api as publishing_api
+from openedx_learning.apps.openedx_content.applets.components import api as components_api
+from openedx_learning.apps.openedx_content.applets.contents import api as contents_api
+from openedx_learning.apps.openedx_content.applets.publishing import api as publishing_api
 
 SUPPORTED_TYPES = ["problem", "video", "html"]
 logger = logging.getLogger(__name__)

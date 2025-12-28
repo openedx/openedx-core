@@ -36,24 +36,24 @@ layers=
     openedx_learning.api.authoring
 
     # The "backup_restore" app handle the new export and import mechanism.
-    openedx_learning.apps.authoring.backup_restore
+    openedx_learning.apps.openedx_content.applets.backup_restore
 
     # The "components" app is responsible for storing versioned Components,
     # which is Open edX Studio terminology maps to things like individual
     # Problems, Videos, and blocks of HTML text. This is also the type we would
     # associate with a single "leaf" XBlock–one that is not a container type and
     # has no child elements.
-    openedx_learning.apps.authoring.components
+    openedx_learning.apps.openedx_content.applets.components
 
     # The "contents" app stores the simplest pieces of binary and text data,
     # without versioning information. These belong to a single Learning Package.
-    openedx_learning.apps.authoring.contents
+    openedx_learning.apps.openedx_content.applets.contents
 
     # The "collections" app stores arbitrary groupings of PublishableEntities.
     # Its only dependency should be the publishing app.
-    openedx_learning.apps.authoring.collections
+    openedx_learning.apps.openedx_content.applets.collections
 
     # The lowest layer is "publishing", which holds the basic primitives needed
     # to create Learning Packages and manage the draft and publish states for
     # various types of content.
-    openedx_learning.apps.authoring.publishing
+    openedx_learning.apps.openedx_content.applets.publishing

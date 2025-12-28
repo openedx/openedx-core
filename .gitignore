@@ -75,7 +75,12 @@ venv/
 !.vscode/settings.json.example
 
 # Media files (for uploads)
-media/
+/media/
 
 # Media files generated during test runs
-test_media/
+/test_media/
+
+# uv stuff
+.lock
+CACHEDIR.TAG
+pyvenv.cfg
