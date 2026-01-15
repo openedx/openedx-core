@@ -13,6 +13,12 @@ class AssessmentCriteriaGroup(models.Model):
     """
     Group of assessment criteria, optionally nested.
     """
+    course_id = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     parent = models.ForeignKey(
         "self",
         null=True,

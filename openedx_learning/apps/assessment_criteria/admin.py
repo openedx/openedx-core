@@ -10,14 +10,14 @@ from .models import (
 
 @admin.register(AssessmentCriteriaGroup)
 class AssessmentCriteriaGroupAdmin(admin.ModelAdmin):
-    list_display = ("id", "name", "parent", "ordering", "logic_operator", "competency_tag")
+    list_display = ("id", "name", "course_id", "parent", "ordering", "logic_operator", "competency_tag")
     list_filter = ("logic_operator",)
     search_fields = ("name",)
 
 
 @admin.register(AssessmentCriteria)
 class AssessmentCriteriaAdmin(admin.ModelAdmin):
-    list_display = ("id", "group", "rule_type", "rule", "retake_rule", "competency_tag", "object_tag")
+    list_display = ("id", "group", "course_id", "rule_type", "rule", "retake_rule", "competency_tag", "object_tag")
     list_filter = ("rule_type", "retake_rule")
     search_fields = ("rule",)
 

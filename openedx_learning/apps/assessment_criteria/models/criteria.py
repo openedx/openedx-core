@@ -21,6 +21,12 @@ class AssessmentCriteria(models.Model):
     """
     Single assessment rule within a group.
     """
+    course_id = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     group = models.ForeignKey(
         "oel_assessment_criteria.AssessmentCriteriaGroup",
         on_delete=models.CASCADE,

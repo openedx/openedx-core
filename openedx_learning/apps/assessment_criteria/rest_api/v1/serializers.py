@@ -20,6 +20,7 @@ class AssessmentCriteriaGroupSerializer(serializers.ModelSerializer):
         model = AssessmentCriteriaGroup
         fields = [
             "id",
+            "course_id",
             "parent",
             "competency_tag",
             "name",
@@ -37,6 +38,7 @@ class AssessmentCriteriaSerializer(serializers.ModelSerializer):
         model = AssessmentCriteria
         fields = [
             "id",
+            "course_id",
             "group",
             "object_tag",
             "competency_tag",
