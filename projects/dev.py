@@ -45,6 +45,8 @@ INSTALLED_APPS = [
 
     # Tagging Core Apps
     "openedx_tagging.core.tagging.apps.TaggingConfig",
+    # Assessment Criteria App
+    "openedx_learning.apps.assessment_criteria.apps.AssessmentCriteriaConfig",
 
     # Debugging
     "debug_toolbar",
