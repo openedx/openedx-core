@@ -12,7 +12,7 @@ Additionally, we need to be able to track each learner's progress towards compet
 Decision
 --------
 
-1. Update **`oel_tagging_taxonomy`** to have a new column for `taxonomy_type` where the value could be “Competency” or “Tag”.  
+1. Update `oel_tagging_taxonomy` to have a new column for `taxonomy_type` where the value could be “Competency” or “Tag”.  
 2. Add new database table for `oel_assessment_criteria_group` with these columns:  
     1. `id`: unique primary key  
     2. `parent_id`: The `oel_assessment_criteria_group.id` of the group that is the parent to this one.  
