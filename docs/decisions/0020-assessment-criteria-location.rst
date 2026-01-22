@@ -9,7 +9,7 @@ Decisions
 ---------
 CBE Assessment Criteria, Student Assessment Criteria Status, and Student Competency Status values should go in the openedx-learning repository as there are broader architectural goals to refactor as much code as possible out of the edx-platform repository into the openedx-learning repository such that it can be designed in a way that is easy for plugin developers to utilize.
 
-More specifically, all code related to adding Assessment Criteria to Open edX will live in openedx-learning/openedx_learning/apps/assessment_criteria.
+More specifically, all code related to adding Assessment Criteria to Open edX will live in openedx-learning/openedx_learning/apps/assessment_criteria. The exception is a small app in edx-platform to receive grading signals, invoke the openedx-learning evaluation logic to perform calculations, and persist results in openedx-learning. This is a pragmatic integration until grading events move out of edx-platform and into openedx-events; it is acknowledged technical debt to keep grading signal access in edx-platform for now.
 
 This keeps a single cohesive Django app for authoring the criteria and for storing learner status derived from those criteria, which reduces cross-app dependencies and simplifies migrations and APIs. It also keeps Open edX-specific models (users, course identifiers, LMS/Studio workflows) out of the standalone ``openedx_tagging`` package and avoids forcing the authoring app to depend on learner runtime data. The tradeoff is that authoring and runtime concerns live in the same app; if learner status needs to scale differently or be owned separately in the future, a split into a dedicated status app can be revisited. Alternatives that externalize runtime status to analytics/services or split repos introduce operational and coordination overhead that is not justified at this stage.
 
@@ -17,7 +17,7 @@ Rejected Alternatives
 ---------------------
 1. edx-platform repository  
     - Pros: This is where all data currently associated with students is stored, so it would match the existing pattern and reduce integration work for the LMS.  
-    - Cons: The intention is to move core learning concepts out of edx-platform (see `0001-purpose-of-this-repo.rst`_), and keeping it there makes reuse and pluggability harder.  
+    - Cons: The intention is to move core learning concepts out of edx-platform (see `0001-purpose-of-this-repo.rst <0001-purpose-of-this-repo.rst>`_), and keeping it there makes reuse and pluggability harder.  
 2. All code related to adding Assessment Criteria to Open edX goes in openedx-learning/openedx\_learning/apps/authoring/assessment\_criteria  
     - Pros:   
         - Tagging and assessment criteria are part of content authoring workflows as is all of the other code in this directory.  
@@ -30,7 +30,7 @@ Rejected Alternatives
     - Pros:  
         - Keeps assessment criteria in the same package as the tags that they are dependent on.  
     - Cons:   
-        - `openedx_tagging` is intended to be a standalone library without Open edX-specific dependencies (see `0007-tagging-app.rst`_); assessment criteria would violate that boundary.  
+        - `openedx_tagging` is intended to be a standalone library without Open edX-specific dependencies (see `0007-tagging-app.rst <0007-tagging-app.rst>`_) assessment criteria would violate that boundary.  
         - Splitting Assessment Criteria and Student Statuses into two apps would require cross-app foreign keys (e.g., status rows pointing at criteria/tag rows in another app), migration ordering and dependency declarations to ensure tables exist in the right order, and shared business logic or APIs for computing/updating status that now must live in one app but reference models in the other.  
 4. Split assessment criteria and learner statuses into two apps inside openedx-learning/openedx\_learning/apps (e.g., assessment\_criteria and learner\_status)  
     - Pros:  
@@ -52,3 +52,10 @@ Rejected Alternatives
     - Cons:  
         - Adds packaging and versioning overhead for a tightly coupled domain.  
         - Increases coordination cost for migrations and API changes.
+7. Migrate grading signals to openedx-events now and have openedx-learning consume events directly  
+    - Pros:  
+        - Aligns with the long-term direction of moving events out of edx-platform.  
+        - Avoids a shim app in edx-platform and reduces tech debt.  
+    - Cons:  
+        - Requires cross-repo coordination and work beyond the current scope.  
+        - Depends on changes to openedx-events that are not yet scheduled or ready.
