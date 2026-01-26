@@ -4,7 +4,7 @@
 #
 #    make upgrade
 #
-cachetools==6.2.4
+cachetools==6.2.5
     # via tox
 chardet==5.2.0
     # via tox
@@ -26,7 +26,7 @@ markdown-it-py==4.0.0
     # via rich
 mdurl==0.1.2
     # via markdown-it-py
-packaging==25.0
+packaging==26.0
     # via
     #   pyproject-api
     #   tox
@@ -40,7 +40,7 @@ pygments==2.19.2
     # via rich
 pyproject-api==1.10.0
     # via tox
-rich==14.2.0
+rich==14.3.1
     # via import-linter
 tox==4.34.1
     # via -r requirements/ci.in

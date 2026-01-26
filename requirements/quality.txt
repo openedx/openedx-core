@@ -69,7 +69,7 @@ code-annotations==2.3.0
     # via
     #   -r requirements/test.txt
     #   edx-lint
-coverage[toml]==7.13.1
+coverage[toml]==7.13.2
     # via
     #   -r requirements/test.txt
     #   pytest-cov
@@ -80,7 +80,7 @@ cryptography==46.0.3
     #   secretstorage
 ddt==1.7.2
     # via -r requirements/test.txt
-dill==0.4.0
+dill==0.4.1
     # via pylint
 django==5.2.10
     # via
@@ -99,13 +99,13 @@ django-crum==0.7.9
     # via
     #   -r requirements/test.txt
     #   edx-django-utils
-django-debug-toolbar==6.1.0
+django-debug-toolbar==6.2.0
     # via -r requirements/test.txt
-django-stubs==5.2.8
+django-stubs==5.2.9
     # via
     #   -r requirements/test.txt
     #   djangorestframework-stubs
-django-stubs-ext==5.2.8
+django-stubs-ext==5.2.9
     # via
     #   -r requirements/test.txt
     #   django-stubs
@@ -221,7 +221,7 @@ mysqlclient==2.2.7
     # via -r requirements/test.txt
 nh3==0.3.2
     # via readme-renderer
-packaging==25.0
+packaging==26.0
     # via
     #   -r requirements/test.txt
     #   kombu
@@ -248,7 +248,7 @@ psutil==7.2.1
     #   edx-django-utils
 pycodestyle==2.14.0
     # via -r requirements/quality.in
-pycparser==2.23
+pycparser==3.0
     # via
     #   -r requirements/test.txt
     #   cffi
@@ -322,7 +322,7 @@ requests-toolbelt==1.0.0
     # via twine
 rfc3986==2.0.0
     # via twine
-rich==14.2.0
+rich==14.3.1
     # via
     #   -r requirements/test.txt
     #   import-linter
@@ -402,7 +402,7 @@ vine==5.1.0
     #   amqp
     #   celery
     #   kombu
-wcwidth==0.2.14
+wcwidth==0.3.5
     # via
     #   -r requirements/test.txt
     #   prompt-toolkit
