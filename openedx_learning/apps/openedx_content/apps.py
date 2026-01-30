@@ -70,9 +70,9 @@ class ContentConfig(AppConfig):
             package=__package__,
         )
         deps_to_inject = [
-            ('content_libraries', '0012_alter_contentlibrary_learning_package'),
-            ('contentstore', '0015_alter_componentlink_upstream_block_and_more'),
-            ('modulestore_migrator', '0007_alter_modulestoreblockmigration_change_log_record_and_more'),
+#            ('content_libraries', '0012_alter_contentlibrary_learning_package'),
+#            ('contentstore', '0015_alter_componentlink_upstream_block_and_more'),
+#            ('modulestore_migrator', '0007_alter_modulestoreblockmigration_change_log_record_and_more'),
         ]
         our_deps = migration_module.Migration.dependencies
         for edx_platform_app, edx_platform_migration in deps_to_inject:
