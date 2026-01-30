@@ -3,7 +3,7 @@
 Testing
 =======
 
-openedx-learning has an assortment of test cases and code quality
+openedx-core has an assortment of test cases and code quality
 checks to catch potential problems during development.  To run them all in the
 version of Python you chose for your virtualenv:
 

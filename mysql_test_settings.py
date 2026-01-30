@@ -1,6 +1,6 @@
 """
 This is an extension of the default test_settings.py file that uses MySQL for
-the backend. While the openedx-learning apps should run fine using SQLite, they
+the backend. While the openedx-core apps should run fine using SQLite, they
 also do some MySQL-specific things around charset/collation settings and row
 compression.
 

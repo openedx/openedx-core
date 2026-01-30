@@ -19,7 +19,7 @@ class Command(BaseCommand):
     This does not publish the the Component.
 
     Note: This is a quick debug tool meant to stuff some asset data into
-    Learning Core models for testing. It's not intended as a robust and
+    Open edX Core Content models for testing. It's not intended as a robust and
     performant tool for modifying actual production content, and should not be
     used for that purpose.
     """

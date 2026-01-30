@@ -10,6 +10,5 @@ class ComponentsConfig(AppConfig):
     """
 
     name = "openedx_content.backcompat.components"
-    verbose_name = "Learning Core > Authoring > Components"
     default_auto_field = "django.db.models.BigAutoField"
     label = "oel_components"

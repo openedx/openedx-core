@@ -20,11 +20,28 @@ jobs:
       - name: Install pip
         run: pip install -r requirements/pip.txt
 
-      - name: Build package
+      - name: Build the package (openedx-core)
         run: python setup.py sdist bdist_wheel
 
-      - name: Publish to PyPI
+      - name: Publish openedx-core to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           user: __token__
           password: ${{ secrets.PYPI_UPLOAD_TOKEN }}
+
+      # TEMPORARY: Build and publish the transitional openedx-learning shell package.
+      # TODO: Remove after the transition is complete.
+      # See https://github.com/openedx/openedx-learning/issues/470
+
+      - name: Build shell package (openedx-learning)
+        run: |
+          cd tmp-openedx-learning
+          python setup.py sdist bdist_wheel
+          cd ..
+
+      - name: Publish openedx-learning shell to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_UPLOAD_TOKEN }}
+          packages-dir: tmp-openedx-learning/dist/

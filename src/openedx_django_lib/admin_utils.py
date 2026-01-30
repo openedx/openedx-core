@@ -19,7 +19,7 @@ class ReadOnlyModelAdmin(admin.ModelAdmin):
     the Django Admin is potentially dangerous.
 
     In general, if you're providing Django Admin interfaces for your
-    openedx-learning related app data models, you should subclass this class
+    openedx-core related app data models, you should subclass this class
     instead of subclassing admin.ModelAdmin directly.
     """
 
@@ -48,7 +48,7 @@ def one_to_one_related_model_html(model_obj: models.Model) -> SafeText:
     So instead of creating a circular dependency by having ``publishing``
     referencing ``components``, we use Django model introspection to iterate
     over all models that have a OneToOneField to the passe din``model_obj``.
-    This allows us to preserve our dependency boundaries within openedx-learning
+    This allows us to preserve our dependency boundaries within openedx-core
     and accomodate any third party apps that might further extend these models.
 
     This will output a list with one entry for each related field.

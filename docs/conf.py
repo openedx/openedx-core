@@ -1,6 +1,6 @@
 # pylint: disable=invalid-name
 """
-openedx-learning documentation build configuration file.
+openedx-core documentation build configuration file.
 
 This file is execfile()d with the current directory set to its
 containing dir.
@@ -89,10 +89,10 @@ source_suffix = '.rst'
 top_level_doc = 'index'
 
 # General information about the project.
-project = 'openedx-learning'
-copyright = f'{datetime.now().year}, edX Inc.' # pylint: disable=redefined-builtin
-author = 'edX Inc.'
-project_title = 'Open edX Learning Core'
+project = 'openedx-core'
+copyright = f'{datetime.now().year}, Axim Collaborative, Inc.' # pylint: disable=redefined-builtin
+author = 'Axim Collaborative, Inc.'
+project_title = 'Open edX Core'
 documentation_title = f"{project_title}"
 
 # The version info for the project you're documenting, acts as replacement for
@@ -169,7 +169,7 @@ html_theme = 'sphinx_book_theme'
 # documentation.
 #
 html_theme_options = {
- "repository_url": "https://github.com/openedx/openedx-learning",
+ "repository_url": "https://github.com/openedx/openedx-core",
  "repository_branch": "main",
  "path_to_docs": "docs/",
  "home_page_in_toc": True,
@@ -206,7 +206,7 @@ html_theme_options = {
 # The name for this set of Sphinx documents.
 # "<project> v<release> documentation" by default.
 #
-# html_title = 'openedx-learning v0.1.0'
+# html_title = 'openedx-core v0.1.0'
 
 # A shorter title for the navigation bar.  Default is the same as html_title.
 #

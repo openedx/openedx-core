@@ -45,6 +45,7 @@ def get_storage() -> Storage:
     If there is no value for the OPENEDX_LEARNING setting, we return the default
     MEDIA storage class. TODO: Should we make it just error instead?
     """
+    # TODO: Document & rename this setting (https://github.com/openedx/openedx-core/issues/481)
     config_dict = getattr(settings, 'OPENEDX_LEARNING', {})
 
     if 'MEDIA' in config_dict:

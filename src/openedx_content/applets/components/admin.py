@@ -143,7 +143,7 @@ def content_preview(cvc_obj: ComponentVersionContent) -> SafeText:
     if content_obj.media_type.type == "image":
         # This base64 encoding looks really goofy and is bad for performance,
         # but image previews in the admin are extremely useful, and this lets us
-        # have them without creating a separate view in Learning Core. (Keep in
+        # have them without creating a separate view in Open edX Core. (Keep in
         # mind that these assets are private, so they cannot be accessed via the
         # MEDIA_URL like most Django uploaded assets.)
         data = content_obj.read_file().read()

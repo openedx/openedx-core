@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Package metadata for openedx-learning.
+Package metadata for openedx-core.
 """
 import os
 import re
@@ -62,16 +62,15 @@ if sys.argv[-1] == 'tag':
     sys.exit()
 
 README = open(os.path.join(os.path.dirname(__file__), 'README.rst')).read()
-CHANGELOG = open(os.path.join(os.path.dirname(__file__), 'CHANGELOG.rst')).read()
 
 setup(
-    name='openedx-learning',
+    name='openedx-core',
     version=VERSION,
-    description="""Open edX Learning Core and Tagging.""",
-    long_description=README + '\n\n' + CHANGELOG,
+    description="Open edX Core: Foundational Packages for a Teaching & Learning Platform""",
+    long_description=README,
     author='David Ormsbee',
-    author_email='dave@tcril.org',
-    url='https://github.com/openedx/openedx-learning',
+    author_email='dave@axim.org',
+    url='https://github.com/openedx/openedx-core',
     package_dir={"": "src"},
     packages=find_packages("src"),
     include_package_data=True,

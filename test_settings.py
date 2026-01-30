@@ -83,6 +83,7 @@ REST_FRAMEWORK = {
 
 # ========================= LEARNING CORE SETTINGS ========================
 
+# TODO: Document & rename this setting (https://github.com/openedx/openedx-core/issues/481)
 OPENEDX_LEARNING = {
     'MEDIA': {
         'BACKEND': 'django.core.files.storage.InMemoryStorage',

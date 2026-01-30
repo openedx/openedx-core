@@ -11,6 +11,5 @@ class SubsectionsConfig(AppConfig):
     """
 
     name = "openedx_content.backcompat.subsections"
-    verbose_name = "Learning Core > Authoring > Subsections"
     default_auto_field = "django.db.models.BigAutoField"
     label = "oel_subsections"

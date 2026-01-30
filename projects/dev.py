@@ -103,7 +103,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 USE_TZ = True
 
-# openedx-learning required configuration
+# openedx-core required configuration
 OPENEDX_LEARNING = {
     # Custom file storage, though this is better done through Django's
     # STORAGES setting in Django >= 4.2

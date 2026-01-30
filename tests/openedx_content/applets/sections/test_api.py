@@ -15,7 +15,7 @@ Entry = content_api.SectionListEntry
 
 # TODO: Turn SubSectionTestCase into SubSectionTestMixin and remove the
 # test-inherits-tests pylint warning below.
-# https://github.com/openedx/openedx-learning/issues/308
+# https://github.com/openedx/openedx-core/issues/308
 @ddt.ddt
 class SectionTestCase(SubSectionTestCase):  # pylint: disable=test-inherits-tests
     """ Test cases for Sections (containers of subsections) """

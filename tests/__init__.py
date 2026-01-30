@@ -1,3 +1,3 @@
 """
-Tests for Learning Core.
+Tests for Open edX Core.
 """

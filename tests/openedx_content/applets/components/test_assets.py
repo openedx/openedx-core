@@ -114,7 +114,7 @@ class AssetTestCase(TestCase):
         )
         assert response.status_code == 404
 
-        # None of the Learning Core headers should be set...
+        # None of the Open edX Core headers should be set...
         for header_name in response.headers:
             assert not header_name.startswith("X-Open-edX")
 

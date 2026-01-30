@@ -10,6 +10,5 @@ class CollectionsConfig(AppConfig):
     """
 
     name = "openedx_content.backcompat.collections"
-    verbose_name = "Learning Core > Authoring > Collections"
     default_auto_field = "django.db.models.BigAutoField"
     label = "oel_collections"

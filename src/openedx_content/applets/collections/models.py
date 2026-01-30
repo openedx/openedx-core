@@ -25,16 +25,16 @@ v2 Libraries. Later on, the LibraryContentBlock will want to check back to see
 if any updates have been made, using its version as a key. If a new version
 exists, the course team has the option of re-copying data from the Library.
 
-ModuleStore based v1 Libraries and Blockstore-based v2 libraries both version
+ModuleStore-based v1 Libraries and OeXCore-based v2 libraries both version
 the entire library in a series of snapshots. This makes it difficult to have
 very large libraries, which is an explicit goal for Modular Learning. In
-Learning Core, we've moved to tracking the versions of individual Components to
+Open edX Core, we've moved to tracking the versions of individual Components to
 address this issue. But that means we no longer have a single version indicator
 for "has anything here changed"?
 
 We *could* have put that version in the ``publishing`` app's PublishLog, but
 that would make it too broad. We want the ability to eventually collapse many v1
-Libraries into a single Learning Core backed v2 Library. If we tracked the
+Libraries into a single OeXCore backed v2 Library. If we tracked the
 versioning in only a central location, then we'd have many false positives where
 the version was bumped because something else in the Learning Package changed.
 So instead, we're creating a new Collection model inside the LearningPackage to

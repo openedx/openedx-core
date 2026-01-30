@@ -7,7 +7,7 @@ to validate the data model can do what we need it to do.
 This script manipulates the data models directly, instead of using stable API
 calls. This is only because those APIs haven't been created yet, and this is
 trying to validate basic questions about the data model. This is not how apps
-are intended to use openedx-learning in the longer term.
+are intended to use openedx-core in the longer term.
 
 Open Question: If the data model is extensible, how do we know whether a change
 has really happened between what's currently stored/published for a particular

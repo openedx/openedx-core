@@ -81,7 +81,7 @@ selfcheck: ## check that the Makefile is well-formed
 
 ## Localization targets
 # TODO: Need to audit these, and then actually tell openedx-translations
-# to use them. https://github.com/openedx/openedx-learning/issues/483
+# to use them. https://github.com/openedx/openedx-core/issues/483
 
 extract_translations: ## extract strings to be translated, outputting .mo files
 	rm -rf docs/_build

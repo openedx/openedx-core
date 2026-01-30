@@ -1,5 +1,5 @@
-Open edX Learning Core (and Tagging)
-====================================
+Open edX Core: Foundational Packages for a Teaching & Learning Platform
+=======================================================================
 
 |pypi-badge| |ci-badge| |codecov-badge| |doc-badge| |pyversions-badge|
 |license-badge|
@@ -7,22 +7,26 @@ Open edX Learning Core (and Tagging)
 Overview
 --------
 
-The ``openedx-learning`` project holds Django apps that represent core learning platform concepts.
+*Formerly known as "Learning Core" or "openedx-learning".*
+
+The ``openedx-core`` project holds Django apps which represent core teaching & learning platform concepts.
+
+Each app exposes stable, public API of Python functions and Django models. Some apps additionally provides REST APIs. These APIs are suitable for use in ``openedx-platform`` as well as in community-developed Open edX plugins.
 
 Motivation
 ----------
 
-The short term goal of this project is to create a small, extensible core that is easier to reason about and write extensions for than openedx-platform. The longer term goal is to create a more nimble core learning platform, enabling rapid experimentation and drastic changes to the learner experience that are difficult to implement with Open edX today.
+The short term goal of this project is to create a small, extensible core that is easier to reason about and write extensions for than ``openedx-platform``. The longer term goal is to create a more nimble core learning platform, enabling rapid experimentation and drastic changes to the learner experience that are difficult to implement with Open edX today.
 
-Replacing openedx-platform is explicitly *not* a goal of this project, as only a small fraction of the concepts in openedx-platform make sense to carry over here. When these core concepts are extracted and the data migrated, openedx-platform will import apps from this repo and make use of their public in-process APIs.
+Replacing ``openedx-platform`` is explicitly *not* a goal of this project, as only a small fraction of the concepts in openedx-platform make sense to carry over here. When these core concepts are extracted and the data migrated, openedx-platform will import apps from this repo and make use of their public in-process APIs.
 
 Architecture
 ------------
 
-Learning Core Package Dependencies
+Open edX Core Package Dependencies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Learning Core code should never import from ``openedx-platform``.
+Open edX Core code should never import from ``openedx-platform``.
 
 We want to be very strict about dependency management internally as well. Please read the `.importlinter config file <.importlinter>`_ file and the `Python API Conventions ADR <docs/decisions/0016-python-public-api-conventions>`_ for more details.
 
@@ -37,7 +41,6 @@ We have a few different identifier types in the schema, and we try to avoid ``_i
 * ``key`` is intended to be a case-sensitive, alphanumeric key, which holds some meaning to library clients. This is usually stable, but can be changed, depending on the business logic of the client. The apps in this repo should make no assumptions about it being stable. It can be used as a suffix. Since ``key`` is a reserved name on certain database systems, the database field is ``_key``.
 * ``num`` is like ``key``, but for use when it's strictly numeric. It can also be used as a suffix.
 
-
 See Also
 ~~~~~~~~
 
@@ -49,66 +52,10 @@ The structure of this repo follows [OEP-0049](https://open-edx-proposals.readthe
 Code Overview
 -------------
 
-The ``src`` folder contains all our Django applications.
-
-Development Workflow
---------------------
-
-One Time Setup
-~~~~~~~~~~~~~~
-.. code-block::
-
-  # Clone the repository
-  git clone git@github.com:ormsbee/openedx-learning.git
-  cd openedx-learning
-
-  # Set up a virtualenv using virtualenvwrapper with the same name as the repo and activate it
-  mkvirtualenv -p python3.11 openedx-learning
-
-
-Every time you develop something in this repo
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-.. code-block::
-
-  # Activate the virtualenv
-  workon openedx-learning
-
-  # Grab the latest code
-  git checkout master
-  git pull
-
-  # Install/update the dev requirements
-  make requirements
-
-  # Run the tests and quality checks (to verify the status before you make any changes)
-  make validate
-
-  # Make a new branch for your changes
-  git checkout -b <your_github_username>/<short_description>
-
-  # Using your favorite editor, edit the code to make your change.
-  vim …
-
-  # Run your new tests
-  pytest ./path/to/new/tests
-
-  # Run all the tests and quality checks
-  make validate
-
-  # Commit all your changes
-  git commit …
-  git push
-
-  # Open a PR and ask for review.
-
-Configuring Visual Studio Code
-------------------------------
-
-If you are using VS Code as your editor, you can enable the Testing bar by copying from the example configuration provided in the ``.vscode`` directory::
-
-    cd .vscode/
-    cp launch.json.example launch.json
-    cp settings.json.example settings.json
+* ``./src/``: All published code. Packages are importable relative to this directory (e.g., ``import openedx_content``). See ``readme.rst`` in each sub-folder.
+* ``./tests/``: Unit tests (not published).
+* ``./test_utils/``: Internal helpers for unit tests (not published).
+* ``./olx_importer/``: Internal utility for importing data for development (not published).
 
 License
 -------
@@ -140,26 +87,26 @@ For more information about these options, see the `Getting Help`_ page.
 .. _community Slack workspace: https://openedx.slack.com/
 .. _Getting Help: https://openedx.org/getting-help
 
-.. |pypi-badge| image:: https://img.shields.io/pypi/v/openedx-learning.svg
-    :target: https://pypi.python.org/pypi/openedx-learning/
+.. |pypi-badge| image:: https://img.shields.io/pypi/v/openedx-core.svg
+    :target: https://pypi.python.org/pypi/openedx-core/
     :alt: PyPI
 
-.. |ci-badge| image:: https://github.com/openedx/openedx-learning/workflows/Python%20CI/badge.svg?branch=master
-    :target: https://github.com/openedx/openedx-learning/actions
+.. |ci-badge| image:: https://github.com/openedx/openedx-core/workflows/Python%20CI/badge.svg?branch=master
+    :target: https://github.com/openedx/openedx-core/actions
     :alt: CI
 
-.. |codecov-badge| image:: https://codecov.io/github/edx/openedx-learning/coverage.svg?branch=master
-    :target: https://codecov.io/github/edx/openedx-learning?branch=master
+.. |codecov-badge| image:: https://codecov.io/github/edx/openedx-core/coverage.svg?branch=master
+    :target: https://codecov.io/github/edx/openedx-core?branch=master
     :alt: Codecov
 
-.. |doc-badge| image:: https://readthedocs.org/projects/openedx-learning/badge/?version=latest
-    :target: https://openedx-learning.readthedocs.io/en/latest/
+.. |doc-badge| image:: https://readthedocs.org/projects/openedx-core/badge/?version=latest
+    :target: https://openedx-core.readthedocs.io/en/latest/
     :alt: Documentation
 
-.. |pyversions-badge| image:: https://img.shields.io/pypi/pyversions/openedx-learning.svg
-    :target: https://pypi.python.org/pypi/openedx-learning/
+.. |pyversions-badge| image:: https://img.shields.io/pypi/pyversions/openedx-core.svg
+    :target: https://pypi.python.org/pypi/openedx-core/
     :alt: Supported Python versions
 
-.. |license-badge| image:: https://img.shields.io/github/license/edx/openedx-learning.svg
-    :target: https://github.com/openedx/openedx-learning/blob/master/LICENSE.txt
+.. |license-badge| image:: https://img.shields.io/github/license/edx/openedx-core.svg
+    :target: https://github.com/openedx/openedx-core/blob/master/LICENSE.txt
     :alt: License

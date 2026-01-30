@@ -11,6 +11,5 @@ class UnitsConfig(AppConfig):
     """
 
     name = "openedx_content.backcompat.units"
-    verbose_name = "Learning Core > Authoring > Units"
     default_auto_field = "django.db.models.BigAutoField"
     label = "oel_units"
