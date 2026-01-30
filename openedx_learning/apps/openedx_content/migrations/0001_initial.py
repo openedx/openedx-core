@@ -23,13 +23,13 @@ class Migration(migrations.Migration):
 
     dependencies = [
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
-        ('oel_collections', '0005_alter_collection_options_alter_collection_enabled'),
-        ('oel_components', '0004_remove_componentversioncontent_uuid'),
-        ('oel_contents', '0001_initial'),
-        ('oel_publishing', '0010_backfill_dependencies'),
-        ('oel_sections', '0001_initial'),
-        ('oel_subsections', '0001_initial'),
-        ('oel_units', '0001_initial'),
+        ('oel_collections', '0006_remove_all_field_state_for_move_to_applet'),
+        ('oel_components', '0005_remove_all_field_state_for_move_to_applet'),
+        ('oel_contents', '0002_remove_all_field_state_for_move_to_applet'),
+        ('oel_publishing', '0011_remove_all_field_state_for_move_to_applet'),
+        ('oel_sections', '0002_remove_all_field_state_for_move_to_applet'),
+        ('oel_subsections', '0002_remove_all_field_state_for_move_to_applet'),
+        ('oel_units', '0002_remove_all_field_state_for_move_to_applet'),
     ]
 
     operations = [

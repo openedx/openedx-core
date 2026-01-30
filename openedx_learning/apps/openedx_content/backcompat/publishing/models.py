@@ -1,12 +1,9 @@
+"""
+These are stub models necessary to ensure a smooth migration for
+openedx-platform apps that were built to have foreign keys to these models.
+"""
 from django.db import models
 
-from openedx_learning.lib.fields import (
-    MultiCollationTextField,
-    case_insensitive_char_field,
-    immutable_uuid_field,
-    key_field,
-    manual_date_time_field,
-)
 
 class LearningPackage(models.Model):
     id = models.AutoField(primary_key=True)
@@ -18,4 +15,6 @@ class DraftChangeLog(models.Model):
     pass
 
 class Container(models.Model):
-    pass
+    publishable_entity = models.OneToOneField(
+        PublishableEntity, on_delete=models.CASCADE, primary_key=True
+    )
