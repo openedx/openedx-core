@@ -58,6 +58,22 @@ class Migration(migrations.Migration):
                     model_name='draftchangelogrecord',
                     name='old_version',
                 ),
+                migrations.AlterModelOptions(
+                    name='draftchangelogrecord',
+                    options={},
+                ),
+                migrations.RemoveConstraint(
+                    model_name='draftchangelogrecord',
+                    name='oel_dlr_uniq_dcl',
+                ),
+                migrations.RemoveIndex(
+                    model_name='draftchangelogrecord',
+                    name='oel_dlr_idx_entity_rdcl',
+                ),
+                migrations.RemoveField(
+                    model_name='draftchangelogrecord',
+                    name='dependencies_hash_digest',
+                ),
                 migrations.RemoveField(
                     model_name='draftsideeffect',
                     name='cause',
@@ -239,9 +255,6 @@ class Migration(migrations.Migration):
                 ),
                 migrations.DeleteModel(
                     name='Draft',
-                ),
-                migrations.DeleteModel(
-                    name='DraftChangeLogRecord',
                 ),
                 migrations.DeleteModel(
                     name='DraftSideEffect',

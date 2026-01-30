@@ -14,6 +14,9 @@ class PublishableEntity(models.Model):
 class DraftChangeLog(models.Model):
     pass
 
+class DraftChangeLogRecord(models.Model):
+    pass
+
 class Container(models.Model):
     publishable_entity = models.OneToOneField(
         PublishableEntity, on_delete=models.CASCADE, primary_key=True
