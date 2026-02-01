@@ -58,7 +58,7 @@ class ContentConfig(AppConfig):
         why we do this really sketchy looking migration dependency injection on
         app initialization.
 
-        For more details, see docs/decisions/0020-authoring-as-one-app.rst.
+        For more details, see docs/decisions/0020-merge-authoring-apps-into-openedx-content.rst.
         """
         from django.apps import apps
 
