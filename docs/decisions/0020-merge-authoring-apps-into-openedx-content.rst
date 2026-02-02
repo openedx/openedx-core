@@ -32,8 +32,8 @@ We will continue to keep internal API boundaries by using a new "Applets" conven
 
 In one pull request, we are going to:
 
-#. Rename the ``openedx_learning.apps.authoring`` package to be ``openedx_learning.apps.openedx_content``. (Note: We have discussed eventually moving this to a top level app, i.e. ``openedx_content`` instead of ``openedx_learning.apps.openedx_content``, but that will happen at a later time.)
-#. Create bare shells of the existing ``authoring`` apps (``backup_restore``, ``collections``, ``components``, ``contents``, ``publishing``, ``sections``, ``subsections``, ``units``), and move them to the ``openedx_learning.apps.openedx_content.backcompat`` package. These shells will have an ``apps.py`` file, the ``migrations`` package for each existing app, and in some cases a minimal ``models.py`` that will hold the bare skeletons of a handful of models. This will allow for a smooth schema migration to transition the models from these individual apps to ``openedx_content``.
+#. Rename the ``openedx_learning.apps.authoring`` package to be ``openedx_learning.apps.openedx_content``. (Note: We have discussed eventually moving this to a top level ``openedx_content`` app instead of ``openedx_learning.apps.openedx_content``, but that will happen at a later time.)
+#. Create bare shells of the existing ``authoring`` apps (``backup_restore``, ``collections``, ``components``, ``contents``, ``publishing``, ``sections``, ``subsections``, ``units``), and move them to the ``openedx_learning.apps.openedx_content.backcompat`` package. These shells will have an ``apps.py`` file, the ``migrations`` package for each existing app, and in some cases a minimal ``models.py`` that will hold the skeletons of a handful of models. This will allow for a smooth schema migration to transition the models from these individual apps to ``openedx_content``.
 #. Move the actual models files and API logic for our existing authoring apps to the ``openedx_learning.apps.openedx_content.applets`` package.
 #. Convert the top level ``openedx_learning.apps.openedx_content`` package to be a Django app. The top level ``admin.py``, ``api.py``, and ``models.py`` modules will do wildcard imports from the corresponding modules across all applet packages.
 #. Test packages will also be updated to follow the new structure.
@@ -48,44 +48,31 @@ There are a few high level constraints that we have to consider:
 #. Existing openedx-platform migrations should not be modified. Existing openedx-platform migrations should remain unchanged. This is important to make sure that we do not introduce ordering inconsistencies for sites that have already run migrations for the old apps and are upgrading to a new release (e.g. Verawood).
 #. The openedx-learning repo should not have any dependencies on openedx-platform migrations, because our dependencies strictly go in the other direction: openedx-platform calls openedx-learning, not the other way around. Furthermore, openedx-learning will often be run without openedx-platform, such as for local development or during CI.
 #. Two of the openedx-platform apps that have foreign keys to openedx-learning models are only in Studio's INSTALLED_APPS (``contentstore`` and ``modulestore_migrator``), while ``content_libraries`` is installed in both Studio and LMS. Migrations may be run for LMS or Studio first, depending on the user and environment. Tutor runs LMS first, but we can't assume that will always be true.
-#. We must support people who are installing from scratch, as well as those who are upgrading from the Ulmo release.
-
-
-
-
+#. We must support people who are installing from scratch, those who are upgrading from the Ulmo release, as well as those who are running off of the master branch of openedx-platform.
 
 Therefore, the migrations will happen in the following order:
 
-#. All ``backcompat.*`` apps migrations
+#. All pre-existing ``backcompat.*`` apps migrations run as before.
+#. New ``backcompat.*`` apps migrations that drop most model state, but leave the database unchanged.
 #. The first ``openedx_content`` migration creates logical models without any database changes.
 #. The second ``openedx_content`` migration renames the underlying tables.
-#. Each the openedx-platform apps that had foreign keys to
+#. Each the ``openedx-platform`` apps that had foreign keys to the old authoring apps will get a new migration that switches those foreign keys to point to ``openedx_content`` apps instead. These are: ``content_libraries``, ``contentstore``, and ``modulestore_migrator``.
+#. The above ``openedx-platform`` apps will also get a squashed migration that sets them up to point to the new ``openedx_content`` models directly.
 
+The tricky part is that all the ``opendx-learning`` migrations will run before any of the ``openedx-platform`` migrations run. We can't force it to do otherwise without making ``openedx-learning`` aware of ``opendx-platform``, and we explicitly want to avoid that. This makes things tricky with respect to the model state dependencies. There are two scenarios we have to worry about:
 
+Migration from Scrach
+  The ``openedx-platform`` apps will each run the squashed migration that jumps straight to making foreign keys against the new ``openedx_content`` models, so the fact that the old authoring app models have been removed and the tables have been renamed doesn't matter.
 
-Rejected
+Migration from Ulmo/master
+  No actual database operations have to happen here, as the keys were already created earlier. That being said, the migration framework will error out if the state of the old app models that it had foreign keys have been dropped entirely. That's why the bare skeletons of those old models are preserved in the ``backcompat`` app models files, along with their primary key field. Everything else can be dropped from the state point of view—though again, we're not modifying database state in this operation.
 
-Dynamically
+5. Rejected Alternatives
+~~~~~~~~~~~~~~~~~~~~~~~~
 
+An earlier attempt at this tried to solve the migration ordering issue by dynamically injecting migration dependencies into the second ``openedx_content`` migration module during the app config ``ready()`` initialization. This was later abandoned because it didn't solve the problem of CMS vs LMS differences in ``INSTALLED_APPS``, so the ordering could still get corrupted unless we added those apps to LMS—which would have introduced more risk.
 
-.
-#. The ``openedx_content`` app's ``0001_intial`` migration that adds model state without changing the database. At this point, model state exists for the same models in all the old ``backcompat.*`` apps as well as the new ``openedx_content`` app.
-#. edx-platform apps that had foreign keys to old ``backcompat.*`` apps models will need to be switched to point to the new ``openedx_content`` app models. This will likewise be done without a database change, because they're still pointing to the same tables and columns.
-#. Now that edx-platform references have been updated, we can delete the model state from the old ``backcompat.*`` apps and rename the underlying tables (in either order).
-
-The tricky part is to make sure that the old ``backcompat.*`` apps models still exist when the edx-platform migrations to move over the references runs. This is problematic because the edx-platform migrations can only specify that they run *after the new openedx_content models are created*. They cannot specify that they run *before the old backcompat models are dropped*.
-
-So in order to enforce this ordering, we do the following:
-
-* The ``openedx_content`` migration ``0001_initial`` requires that all ``backcompat.*`` migrations except the last ones removing model state are run.
-* The ``openedx_content`` migration ``0002_rename_tables_to_openedx_content`` migration requires that the edx-platform migrations changing refrences over run. This is important anyway, because we want to make sure those reference changes happen before we change any table names.
-* The final ``backcompat.*`` migrations that remove model field state will list ``openedx_content`` app's ``0002_rename_tables_to_openedx_content`` as a dependency.
-
-A further complication is that ``openedx_learning`` will often run its migrations without edx-platform present (e.g. for CI or standalone dev purposes), so we can't force ``0002_rename_tables_to_openedx_content`` in the ``openedx_content`` app to have references to edx-platform migrations. To get around this, we dynamically inject those migration dependencies only if we detect those edx-platform apps exist in the currently loaded Django project. This injection happens in the ``apps.py`` initialization for the ``openedx_content`` app.
-
-The final complication is that we want these migration dependencies to be the same regardless of whether you're running edx-platform migrations with the LMS or CMS (Studio) settings, or we run the risk of getting into an inconsistent state and dropping the old models before all the edx-platform apps can run their migrations to move their references. To do this, we have to make sure that the edx-platform apps that reference Learning Core models are present in the ``INSTALLED_APPS`` for both configurations.
-
-4. The Bigger Picture
+6. The Bigger Picture
 ~~~~~~~~~~~~~~~~~~~~~
 
-This practice means that the ``openedx_content`` Django app corresponds to a Subdomain in Domain Driven Design terminology, with each applet being a Bounded Context. We call these "Applets" instead of "Bounded Contexts" because we don't want it to get confused for Django's notion of Contexts and Context Processors (or Python's notion of Context Managers).
+This overall refactoring means that the ``openedx_content`` Django app corresponds to a Subdomain in Domain Driven Design terminology, with each applet being a Bounded Context. We call these "Applets" instead of "Bounded Contexts" because we don't want it to get confused for Django's notion of Contexts and Context Processors (or Python's notion of Context Managers).
