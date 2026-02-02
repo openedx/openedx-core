@@ -9,4 +9,3 @@ class Component(models.Model):
     publishable_entity = models.OneToOneField(
         'oel_publishing.PublishableEntity', on_delete=models.CASCADE, primary_key=True
     )
-

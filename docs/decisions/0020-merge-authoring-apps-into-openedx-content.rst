@@ -67,6 +67,8 @@ Migration from Scrach
 Migration from Ulmo/master
   No actual database operations have to happen here, as the keys were already created earlier. That being said, the migration framework will error out if the state of the old app models that it had foreign keys have been dropped entirely. That's why the bare skeletons of those old models are preserved in the ``backcompat`` app models files, along with their primary key field. Everything else can be dropped from the state point of view—though again, we're not modifying database state in this operation.
 
+  The main downside of this approach is that it may break migrations for developers if they have a months old dev database that is in an in-between release state, e.g. after some ``modulestore_migrations`` referencing the old app mdoels were run, but before the most recent ``modulestore_migrations`` creating foreign keys to those models. No production environment is expected to deploy like this, so the main negative consequence is that the developer would have to drop and recreate their database.
+
 5. Rejected Alternatives
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
