@@ -106,7 +106,7 @@ def create_assessment_criteria(
     object_tag,
     competency_tag,
     rule_type: str,
-    rule: str,
+    rule_payload: dict,
     retake_rule: str,
 ) -> AssessmentCriteria:
     """
@@ -117,7 +117,7 @@ def create_assessment_criteria(
         object_tag=object_tag,
         competency_tag=competency_tag,
         rule_type=rule_type,
-        rule=rule,
+        rule_payload=rule_payload,
         retake_rule=retake_rule,
     )
     criteria.full_clean()
@@ -152,7 +152,7 @@ def update_assessment_criteria(
     object_tag=models.NOT_PROVIDED,
     competency_tag=models.NOT_PROVIDED,
     rule_type: str | models.NOT_PROVIDED = models.NOT_PROVIDED,
-    rule: str | models.NOT_PROVIDED = models.NOT_PROVIDED,
+    rule_payload: dict | models.NOT_PROVIDED = models.NOT_PROVIDED,
     retake_rule: str | models.NOT_PROVIDED = models.NOT_PROVIDED,
 ) -> AssessmentCriteria:
     """
@@ -166,8 +166,8 @@ def update_assessment_criteria(
         criteria.competency_tag = competency_tag
     if rule_type is not models.NOT_PROVIDED:
         criteria.rule_type = rule_type
-    if rule is not models.NOT_PROVIDED:
-        criteria.rule = rule
+    if rule_payload is not models.NOT_PROVIDED:
+        criteria.rule_payload = rule_payload
     if retake_rule is not models.NOT_PROVIDED:
         criteria.retake_rule = retake_rule
     criteria.full_clean()

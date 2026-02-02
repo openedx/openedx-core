@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.sessions",
     "django.contrib.staticfiles",
+    "openedx_events",
     # Admin
     'django.contrib.admin',
     'django.contrib.admindocs',

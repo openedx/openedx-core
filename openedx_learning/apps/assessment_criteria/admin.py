@@ -17,9 +17,17 @@ class AssessmentCriteriaGroupAdmin(admin.ModelAdmin):
 
 @admin.register(AssessmentCriteria)
 class AssessmentCriteriaAdmin(admin.ModelAdmin):
-    list_display = ("id", "group", "course_id", "rule_type", "rule", "retake_rule", "competency_tag", "object_tag")
+    list_display = (
+        "id",
+        "group",
+        "course_id",
+        "rule_type",
+        "rule_payload",
+        "retake_rule",
+        "competency_tag",
+        "object_tag",
+    )
     list_filter = ("rule_type", "retake_rule")
-    search_fields = ("rule",)
 
 
 @admin.register(StudentAssessmentCriteriaStatus)

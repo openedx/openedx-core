@@ -43,7 +43,7 @@ class AssessmentCriteriaSerializer(serializers.ModelSerializer):
             "object_tag",
             "competency_tag",
             "rule_type",
-            "rule",
+            "rule_payload",
             "retake_rule",
         ]
 

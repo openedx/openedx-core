@@ -12,3 +12,7 @@ class AssessmentCriteriaConfig(AppConfig):
     verbose_name = "Learning Core > Assessment Criteria"
     default_auto_field = "django.db.models.BigAutoField"
     label = "oel_assessment_criteria"
+
+    def ready(self):
+        # Register signal handlers.
+        from . import events  # pylint: disable=unused-import

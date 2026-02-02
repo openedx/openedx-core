@@ -2,6 +2,7 @@
 Django settings for testing and development purposes
 """
 from __future__ import annotations
+import os
 from pathlib import Path
 
 from openedx_learning.api.django import openedx_learning_apps_to_install
@@ -30,6 +31,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.staticfiles",
 
+    "openedx_events",
     # Admin
     "django.contrib.admin",
     "django.contrib.admindocs",
@@ -122,3 +124,19 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'edx_rest_framework_extensions.paginators.DefaultPagination',
     'PAGE_SIZE': 10,
 }
+
+######################### Event Bus ########################
+
+EVENT_BUS_PRODUCER = os.environ.get(
+    "EVENT_BUS_PRODUCER",
+    "edx_event_bus_redis.create_producer",
+)
+EVENT_BUS_CONSUMER = os.environ.get(
+    "EVENT_BUS_CONSUMER",
+    "edx_event_bus_redis.RedisEventConsumer",
+)
+EVENT_BUS_REDIS_CONNECTION_URL = os.environ.get(
+    "EVENT_BUS_REDIS_CONNECTION_URL",
+    "redis://@redis:6379/",
+)
+EVENT_BUS_TOPIC_PREFIX = os.environ.get("EVENT_BUS_TOPIC_PREFIX", "dev")

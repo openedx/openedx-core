@@ -43,7 +43,7 @@ class AssessmentCriteria(models.Model):
         related_name="assessment_criteria",
     )
     rule_type = models.CharField(max_length=20, choices=RuleType.choices)
-    rule = models.CharField(max_length=255)
+    rule_payload = models.JSONField(default=dict, blank=True)
     retake_rule = models.CharField(max_length=20, choices=RetakeRule.choices)
 
     class Meta:
@@ -53,4 +53,4 @@ class AssessmentCriteria(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.rule_type}:{self.rule} ({self.id})"
+        return f"{self.rule_type}:{self.rule_payload} ({self.id})"

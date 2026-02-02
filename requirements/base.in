@@ -9,6 +9,8 @@ Django                    # Web application framework
 
 djangorestframework<4.0   # REST API
 edx-drf-extensions        # Extensions to the Django REST Framework used by Open edX
+edx-event-bus-redis       # Redis-backed event bus consumer/producer
+openedx-events            # Open edX public signal definitions
 
 rules<4.0                 # Django extension for rules-based authorization checks
 
