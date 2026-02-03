@@ -1,9 +1,9 @@
 """
-This migration has two modes it needs to run in:
+This migration effectively moves the models from various authoring apps in the
+backcompat package to the new consolidated openedx_content app. It does *not* do
+any actual database operations.
 
-1. Existing installs that have migration data that is current through 0.30.2
-   (bundled with the Ulmo release).
-2. New installs.
+See the ADR 0020-merge-authoring-apps-into-openedx-content.rst for details.
 """
 import uuid
 

@@ -41,7 +41,12 @@ In one pull request, we are going to:
 4. Database Migration Specifics
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When Django runs migrations, it calculates both an internal model state, as well as running database operations. We are going to take advantage of the fact that these two can be separated using the ``SeparateDatabaseAndState`` operation. We will use this to remove the model state from the old authoring apps and create the model state in the new ``openedx_content`` app without having to run database operations.
+When Django runs migrations, it both:
+
+* Calculates an ephemeral logical model **state**, based on the contents of the Python migration files and the ``django_migration`` database table, which indicates the list of migrations that have been "run".
+* Actually executes the migration operations on the app **database** tables as each migration is "run".
+
+We are going to take advantage of the fact that these two can be separated using the ``SeparateDatabaseAndState`` operation. We will use this to remove the model state from the old authoring apps and create the model state in the new ``openedx_content`` app without having to run database operations.
 
 There are a few high level constraints that we have to consider:
 
@@ -73,6 +78,8 @@ Migration from Ulmo/master
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 An earlier attempt at this tried to solve the migration ordering issue by dynamically injecting migration dependencies into the second ``openedx_content`` migration module during the app config ``ready()`` initialization. This was later abandoned because it didn't solve the problem of CMS vs LMS differences in ``INSTALLED_APPS``, so the ordering could still get corrupted unless we added those apps to LMS—which would have introduced more risk.
+
+It's also worth noting that Django startup checks will fail if it detects that multiple models point to the same table. This is why we rename the tables for the ``openedx_contents`` models, and leave the skeleton models in ``backcompat`` apps pointing to the old table names (which no longer really exist in the database once these migrations run).
 
 6. The Bigger Picture
 ~~~~~~~~~~~~~~~~~~~~~

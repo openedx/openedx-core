@@ -45,7 +45,7 @@ class ContentConfig(AppConfig):
 
     def ready(self):
         """
-        Currently used to register publishable models and patch migrations.
+        Currently used to register publishable models.
 
         May later be used to register signal handlers as well.
         """
