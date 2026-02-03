@@ -6,6 +6,13 @@ used by Containers, but this means we have to backfill that dependency info for
 existing Containers in the system.
 
 For more information, please see the PublishableEntityVersionDependency model.
+
+Note that we copy a *lot* of API code here because we want to make sure that
+this migration continues to work on the historical version of the models at this
+point in time, regardless of any future changes that might be made to the API
+for calculating dependencies. Most of the API code here is copy-pasted from the
+publishing API, with very minor changes to grab the historical models using
+apps.get_model(), rather than importing the models directly.
 """
 from django.db import migrations
 from django.db.models import F, Prefetch
