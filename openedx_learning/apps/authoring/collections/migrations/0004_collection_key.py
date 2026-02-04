@@ -33,8 +33,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='collection',
             name='key',
-            field=openedx_learning.lib.fields.MultiCollationCharField(
-                db_collations={'mysql': 'utf8mb4_bin', 'sqlite': 'BINARY'},
+            field=openedx_learning.lib.fields.case_sensitive_char_field(
                 db_column='_key', max_length=500, null=True, blank=True),
             preserve_default=False,
         ),
@@ -44,8 +43,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='collection',
             name='key',
-            field=openedx_learning.lib.fields.MultiCollationCharField(
-                db_collations={'mysql': 'utf8mb4_bin', 'sqlite': 'BINARY'},
+            field=openedx_learning.lib.fields.case_sensitive_char_field(
                 db_column='_key', max_length=500, null=False, blank=False),
             preserve_default=False,
         ),

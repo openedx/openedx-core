@@ -19,8 +19,8 @@ class Migration(migrations.Migration):
             name='Collection',
             fields=[
                 ('id', models.AutoField(primary_key=True, serialize=False)),
-                ('name', openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, db_index=True, help_text='The name of the collection.', max_length=255)),
-                ('description', openedx_learning.lib.fields.MultiCollationCharField(blank=True, db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, help_text='Provides extra information for the user about this collection.', max_length=10000)),
+                ('name', openedx_learning.lib.fields.case_insensitive_char_field(db_index=True, help_text='The name of the collection.', max_length=255)),
+                ('description', openedx_learning.lib.fields.case_insensitive_char_field(blank=True, help_text='Provides extra information for the user about this collection.', max_length=10000)),
                 ('enabled', models.BooleanField(default=True, help_text='Whether the collection is enabled or not.')),
                 ('created', models.DateTimeField(auto_now_add=True)),
                 ('modified', models.DateTimeField(auto_now=True)),

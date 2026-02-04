@@ -18,11 +18,7 @@ class Migration(migrations.Migration):
                 ("id", models.BigAutoField(primary_key=True, serialize=False)),
                 (
                     "name",
-                    openedx_learning.lib.fields.MultiCollationCharField(
-                        db_collations={
-                            "mysql": "utf8mb4_unicode_ci",
-                            "sqlite": "NOCASE",
-                        },
+                    openedx_learning.lib.fields.case_insensitive_char_field(
                         db_index=True,
                         help_text="User-facing label used when applying tags from this taxonomy to Open edX objects.",
                         max_length=255,
@@ -75,23 +71,15 @@ class Migration(migrations.Migration):
                 ("id", models.BigAutoField(primary_key=True, serialize=False)),
                 (
                     "value",
-                    openedx_learning.lib.fields.MultiCollationCharField(
-                        db_collations={
-                            "mysql": "utf8mb4_unicode_ci",
-                            "sqlite": "NOCASE",
-                        },
+                    openedx_learning.lib.fields.case_insensitive_char_field(
                         help_text="Content of a given tag, occupying the 'value' part of the key:value pair.",
                         max_length=500,
                     ),
                 ),
                 (
                     "external_id",
-                    openedx_learning.lib.fields.MultiCollationCharField(
+                    openedx_learning.lib.fields.case_insensitive_char_field(
                         blank=True,
-                        db_collations={
-                            "mysql": "utf8mb4_unicode_ci",
-                            "sqlite": "NOCASE",
-                        },
                         help_text="Used to link an Open edX Tag with a tag in an externally-defined taxonomy.",
                         max_length=255,
                         null=True,
@@ -126,44 +114,28 @@ class Migration(migrations.Migration):
                 ("id", models.BigAutoField(primary_key=True, serialize=False)),
                 (
                     "object_id",
-                    openedx_learning.lib.fields.MultiCollationCharField(
-                        db_collations={
-                            "mysql": "utf8mb4_unicode_ci",
-                            "sqlite": "NOCASE",
-                        },
+                    openedx_learning.lib.fields.case_insensitive_char_field(
                         help_text="Identifier for the object being tagged",
                         max_length=255,
                     ),
                 ),
                 (
                     "object_type",
-                    openedx_learning.lib.fields.MultiCollationCharField(
-                        db_collations={
-                            "mysql": "utf8mb4_unicode_ci",
-                            "sqlite": "NOCASE",
-                        },
+                    openedx_learning.lib.fields.case_insensitive_char_field(
                         help_text="Type of object being tagged",
                         max_length=255,
                     ),
                 ),
                 (
                     "_name",
-                    openedx_learning.lib.fields.MultiCollationCharField(
-                        db_collations={
-                            "mysql": "utf8mb4_unicode_ci",
-                            "sqlite": "NOCASE",
-                        },
+                    openedx_learning.lib.fields.case_insensitive_char_field(
                         help_text="User-facing label used for this tag, stored in case taxonomy is (or becomes) null. If the taxonomy field is set, then taxonomy.name takes precedence over this field.",
                         max_length=255,
                     ),
                 ),
                 (
                     "_value",
-                    openedx_learning.lib.fields.MultiCollationCharField(
-                        db_collations={
-                            "mysql": "utf8mb4_unicode_ci",
-                            "sqlite": "NOCASE",
-                        },
+                    openedx_learning.lib.fields.case_insensitive_char_field(
                         help_text="User-facing value used for this tag, stored in case tag is null, e.g if taxonomy is free text, or if it becomes null (e.g. if the Tag is deleted). If the tag field is set, then tag.value takes precedence over this field.",
                         max_length=500,
                     ),

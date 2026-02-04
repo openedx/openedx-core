@@ -8,12 +8,13 @@ https://open-edx-proposals.readthedocs.io/en/latest/best-practices/oep-0038-Data
 We have helpers to make case sensitivity consistent across backends. MySQL is
 case-insensitive by default, SQLite and Postgres are case-sensitive.
 """
+
 from __future__ import annotations
 
 import hashlib
 import uuid
 
-from django.db import models
+from django.db import connection, models
 
 from .collations import MultiCollationMixin
 from .validators import validate_utc_datetime
@@ -36,6 +37,49 @@ def create_hash_digest(data_bytes: bytes, num_bytes=20) -> str:
     return hashlib.blake2b(data_bytes, digest_size=num_bytes).hexdigest()
 
 
+def default_case_insensitive_collations_args(**kwargs):
+    # Remove db_index from kwargs if using PostgreSQL to avoid collation issues
+    if connection.vendor == "postgresql":
+        kwargs = {k: v for k, v in kwargs.items() if k != "db_index"}
+    return {
+        "null": False,
+        "db_collations": {
+            "sqlite": "NOCASE",
+            # We're using utf8mb4_unicode_ci to keep MariaDB compatibility,
+            # since their collation support diverges after this. MySQL is now on
+            # utf8mb4_0900_ai_ci based on Unicode 9, while MariaDB has
+            # uca1400_ai_ci based on Unicode 14.
+            "mysql": "utf8mb4_unicode_ci",
+            # PostgreSQL: Using custom case-insensitive collation.
+            # This collation is created via a Django migration using CreateCollation.
+            # It uses the ICU provider with locale 'en-US' and deterministic=False
+            # to provide case-insensitive comparisons. This works with any PostgreSQL
+            # setup (regardless of the database's locale_provider setting) as long as
+            # PostgreSQL was compiled with ICU support (which is standard).
+            # This gives us behavior similar to MySQL's utf8mb4_unicode_ci.
+            "postgresql": "case_insensitive",
+        },
+        **kwargs,
+    }
+
+
+def default_case_sensitive_collations_args(**kwargs):
+    return {
+        "null": False,
+        "db_collations": {
+            "sqlite": "BINARY",
+            "mysql": "utf8mb4_bin",
+            # PostgreSQL: Using "C" collation for case-sensitive, byte-order comparisons.
+            # This is the fastest collation and provides strict case-sensitive matching
+            # similar to MySQL's utf8mb4_bin and SQLite's BINARY.
+            # The "C" collation is always available in PostgreSQL and doesn't depend on
+            # locale settings.
+            "postgresql": "C",
+        },
+        **kwargs,
+    }
+
+
 def case_insensitive_char_field(**kwargs) -> MultiCollationCharField:
     """
     Return a case-insensitive ``MultiCollationCharField``.
@@ -48,22 +92,7 @@ def case_insensitive_char_field(**kwargs) -> MultiCollationCharField:
     You may override any argument that you would normally pass into
     ``MultiCollationCharField`` (which is itself a subclass of ``CharField``).
     """
-    # Set our default arguments
-    final_kwargs = {
-        "null": False,
-        "db_collations": {
-            "sqlite": "NOCASE",
-            # We're using utf8mb4_unicode_ci to keep MariaDB compatibility,
-            # since their collation support diverges after this. MySQL is now on
-            # utf8mb4_0900_ai_ci based on Unicode 9, while MariaDB has
-            # uca1400_ai_ci based on Unicode 14.
-            "mysql": "utf8mb4_unicode_ci",
-        },
-    }
-    # Override our defaults with whatever is passed in.
-    final_kwargs.update(kwargs)
-
-    return MultiCollationCharField(**final_kwargs)
+    return MultiCollationCharField(**default_case_insensitive_collations_args(**kwargs))
 
 
 def case_sensitive_char_field(**kwargs) -> MultiCollationCharField:
@@ -78,18 +107,27 @@ def case_sensitive_char_field(**kwargs) -> MultiCollationCharField:
     You may override any argument that you would normally pass into
     ``MultiCollationCharField`` (which is itself a subclass of ``CharField``).
     """
-    # Set our default arguments
-    final_kwargs = {
-        "null": False,
-        "db_collations": {
-            "sqlite": "BINARY",
-            "mysql": "utf8mb4_bin",
-        },
-    }
-    # Override our defaults with whatever is passed in.
-    final_kwargs.update(kwargs)
+    return MultiCollationCharField(**default_case_sensitive_collations_args(**kwargs))
 
-    return MultiCollationCharField(**final_kwargs)
+
+def case_insensitive_text_field(**kwargs) -> MultiCollationTextField:
+    """
+    Return a case-insensitive ``MultiCollationTextField``.
+
+    You may override any argument that you would normally pass into
+    ``MultiCollationTextField`` (which is itself a subclass of ``TextField``).
+    """
+    return MultiCollationTextField(**default_case_insensitive_collations_args(**kwargs))
+
+
+def case_sensitive_text_field(**kwargs) -> MultiCollationTextField:
+    """
+    Return a case-sensitive ``MultiCollationTextField``.
+
+    You may override any argument that you would normally pass into
+    ``MultiCollationTextField`` (which is itself a subclass of ``TextField``).
+    """
+    return MultiCollationTextField(**default_case_sensitive_collations_args(**kwargs))
 
 
 def immutable_uuid_field() -> models.UUIDField:
@@ -190,7 +228,7 @@ class MultiCollationCharField(MultiCollationMixin, models.CharField):
 
     Django's CharField already supports specifying the database collation, but
     that only works with a single value. So there would be no way to say, "Use
-    utf8mb4_bin for MySQL, and BINARY if we're running SQLite." This is a
+    utf8mb4_bin for MySQL, BINARY for SQLite, and C for PostgreSQL." This is a
     problem because we run tests in SQLite (and may potentially run more later).
     It's also a problem if we ever want to support other database backends, like
     PostgreSQL. Even MariaDB is starting to diverge from MySQL in terms of what

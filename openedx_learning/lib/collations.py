@@ -2,8 +2,9 @@
 This module has collation-related code to allow us to attach collation settings
 to specific fields on a per-database-vendor basis. This used by the ``fields``
 module in order to specify field types have have normalized behavior between
-SQLite and MySQL (see fields.py for more details).
+SQLite, MySQL, and PostgreSQL (see fields.py for more details).
 """
+
 from django.db import models
 
 
@@ -23,8 +24,9 @@ class MultiCollationMixin:
         collations, like::
 
           {
-            'msyql': 'utf8mb4_bin',
-            'sqlite': 'BINARY'
+            'mysql': 'utf8mb4_bin',
+            'sqlite': 'BINARY',
+            'postgresql': 'C'
           }
 
         It is an error to pass in a CharField-style ``db_collation``. I
@@ -42,7 +44,7 @@ class MultiCollationMixin:
 
         We examine this field's ``db_collations`` attribute and return the
         collation that maps to ``connection.vendor``. This will typically be
-        'mysql' or 'sqlite'.
+        'mysql', 'sqlite', or 'postgresql'.
         """
         db_params = models.Field.db_parameters(self, connection)
 

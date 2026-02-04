@@ -24,7 +24,7 @@ class Migration(migrations.Migration):
                 ('size', models.PositiveBigIntegerField(validators=[django.core.validators.MaxValueValidator(50000000)])),
                 ('hash_digest', models.CharField(editable=False, max_length=40)),
                 ('has_file', models.BooleanField()),
-                ('text', openedx_learning.lib.fields.MultiCollationTextField(blank=True, db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, max_length=50000, null=True)),
+                ('text', openedx_learning.lib.fields.case_insensitive_text_field(blank=True, max_length=50000, null=True)),
                 ('created', models.DateTimeField(validators=[openedx_learning.lib.validators.validate_utc_datetime])),
             ],
             options={
@@ -36,9 +36,9 @@ class Migration(migrations.Migration):
             name='MediaType',
             fields=[
                 ('id', models.AutoField(primary_key=True, serialize=False)),
-                ('type', openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, max_length=127)),
-                ('sub_type', openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, max_length=127)),
-                ('suffix', openedx_learning.lib.fields.MultiCollationCharField(blank=True, db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, max_length=127)),
+                ('type', openedx_learning.lib.fields.case_insensitive_char_field(max_length=127)),
+                ('sub_type', openedx_learning.lib.fields.case_insensitive_char_field(max_length=127)),
+                ('suffix', openedx_learning.lib.fields.case_insensitive_char_field(blank=True, max_length=127)),
             ],
         ),
         migrations.AddConstraint(

@@ -14,8 +14,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name="objecttag",
             name="object_id",
-            field=openedx_learning.lib.fields.MultiCollationCharField(
-                db_collations={"mysql": "utf8mb4_unicode_ci", "sqlite": "NOCASE"},
+            field=openedx_learning.lib.fields.case_insensitive_char_field(
                 db_index=True,
                 editable=False,
                 help_text="Identifier for the object being tagged",

@@ -28,7 +28,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='collection',
             name='title',
-            field=openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, default='Collection', help_text='The title of the collection.', max_length=500),
+            field=openedx_learning.lib.fields.case_insensitive_char_field(default='Collection', help_text='The title of the collection.', max_length=500),
             preserve_default=False,
         ),
         migrations.AlterField(
@@ -39,7 +39,7 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='collection',
             name='description',
-            field=openedx_learning.lib.fields.MultiCollationTextField(blank=True, db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, default='', help_text='Provides extra information for the user about this collection.', max_length=10000),
+            field=openedx_learning.lib.fields.case_insensitive_text_field(blank=True, default='', help_text='Provides extra information for the user about this collection.', max_length=10000),
         ),
         migrations.AlterField(
             model_name='collection',

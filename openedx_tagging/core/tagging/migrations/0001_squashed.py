@@ -34,7 +34,7 @@ class Migration(migrations.Migration):
             name='Taxonomy',
             fields=[
                 ('id', models.BigAutoField(primary_key=True, serialize=False)),
-                ('name', openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, db_index=True, help_text='User-facing label used when applying tags from this taxonomy to Open edX objects.', max_length=255)),
+                ('name', openedx_learning.lib.fields.case_insensitive_char_field(db_index=True, help_text='User-facing label used when applying tags from this taxonomy to Open edX objects.', max_length=255)),
                 ('description', openedx_learning.lib.fields.MultiCollationTextField(blank=True, help_text='Provides extra information for the user when applying tags from this taxonomy to an object.')),
                 ('enabled', models.BooleanField(default=True, help_text='Only enabled taxonomies will be shown to authors.')),
                 ('allow_multiple', models.BooleanField(default=True, help_text='Indicates that multiple tags from this taxonomy may be added to an object.')),
@@ -60,8 +60,8 @@ class Migration(migrations.Migration):
             name='Tag',
             fields=[
                 ('id', models.BigAutoField(primary_key=True, serialize=False)),
-                ('value', openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, help_text="Content of a given tag, occupying the 'value' part of the key:value pair.", max_length=500)),
-                ('external_id', openedx_learning.lib.fields.MultiCollationCharField(blank=True, db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, help_text='Used to link an Open edX Tag with a tag in an externally-defined taxonomy.', max_length=255, null=True)),
+                ('value', openedx_learning.lib.fields.case_insensitive_char_field(help_text="Content of a given tag, occupying the 'value' part of the key:value pair.", max_length=500)),
+                ('external_id', openedx_learning.lib.fields.case_insensitive_char_field(blank=True, help_text='Used to link an Open edX Tag with a tag in an externally-defined taxonomy.', max_length=255, null=True)),
                 ('parent', models.ForeignKey(default=None, help_text='Tag that lives one level up from the current tag, forming a hierarchy.', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='children', to='oel_tagging.tag')),
                 ('taxonomy', models.ForeignKey(default=None, help_text='Namespace and rules for using a given set of tags.', null=True, on_delete=django.db.models.deletion.CASCADE, to='oel_tagging.taxonomy')),
             ],
@@ -70,9 +70,9 @@ class Migration(migrations.Migration):
             name='ObjectTag',
             fields=[
                 ('id', models.BigAutoField(primary_key=True, serialize=False)),
-                ('object_id', openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_bin', 'sqlite': 'BINARY'}, db_index=True, editable=False, help_text='Identifier for the object being tagged', max_length=255)),
-                ('_name', openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, help_text='User-facing label used for this tag, stored in case taxonomy is (or becomes) null. If the taxonomy field is set, then taxonomy.name takes precedence over this field.', max_length=255)),
-                ('_value', openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_unicode_ci', 'sqlite': 'NOCASE'}, help_text='User-facing value used for this tag, stored in case tag is null, e.g if taxonomy is free text, or if it becomes null (e.g. if the Tag is deleted). If the tag field is set, then tag.value takes precedence over this field.', max_length=500)),
+                ('object_id', openedx_learning.lib.fields.case_sensitive_char_field(db_index=True, editable=False, help_text='Identifier for the object being tagged', max_length=255)),
+                ('_name', openedx_learning.lib.fields.case_insensitive_char_field(help_text='User-facing label used for this tag, stored in case taxonomy is (or becomes) null. If the taxonomy field is set, then taxonomy.name takes precedence over this field.', max_length=255)),
+                ('_value', openedx_learning.lib.fields.case_insensitive_char_field(help_text='User-facing value used for this tag, stored in case tag is null, e.g if taxonomy is free text, or if it becomes null (e.g. if the Tag is deleted). If the tag field is set, then tag.value takes precedence over this field.', max_length=500)),
                 ('tag', models.ForeignKey(blank=True, default=None, help_text="Tag associated with this object tag. Provides the tag's 'value' if set.", null=True, on_delete=django.db.models.deletion.SET_NULL, to='oel_tagging.tag')),
                 ('taxonomy', models.ForeignKey(default=None, help_text="Taxonomy that this object tag belongs to. Used for validating the tag and provides the tag's 'name' if set.", null=True, on_delete=django.db.models.deletion.SET_NULL, to='oel_tagging.taxonomy')),
             ],

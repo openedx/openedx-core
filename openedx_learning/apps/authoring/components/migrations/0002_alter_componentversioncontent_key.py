@@ -15,6 +15,6 @@ class Migration(migrations.Migration):
         migrations.AlterField(
             model_name='componentversioncontent',
             name='key',
-            field=openedx_learning.lib.fields.MultiCollationCharField(db_collations={'mysql': 'utf8mb4_bin', 'sqlite': 'BINARY'}, db_column='_key', max_length=500),
+            field=openedx_learning.lib.fields.case_sensitive_char_field(db_column='_key', max_length=500),
         ),
     ]
