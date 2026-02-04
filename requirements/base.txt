@@ -6,7 +6,7 @@
 #
 amqp==5.3.1
     # via kombu
-asgiref==3.11.0
+asgiref==3.11.1
     # via django
 attrs==25.4.0
     # via -r requirements/base.in
@@ -35,9 +35,9 @@ click-plugins==1.1.1.2
     # via celery
 click-repl==0.3.0
     # via celery
-cryptography==46.0.3
+cryptography==46.0.4
     # via pyjwt
-django==5.2.10
+django==5.2.11
     # via
     #   -c https://raw.githubusercontent.com/edx/edx-lint/master/edx_lint/files/common_constraints.txt
     #   -r requirements/base.in
@@ -76,11 +76,11 @@ packaging==26.0
     # via kombu
 prompt-toolkit==3.0.52
     # via click-repl
-psutil==7.2.1
+psutil==7.2.2
     # via edx-django-utils
 pycparser==3.0
     # via cffi
-pyjwt[crypto]==2.10.1
+pyjwt[crypto]==2.11.0
     # via
     #   drf-jwt
     #   edx-drf-extensions
@@ -119,5 +119,5 @@ vine==5.1.0
     #   amqp
     #   celery
     #   kombu
-wcwidth==0.3.5
+wcwidth==0.5.3
     # via prompt-toolkit

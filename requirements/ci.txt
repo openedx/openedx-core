@@ -4,7 +4,7 @@
 #
 #    make upgrade
 #
-cachetools==6.2.5
+cachetools==7.0.0
     # via tox
 chardet==5.2.0
     # via tox
@@ -40,7 +40,7 @@ pygments==2.19.2
     # via rich
 pyproject-api==1.10.0
     # via tox
-rich==14.3.1
+rich==14.3.2
     # via import-linter
 tox==4.34.1
     # via -r requirements/ci.in
