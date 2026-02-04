@@ -1,4 +1,4 @@
-20. Where in the codebase should CBE assessment criteria go?
+21. Where in the codebase should CBE assessment criteria go?
 ============================================================
 
 Context
