@@ -133,6 +133,8 @@ django==5.2.11
     #   -r requirements/quality.txt
     #   django-crum
     #   django-debug-toolbar
+    #   django-model-utils
+    #   django-simple-history
     #   django-stubs
     #   django-stubs-ext
     #   django-waffle
@@ -141,6 +143,7 @@ django==5.2.11
     #   edx-django-utils
     #   edx-drf-extensions
     #   edx-i18n-tools
+    #   edx-organizations
 django-crum==0.7.9
     # via
     #   -r requirements/quality.txt
@@ -149,6 +152,14 @@ django-debug-toolbar==6.2.0
     # via
     #   -r requirements/dev.in
     #   -r requirements/quality.txt
+django-model-utils==5.0.0
+    # via
+    #   -r requirements/quality.txt
+    #   edx-organizations
+django-simple-history==3.11.0
+    # via
+    #   -r requirements/quality.txt
+    #   edx-organizations
 django-stubs==5.2.9
     # via
     #   -r requirements/quality.txt
@@ -167,6 +178,7 @@ djangorestframework==3.16.1
     #   -r requirements/quality.txt
     #   drf-jwt
     #   edx-drf-extensions
+    #   edx-organizations
 djangorestframework-stubs==3.16.8
     # via -r requirements/quality.txt
 dnspython==2.8.0
@@ -186,7 +198,9 @@ edx-django-utils==8.0.1
     #   -r requirements/quality.txt
     #   edx-drf-extensions
 edx-drf-extensions==10.6.0
-    # via -r requirements/quality.txt
+    # via
+    #   -r requirements/quality.txt
+    #   edx-organizations
 edx-i18n-tools==1.9.0
     # via -r requirements/dev.in
 edx-lint==5.6.0
@@ -195,6 +209,9 @@ edx-opaque-keys==3.0.0
     # via
     #   -r requirements/quality.txt
     #   edx-drf-extensions
+    #   edx-organizations
+edx-organizations==7.3.0
+    # via -r requirements/quality.txt
 fastapi==0.131.0
     # via
     #   -r requirements/quality.txt
@@ -330,6 +347,10 @@ pathspec==1.0.4
     # via
     #   -r requirements/quality.txt
     #   mypy
+pillow==12.1.0
+    # via
+    #   -r requirements/quality.txt
+    #   edx-organizations
 pip-tools==7.5.3
     # via -r requirements/pip-tools.txt
 platformdirs==4.9.2
