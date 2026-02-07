@@ -28,9 +28,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 # Model references to remove
-from openedx_learning.apps.openedx_content.applets.components import api as components_api
-from openedx_learning.apps.openedx_content.applets.contents import api as contents_api
-from openedx_learning.apps.openedx_content.applets.publishing import api as publishing_api
+from openedx_content import api as content_api
 
 SUPPORTED_TYPES = ["problem", "video", "html"]
 logger = logging.getLogger(__name__)
@@ -81,20 +79,20 @@ class Command(BaseCommand):
         now = datetime.now(timezone.utc)
         title = self.get_course_title()
 
-        if publishing_api.learning_package_exists(learning_package_key):
+        if content_api.learning_package_exists(learning_package_key):
             raise CommandError(
                 f"{learning_package_key} already exists. "
                 "This command currently only supports initial import."
             )
 
         with transaction.atomic():
-            self.learning_package = publishing_api.create_learning_package(
+            self.learning_package = content_api.create_learning_package(
                 learning_package_key, title, created=now,
             )
             for block_type in SUPPORTED_TYPES:
                 self.import_block_type(block_type, now) #, publish_log_entry)
 
-            publishing_api.publish_all_drafts(
+            content_api.publish_all_drafts(
                 self.learning_package.id,
                 message="Initial Import from load_components script"
             )
@@ -116,13 +114,13 @@ class Command(BaseCommand):
             logger.warning(f'  Static reference not found: "{real_path}"')
             return  # Might as well bail if we can't find the file.
 
-        content = contents_api.get_or_create_file_content(
+        content = content_api.get_or_create_file_content(
             self.learning_package.id,
             data=data_bytes,
             mime_type=mime_type,
             created=now,
         )
-        components_api.create_component_version_content(
+        content_api.create_component_version_content(
             component_version,
             content.id,
             key=key,
@@ -138,7 +136,7 @@ class Command(BaseCommand):
         # outside of tag declarations as well.
         static_files_regex = re.compile(r"""['"]\/static\/(.+?)["'\?]""")
         block_data_path = self.course_data_path / block_type_name
-        block_type = components_api.get_or_create_component_type("xblock.v1", block_type_name)
+        block_type = content_api.get_or_create_component_type("xblock.v1", block_type_name)
 
         for xml_file_path in block_data_path.glob("*.xml"):
             components_found += 1
@@ -154,7 +152,7 @@ class Command(BaseCommand):
                 continue
 
             display_name = block_root.attrib.get("display_name", "")
-            _component, component_version = components_api.create_component_and_version(
+            _component, component_version = content_api.create_component_and_version(
                 self.learning_package.id,
                 component_type=block_type,
                 local_key=local_key,
@@ -165,14 +163,14 @@ class Command(BaseCommand):
 
             # Create the Content entry for the raw data...
             text = xml_file_path.read_text('utf-8')
-            text_content, _created = contents_api.get_or_create_text_content(
+            text_content, _created = content_api.get_or_create_text_content(
                 self.learning_package.id,
                 text=text,
                 mime_type=f"application/vnd.openedx.xblock.v1.{block_type_name}+xml",
                 created=now,
             )
             # Add the OLX source text to the ComponentVersion
-            components_api.create_component_version_content(
+            content_api.create_component_version_content(
                 component_version,
                 text_content.pk,
                 key="block.xml",

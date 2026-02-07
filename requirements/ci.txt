@@ -4,42 +4,18 @@
 #
 #    make upgrade
 #
-annotated-doc==0.0.4
-    # via fastapi
-annotated-types==0.7.0
-    # via pydantic
-anyio==4.12.1
-    # via starlette
 cachetools==7.0.0
     # via tox
 chardet==5.2.0
     # via tox
-click==8.3.1
-    # via
-    #   import-linter
-    #   uvicorn
 colorama==0.4.6
     # via tox
 distlib==0.4.0
     # via virtualenv
-fastapi==0.128.5
-    # via import-linter
 filelock==3.20.3
     # via
     #   tox
     #   virtualenv
-grimp==3.14
-    # via import-linter
-h11==0.16.0
-    # via uvicorn
-idna==3.11
-    # via anyio
-import-linter==2.10
-    # via -r requirements/ci.in
-markdown-it-py==4.0.0
-    # via rich
-mdurl==0.1.2
-    # via markdown-it-py
 packaging==26.0
     # via
     #   pyproject-api
@@ -50,35 +26,9 @@ platformdirs==4.5.1
     #   virtualenv
 pluggy==1.6.0
     # via tox
-pydantic==2.12.5
-    # via fastapi
-pydantic-core==2.41.5
-    # via pydantic
-pygments==2.19.2
-    # via rich
 pyproject-api==1.10.0
     # via tox
-rich==14.3.2
-    # via import-linter
-starlette==0.52.1
-    # via fastapi
 tox==4.34.1
     # via -r requirements/ci.in
-typing-extensions==4.15.0
-    # via
-    #   anyio
-    #   fastapi
-    #   grimp
-    #   import-linter
-    #   pydantic
-    #   pydantic-core
-    #   starlette
-    #   typing-inspection
-typing-inspection==0.4.2
-    # via
-    #   fastapi
-    #   pydantic
-uvicorn==0.40.0
-    # via import-linter
 virtualenv==20.36.1
     # via tox

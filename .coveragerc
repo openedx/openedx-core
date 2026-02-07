@@ -2,8 +2,7 @@
 branch = True
 data_file = .coverage
 source =
-	openedx_learning
-	openedx_tagging
+    src
 omit =
     test_settings
     **/migrations/*

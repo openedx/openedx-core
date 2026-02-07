@@ -7,7 +7,7 @@ from pathlib import Path
 
 def folder_to_inmemory_zip(folder_path: str) -> zipfile.ZipFile:
     """
-    Reads the contents of a folder and returns an in-memory ZipFile object.
+    Read the contents of a folder and returns an in-memory ZipFile object.
 
     Args:
         folder_path (str): Path to the folder to zip.

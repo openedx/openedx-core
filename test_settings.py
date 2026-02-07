@@ -7,7 +7,7 @@ Django applications, so these settings will not be used.
 
 from os.path import abspath, dirname, join
 
-from openedx_learning.api.django import openedx_learning_apps_to_install
+from openedx_content.settings_api import openedx_content_backcompat_apps_to_install
 
 
 def root(*args):
@@ -53,8 +53,9 @@ INSTALLED_APPS = [
     # django-rules based authorization
     'rules.apps.AutodiscoverRulesConfig',
     # Our own apps
-    *openedx_learning_apps_to_install(),
-    "openedx_tagging.core.tagging",
+    "openedx_tagging",
+    "openedx_content",
+    *openedx_content_backcompat_apps_to_install(),
 ]
 
 AUTHENTICATION_BACKENDS = [
@@ -62,7 +63,7 @@ AUTHENTICATION_BACKENDS = [
 ]
 
 LOCALE_PATHS = [
-    root("openedx_learning", "conf", "locale"),
+    root("conf", "locale"),
 ]
 
 ROOT_URLCONF = "projects.urls"
@@ -73,14 +74,14 @@ USE_TZ = True
 
 MEDIA_ROOT = root("test_media")
 
-######################### Django Rest Framework ########################
+# ========================= Django Rest Framework ========================
 
 REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'edx_rest_framework_extensions.paginators.DefaultPagination',
     'PAGE_SIZE': 10,
 }
 
-######################## LEARNING CORE SETTINGS ########################
+# ========================= LEARNING CORE SETTINGS ========================
 
 OPENEDX_LEARNING = {
     'MEDIA': {

@@ -7,29 +7,22 @@ Open edX Learning Core (and Tagging)
 Overview
 --------
 
-The ``openedx_learning`` package holds Django apps that represent core learning concepts and data models that have been extracted from edx-platform. At the moment, this repo also contains the ``openedx_tagging`` package, but this will likely be moved out in the future.
+The ``openedx-learning`` project holds Django apps that represent core learning platform concepts.
 
 Motivation
 ----------
 
-The short term goal of this project is to create a small, extensible core that is easier to reason about and write extensions for than edx-platform. The longer term goal is to create a more nimble core learning platform, enabling rapid experimentation and drastic changes to the learner experience that are difficult to implement with Open edX today.
+The short term goal of this project is to create a small, extensible core that is easier to reason about and write extensions for than openedx-platform. The longer term goal is to create a more nimble core learning platform, enabling rapid experimentation and drastic changes to the learner experience that are difficult to implement with Open edX today.
 
-Replacing edx-platform is explicitly *not* a goal of this project, as only a small fraction of the concepts in edx-platform make sense to carry over here. When these core concepts are extracted and the data migrated, edx-platform will import apps from this repo and make use of their public in-process APIs.
+Replacing openedx-platform is explicitly *not* a goal of this project, as only a small fraction of the concepts in openedx-platform make sense to carry over here. When these core concepts are extracted and the data migrated, openedx-platform will import apps from this repo and make use of their public in-process APIs.
 
 Architecture
 ------------
 
-Parts
-~~~~~
-
-* ``openedx_learning.lib`` is for shared utilities, and may include things like custom field types, plugin registration code, etc.
-* ``openedx_learning.apps`` contains our Learning Core Django apps, where foundational data structures and APIs will live. The first of these is ``authoring``, which holds apps related to the editing and publishing of learning content.
-* ``openedx_tagging.core`` contains the core Tagging app, which provides data structures and apis for tagging Open edX objects.
-
 Learning Core Package Dependencies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Learning Core code should never import from ``edx-platform``.
+Learning Core code should never import from ``openedx-platform``.
 
 We want to be very strict about dependency management internally as well. Please read the `.importlinter config file <.importlinter>`_ file and the `Python API Conventions ADR <docs/decisions/0016-python-public-api-conventions>`_ for more details.
 
@@ -56,7 +49,7 @@ The structure of this repo follows [OEP-0049](https://open-edx-proposals.readthe
 Code Overview
 -------------
 
-The ``openedx_learning.apps`` package contains all our Django applications.
+The ``src`` folder contains all our Django applications.
 
 Development Workflow
 --------------------

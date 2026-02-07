@@ -1,3 +1,0 @@
-"""
-Open edX Tagging app.
-"""

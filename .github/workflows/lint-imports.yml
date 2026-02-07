@@ -17,13 +17,13 @@ jobs:
       - name: setup python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Install pip
         run: pip install -r requirements/pip.txt
 
       - name: Install Dependencies
-        run: pip install -r requirements/ci.txt
+        run: pip install -e . -r requirements/quality.txt
 
       - name: Analyze imports
         run: lint-imports

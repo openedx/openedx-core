@@ -53,7 +53,7 @@ def is_requirement(line):
     return line and not line.startswith(('-r', '#', '-e', 'git+', '-c'))
 
 
-VERSION = get_version('openedx_learning', '__init__.py')
+VERSION = get_version('src', 'openedx_core', '__init__.py')
 
 if sys.argv[-1] == 'tag':
     print("Tagging the version on github:")
@@ -72,10 +72,8 @@ setup(
     author='David Ormsbee',
     author_email='dave@tcril.org',
     url='https://github.com/openedx/openedx-learning',
-    packages=find_packages(
-        include=['openedx_learning*', 'openedx_tagging*'],
-        exclude=['*.test', '*.tests']
-    ),
+    package_dir={"": "src"},
+    packages=find_packages("src"),
     include_package_data=True,
     install_requires=load_requirements('requirements/base.in'),
     python_requires=">=3.11",

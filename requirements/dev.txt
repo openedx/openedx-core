@@ -10,17 +10,14 @@ amqp==5.3.1
     #   kombu
 annotated-doc==0.0.4
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   fastapi
 annotated-types==0.7.0
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   pydantic
 anyio==4.12.1
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   starlette
 asgiref==3.11.1
@@ -72,7 +69,6 @@ charset-normalizer==3.4.4
     #   requests
 click==8.3.1
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/pip-tools.txt
     #   -r requirements/quality.txt
     #   celery
@@ -118,7 +114,6 @@ cryptography==46.0.4
     # via
     #   -r requirements/quality.txt
     #   pyjwt
-    #   secretstorage
 ddt==1.7.2
     # via -r requirements/quality.txt
 diff-cover==10.2.0
@@ -201,7 +196,6 @@ edx-opaque-keys==3.0.0
     #   edx-drf-extensions
 fastapi==0.128.5
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   import-linter
 filelock==3.20.3
@@ -213,12 +207,10 @@ freezegun==1.5.5
     # via -r requirements/quality.txt
 grimp==3.14
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   import-linter
 h11==0.16.0
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   uvicorn
 id==1.6.1
@@ -227,14 +219,11 @@ id==1.6.1
     #   twine
 idna==3.11
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   anyio
     #   requests
 import-linter==2.10
-    # via
-    #   -r requirements/ci.txt
-    #   -r requirements/quality.txt
+    # via -r requirements/quality.txt
 importlib-metadata==8.7.1
     # via
     #   -r requirements/quality.txt
@@ -259,11 +248,6 @@ jaraco-functools==4.4.0
     # via
     #   -r requirements/quality.txt
     #   keyring
-jeepney==0.9.0
-    # via
-    #   -r requirements/quality.txt
-    #   keyring
-    #   secretstorage
 jinja2==3.1.6
     # via
     #   -r requirements/quality.txt
@@ -289,7 +273,6 @@ lxml-html-clean==0.4.3
     # via lxml
 markdown-it-py==4.0.0
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   rich
 markupsafe==3.0.3
@@ -302,7 +285,6 @@ mccabe==0.7.0
     #   pylint
 mdurl==0.1.2
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   markdown-it-py
 mock==5.2.0
@@ -377,19 +359,16 @@ pycparser==3.0
     #   cffi
 pydantic==2.12.5
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   fastapi
 pydantic-core==2.41.5
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   pydantic
 pydocstyle==6.3.0
     # via -r requirements/quality.txt
 pygments==2.19.2
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   diff-cover
     #   pytest
@@ -480,16 +459,11 @@ rfc3986==2.0.0
     #   twine
 rich==14.3.2
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   import-linter
     #   twine
 rules==3.5
     # via -r requirements/quality.txt
-secretstorage==3.5.0
-    # via
-    #   -r requirements/quality.txt
-    #   keyring
 semantic-version==2.10.0
     # via
     #   -r requirements/quality.txt
@@ -510,7 +484,6 @@ sqlparse==0.5.5
     #   django-debug-toolbar
 starlette==0.52.1
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   fastapi
 stevedore==5.6.0
@@ -538,7 +511,6 @@ types-pyyaml==6.0.12.20250915
     #   djangorestframework-stubs
 typing-extensions==4.15.0
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   anyio
     #   django-stubs
@@ -555,7 +527,6 @@ typing-extensions==4.15.0
     #   typing-inspection
 typing-inspection==0.4.2
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   fastapi
     #   pydantic
@@ -575,7 +546,6 @@ urllib3==2.6.3
     #   twine
 uvicorn==0.40.0
     # via
-    #   -r requirements/ci.txt
     #   -r requirements/quality.txt
     #   import-linter
 vine==5.1.0

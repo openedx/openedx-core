@@ -2,5 +2,4 @@ include CHANGELOG.rst
 include LICENSE.txt
 include README.rst
 include requirements/base.in
-recursive-include openedx_learning *.html *.png *.gif *.js *.css *.jpg *.jpeg *.svg *.py
-recursive-include openedx_tagging *.html *.png *.gif *.js *.css *.jpg *.jpeg *.svg *.py *.yaml *.json *.csv
+recursive-include src *.html *.png *.gif *.js *.css *.jpg *.jpeg *.svg *.py *.yaml *.json *.csv

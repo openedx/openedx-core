@@ -17,7 +17,7 @@ docker run --rm \
     -p 3306:3306 mysql:8
 """
 
-from test_settings import *
+from test_settings import *  # pylint: disable=wildcard-import
 
 DATABASES = {
     "default": {

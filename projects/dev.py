@@ -4,7 +4,7 @@ Django settings for testing and development purposes
 from __future__ import annotations
 from pathlib import Path
 
-from openedx_learning.api.django import openedx_learning_apps_to_install
+from openedx_content.settings_api import openedx_content_backcompat_apps_to_install
 
 # Build paths inside the project like this: BASE_DIR / {dir_name} /
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -34,17 +34,16 @@ INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.admindocs",
 
-    # Learning Core Apps
-    *openedx_learning_apps_to_install(),
+    # Our Apps
+    "openedx_tagging",
+    "openedx_content",
+    *openedx_content_backcompat_apps_to_install(),
 
     # REST API
     "rest_framework",
 
     # django-rules based authorization
     'rules.apps.AutodiscoverRulesConfig',
-
-    # Tagging Core Apps
-    "openedx_tagging.core.tagging.apps.TaggingConfig",
 
     # Debugging
     "debug_toolbar",

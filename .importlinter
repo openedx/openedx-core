@@ -1,59 +1,64 @@
-# openedx_learning is intended to be a library of apps used across multiple
+# This repo is intended to be a library of apps used across multiple
 # projects, and we want to ensure certain dependency relationships. Please
 # think through any changes you make to this file carefully, and don't just
 # casually modify these linting rules to "fix the build".
+
 [importlinter]
-root_package = openedx_learning
+root_packages =
+    openedx_content
+    openedx_tagging
+    openedx_django_lib
+    openedx_core
 
-# This is the most basic layering for openedx_learning.
-#
-# The "lib" package is meant for low level utilities, field definitions, and the
-# like, so it's at the bottom layer.
-#
-# The "core" apps are meant to be the heart of our system, with foundational
-# data models and plugin interfaces. It can rely on "lib" utilities.
-#
-# The "contrib" apps are meant to be apps that could easily be created outside
-# of openedx_learning in a separate repository, but are bundled here because
-# we think they'll be generally useful. These apps may call into "core" or "lib"
-# apps, but not the other way around. The "core" apps should *never* import from
-# "contrib".
-[importlinter:contract:openedx_learning_layering]
-name = Lib / Core / Contrib Layering
+# This is layering within our top-level src folders (mostly Django apps).
+# This should be updated as new Django apps are added.
+# It's possible this might need to grow into multiple rules.
+[importlinter:contract:src_layering]
+name = "top-level source folders are layered correctly"
 type = layers
-layers=
-    openedx_learning.contrib
-    openedx_learning.apps
-    openedx_learning.lib
+layers =
+    # Content is currently the highest-level thing in this repo.
+    # Over time, we may add apps "above" or "below" this.
+    openedx_content
 
-# This is layering within our Authoring apps. Every new app should be added to
+    # Tagging is very simple & fundamental. Should probably not depend on any other Django apps.
+    openedx_tagging
+
+    # Django utilities. Should not dependend on any of the real apps (above).
+    openedx_django_lib
+
+    # This just a empty packages to expose the __version__ number.
+    # Should not depend on anything.
+    openedx_core
+
+# This is layering within our Content applets. Every new applet should be added to
 # this list when it it created.
-[importlinter:contract:core_apps_layering]
-name = Authoring App Dependency Layering
+[importlinter:contract:content_applet_layering]
+name = "openedx_content's internal applets are layered correctly"
 type = layers
 layers=
-    # The public authoring API is at the top–none of the apps should call to it.
-    openedx_learning.api.authoring
+    # The public API is at the top. None of the apps should call to it.
+    openedx_content.api
 
     # The "backup_restore" app handle the new export and import mechanism.
-    openedx_learning.apps.openedx_content.applets.backup_restore
+    openedx_content.applets.backup_restore
 
     # The "components" app is responsible for storing versioned Components,
     # which is Open edX Studio terminology maps to things like individual
     # Problems, Videos, and blocks of HTML text. This is also the type we would
     # associate with a single "leaf" XBlock–one that is not a container type and
     # has no child elements.
-    openedx_learning.apps.openedx_content.applets.components
+    openedx_content.applets.components
 
     # The "contents" app stores the simplest pieces of binary and text data,
     # without versioning information. These belong to a single Learning Package.
-    openedx_learning.apps.openedx_content.applets.contents
+    openedx_content.applets.contents
 
     # The "collections" app stores arbitrary groupings of PublishableEntities.
     # Its only dependency should be the publishing app.
-    openedx_learning.apps.openedx_content.applets.collections
+    openedx_content.applets.collections
 
     # The lowest layer is "publishing", which holds the basic primitives needed
     # to create Learning Packages and manage the draft and publish states for
     # various types of content.
-    openedx_learning.apps.openedx_content.applets.publishing
+    openedx_content.applets.publishing

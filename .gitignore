@@ -54,8 +54,8 @@ output/*/index.html
 # Sphinx
 docs/_build
 docs/modules.rst
-docs/openedx_learning.rst
-docs/openedx_learning.*.rst
+docs/openedx_content.rst
+docs/openedx_content.*.rst
 
 # Private requirements
 requirements/private.in
@@ -66,6 +66,7 @@ dev.db*
 
 # virtualenv
 venv/
+.venv/
 
 ### Visual Studio Code ###
 # Generally ignore VS Code configuration, except... 
