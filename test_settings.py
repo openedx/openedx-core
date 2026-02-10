@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.sessions",
     "django.contrib.staticfiles",
+    "openedx_events",
     # Admin
     'django.contrib.admin',
     'django.contrib.admindocs',
@@ -55,6 +56,16 @@ INSTALLED_APPS = [
     # Our own apps
     *openedx_learning_apps_to_install(),
     "openedx_tagging.core.tagging",
+    "openedx_learning.apps.authoring.collections.apps.CollectionsConfig",
+    "openedx_learning.apps.authoring.components.apps.ComponentsConfig",
+    "openedx_learning.apps.authoring.contents.apps.ContentsConfig",
+    "openedx_learning.apps.authoring.publishing.apps.PublishingConfig",
+    "openedx_tagging.core.tagging.apps.TaggingConfig",
+    "openedx_learning.apps.authoring.sections.apps.SectionsConfig",
+    "openedx_learning.apps.authoring.subsections.apps.SubsectionsConfig",
+    "openedx_learning.apps.authoring.units.apps.UnitsConfig",
+    "openedx_learning.apps.authoring.backup_restore.apps.BackupRestoreConfig",
+    "openedx_learning.apps.assessment_criteria.apps.AssessmentCriteriaConfig",
 ]
 
 AUTHENTICATION_BACKENDS = [
