@@ -77,6 +77,11 @@ setup(
     install_requires=load_requirements('requirements/base.in'),
     python_requires=">=3.11",
     license="AGPL 3.0",
+    entry_points={
+        'context_key': [
+            'path-v1 = openedx_content.applets.pathways.keys:PathwayKey',
+        ],
+    },
     zip_safe=False,
     keywords='Python edx',
     classifiers=[
