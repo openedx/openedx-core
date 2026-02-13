@@ -10,7 +10,7 @@ root_packages =
     openedx_django_lib
     openedx_core
 
-# This is layering within our top-level src folders (mostly Django apps).
+# This is layering between our top-level src folders (mostly Django apps).
 # This should be updated as new Django apps are added.
 # It's possible this might need to grow into multiple rules.
 [importlinter:contract:src_layering]
@@ -27,34 +27,34 @@ layers =
     # Django utilities. Should not dependend on any of the real apps (above).
     openedx_django_lib
 
-    # This just a empty packages to expose the __version__ number.
+    # This just an empty shell package, to expose the __version__ number.
     # Should not depend on anything.
     openedx_core
 
-# This is layering within our Content applets. Every new applet should be added to
-# this list when it it created.
+# This is "applet" layering, within our Content djangoapp.
+# Every new applet should be added to  this list when it it created.
 [importlinter:contract:content_applet_layering]
 name = "openedx_content's internal applets are layered correctly"
 type = layers
 layers=
-    # The public API is at the top. None of the apps should call to it.
+    # The public API is at the top. None of the internal applets should call to it.
     openedx_content.api
 
-    # The "backup_restore" app handle the new export and import mechanism.
+    # The "backup_restore" applet handles the new export and import mechanism.
     openedx_content.applets.backup_restore
 
-    # The "components" app is responsible for storing versioned Components,
-    # which is Open edX Studio terminology maps to things like individual
+    # The "components" applet is responsible for storing versioned Components,
+    # which in Open edX Studio terminology maps to things like individual
     # Problems, Videos, and blocks of HTML text. This is also the type we would
     # associate with a single "leaf" XBlock–one that is not a container type and
     # has no child elements.
     openedx_content.applets.components
 
-    # The "contents" app stores the simplest pieces of binary and text data,
+    # The "contents" applet stores the simplest pieces of binary and text data,
     # without versioning information. These belong to a single Learning Package.
     openedx_content.applets.contents
 
-    # The "collections" app stores arbitrary groupings of PublishableEntities.
+    # The "collections" applet stores arbitrary groupings of PublishableEntities.
     # Its only dependency should be the publishing app.
     openedx_content.applets.collections
 
