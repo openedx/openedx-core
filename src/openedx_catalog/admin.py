@@ -1,0 +1,84 @@
+"""
+Django Admin pages for openedx_catalog.
+"""
+
+import datetime
+
+from django.contrib import admin
+from django.db.models import Count
+from django.urls import reverse
+from django.utils.html import format_html
+from django.utils.translation import gettext_lazy as _
+
+from .models import CatalogCourse, CourseRun
+
+
+class CatalogCourseAdmin(admin.ModelAdmin):
+    """
+    The CatalogCourse model admin.
+    """
+
+    list_filter = ["org__short_name", "language"]
+    list_display = ["display_name", "org_display", "course_code", "runs_summary", "created_date", "language"]
+
+    def get_readonly_fields(self, request, obj: CatalogCourse | None = None):
+        if obj:  # editing an existing object
+            return self.readonly_fields + ("org", "course_code")
+        return self.readonly_fields
+
+    def get_queryset(self, request):
+        """Add the 'run_count' to the list_display queryset"""
+        qs = super().get_queryset(request)
+        qs = qs.annotate(run_count=Count("runs"))
+        return qs
+
+    @admin.display(description="Organization", ordering="org__short_name")
+    def org_display(self, obj: CatalogCourse) -> str:
+        """Display the organization, only showing the short_name if different from full name"""
+        if obj.org.name == obj.org.short_name:
+            return obj.org.short_name
+        return str(obj.org)
+
+    @admin.display(description=_("Created"), ordering="created")
+    def created_date(self, obj: CatalogCourse) -> datetime.date:
+        """Display the created date without the timestamp"""
+        return obj.created.date()
+
+    @admin.display(description=_("Runs"))
+    def runs_summary(self, obj: CatalogCourse) -> str:
+        """Summarize the runs"""
+        if obj.run_count == 0:
+            return "-"
+        url = reverse("admin:openedx_catalog_courserun_changelist") + f"?catalog_course={obj.pk}"
+        first_few_runs = obj.runs.order_by("-run")[:3]
+        runs_summary = ", ".join(run.run for run in first_few_runs)
+        if obj.run_count > 4:
+            runs_summary += f", ... ({obj.runs_count})"
+        return format_html('<a href="{}">{}</a>', url, runs_summary)
+
+
+admin.site.register(CatalogCourse, CatalogCourseAdmin)
+
+
+class CourseRunAdmin(admin.ModelAdmin):
+    """
+    The CourseRun model admin.
+    """
+
+    list_display = ["display_name", "created_date", "catalog_course", "run", "org_code"]
+    readonly_fields = ("course_id",)
+    # There may be thousands of catalog courses, so don't use <select>
+    raw_id_fields = ["catalog_course"]
+
+    def get_readonly_fields(self, request, obj: CourseRun | None = None):
+        if obj:  # editing an existing object
+            return self.readonly_fields + ("run",)
+        return self.readonly_fields
+
+    @admin.display(description=_("Created"), ordering="created")
+    def created_date(self, obj: CatalogCourse) -> datetime.date:
+        """Display the created date without the timestamp"""
+        return obj.created.date()
+
+
+admin.site.register(CourseRun, CourseRunAdmin)
