@@ -8,12 +8,12 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
-import openedx_content.api as authoring_api
+import openedx_content.api as content_api
 from openedx_content import models_api as authoring_models
 
 from ..units.test_api import UnitTestCase
 
-Entry = authoring_api.SubsectionListEntry
+Entry = content_api.SubsectionListEntry
 
 
 # TODO: Turn UnitTestCase into UnitTestMixin and remove the
@@ -38,7 +38,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         authoring_models.Unit, authoring_models.UnitVersion
     ]:
         """ Helper method to quickly create a unit """
-        return authoring_api.create_unit_and_version(
+        return content_api.create_unit_and_version(
             self.learning_package.id,
             key=key,
             title=title,
@@ -54,7 +54,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         key="unit:key",
     ) -> authoring_models.Subsection:
         """ Helper method to quickly create a subsection with some units """
-        subsection, _subsection_v1 = authoring_api.create_subsection_and_version(
+        subsection, _subsection_v1 = content_api.create_subsection_and_version(
             learning_package_id=self.learning_package.id,
             key=key,
             title=title,
@@ -74,7 +74,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         """
         Helper method to modify a unit for the purposes of testing units/drafts/pinning/publishing/etc.
         """
-        return authoring_api.create_next_unit_version(
+        return content_api.create_next_unit_version(
             unit,
             title=title,
             created=timestamp or self.now,
@@ -85,9 +85,9 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         """
         Helper method to publish a single unit.
         """
-        authoring_api.publish_from_drafts(
+        content_api.publish_from_drafts(
             self.learning_package.pk,
-            draft_qset=authoring_api.get_all_drafts(self.learning_package.pk).filter(
+            draft_qset=content_api.get_all_drafts(self.learning_package.pk).filter(
                 entity=unit.publishable_entity,
             ),
         )
@@ -98,7 +98,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         """
         subsection = self.create_subsection_with_units([self.unit_1, self.unit_2])
         with self.assertNumQueries(1):
-            result = authoring_api.get_subsection(subsection.pk)
+            result = content_api.get_subsection(subsection.pk)
         assert result == subsection
         # Versioning data should be pre-loaded via select_related()
         with self.assertNumQueries(0):
@@ -111,7 +111,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         subsection = self.create_subsection_with_units([])
         draft = subsection.versioning.draft
         with self.assertNumQueries(1):
-            result = authoring_api.get_subsection_version(draft.pk)
+            result = content_api.get_subsection_version(draft.pk)
         assert result == draft
 
     def test_get_latest_subsection_version(self):
@@ -121,7 +121,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         subsection = self.create_subsection_with_units([])
         draft = subsection.versioning.draft
         with self.assertNumQueries(2):
-            result = authoring_api.get_latest_subsection_version(subsection.pk)
+            result = content_api.get_latest_subsection_version(subsection.pk)
         assert result == draft
 
     def test_get_containers(self):
@@ -130,7 +130,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         """
         subsection = self.create_subsection_with_units([])
         with self.assertNumQueries(1):
-            result = list(authoring_api.get_containers(self.learning_package.id))
+            result = list(content_api.get_containers(self.learning_package.id))
         assert result == [self.unit_1.container, self.unit_2.container, subsection.container]
         # Versioning data should be pre-loaded via select_related()
         with self.assertNumQueries(0):
@@ -141,13 +141,13 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         Test that get_containers() does not return soft-deleted sections.
         """
         subsection = self.create_subsection_with_units([])
-        authoring_api.soft_delete_draft(subsection.pk)
+        content_api.soft_delete_draft(subsection.pk)
         with self.assertNumQueries(1):
-            result = list(authoring_api.get_containers(self.learning_package.id, include_deleted=True))
+            result = list(content_api.get_containers(self.learning_package.id, include_deleted=True))
         assert result == [self.unit_1.container, self.unit_2.container, subsection.container]
 
         with self.assertNumQueries(1):
-            result = list(authoring_api.get_containers(self.learning_package.id))
+            result = list(content_api.get_containers(self.learning_package.id))
         assert result == [self.unit_1.container, self.unit_2.container]
 
     def test_get_container(self):
@@ -156,7 +156,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         """
         subsection = self.create_subsection_with_units([self.unit_1, self.unit_2])
         with self.assertNumQueries(1):
-            result = authoring_api.get_container(subsection.pk)
+            result = content_api.get_container(subsection.pk)
         assert result == subsection.container
         # Versioning data should be pre-loaded via select_related()
         with self.assertNumQueries(0):
@@ -168,7 +168,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         """
         subsection = self.create_subsection_with_units([])
         with self.assertNumQueries(1):
-            result = authoring_api.get_container_by_key(
+            result = content_api.get_container_by_key(
                 self.learning_package.id,
                 key=subsection.publishable_entity.key,
             )
@@ -209,7 +209,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         exception is raised.
         """
         # Create two subsections:
-        subsection, subsection_version = authoring_api.create_subsection_and_version(
+        subsection, subsection_version = content_api.create_subsection_and_version(
             learning_package_id=self.learning_package.id,
             key="subsection:key",
             title="Subsection",
@@ -217,7 +217,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
             created_by=None,
         )
         assert subsection.versioning.draft == subsection_version
-        subsection2, _s2v1 = authoring_api.create_subsection_and_version(
+        subsection2, _s2v1 = content_api.create_subsection_and_version(
             learning_package_id=self.learning_package.id,
             key="subsection:key2",
             title="Subsection 2",
@@ -226,7 +226,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         )
         # Try adding a Subsection to a Subsection
         with pytest.raises(TypeError, match="Subsection units must be either Unit or UnitVersion."):
-            authoring_api.create_next_subsection_version(
+            content_api.create_next_subsection_version(
                 subsection=subsection,
                 title="Subsection Containing a Subsection",
                 units=[subsection2],
@@ -235,7 +235,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
             )
         # Check that a new version was not created:
         subsection.refresh_from_db()
-        assert authoring_api.get_subsection(subsection.pk).versioning.draft == subsection_version
+        assert content_api.get_subsection(subsection.pk).versioning.draft == subsection_version
         assert subsection.versioning.draft == subsection_version
 
     def test_adding_external_units(self):
@@ -243,8 +243,8 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         Test that units from another learning package cannot be added to a
         subsection.
         """
-        learning_package2 = authoring_api.create_learning_package(key="other-package", title="Other Package")
-        subsection, _subsection_version = authoring_api.create_subsection_and_version(
+        learning_package2 = content_api.create_learning_package(key="other-package", title="Other Package")
+        subsection, _subsection_version = content_api.create_subsection_and_version(
             learning_package_id=learning_package2.pk,
             key="subsection:key",
             title="Subsection",
@@ -254,7 +254,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         assert self.unit_1.container.publishable_entity.learning_package != learning_package2
         # Try adding a a unit from LP 1 (self.learning_package) to a subsection from LP 2
         with pytest.raises(ValidationError, match="Container entities must be from the same learning package."):
-            authoring_api.create_next_subsection_version(
+            content_api.create_next_subsection_version(
                 subsection=subsection,
                 title="Subsection Containing an External Unit",
                 units=[self.unit_1],
@@ -268,14 +268,14 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         Test that versioned units must match their entities.
         """
         mock_entities_for_units.return_value = [
-            authoring_api.ContainerEntityRow(
+            content_api.ContainerEntityRow(
                 entity_pk=self.unit_1.pk,
                 version_pk=self.unit_2_v1.pk,
             ),
         ]
         # Try adding a a unit from LP 1 (self.learning_package) to a subsection from LP 2
         with pytest.raises(ValidationError, match="Container entity versions must belong to the specified entity"):
-            authoring_api.create_subsection_and_version(
+            content_api.create_subsection_and_version(
                 learning_package_id=self.unit_1.container.publishable_entity.learning_package.pk,
                 key="subsection:key",
                 title="Subsection",
@@ -308,7 +308,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         3. The subsection is a draft with unpublished changes.
         4. There is no published version of the subsection.
         """
-        subsection, subsection_version = authoring_api.create_subsection_and_version(
+        subsection, subsection_version = content_api.create_subsection_and_version(
             learning_package_id=self.learning_package.id,
             key="subsection:key",
             title="Subsection",
@@ -332,14 +332,14 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         3. The subsection version is in the subsection's versions.
         4. The units are in the draft subsection version's unit list and are unpinned.
         """
-        subsection, _subsection_version = authoring_api.create_subsection_and_version(
+        subsection, _subsection_version = content_api.create_subsection_and_version(
             learning_package_id=self.learning_package.id,
             key="subsection:key",
             title="Subsection",
             created=self.now,
             created_by=None,
         )
-        subsection_version_v2 = authoring_api.create_next_subsection_version(
+        subsection_version_v2 = content_api.create_next_subsection_version(
             subsection=subsection,
             title="Subsection",
             units=[self.unit_1, self.unit_2],
@@ -348,26 +348,26 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         )
         assert subsection_version_v2.version_num == 2
         assert subsection_version_v2 in subsection.versioning.versions.all()
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(self.unit_1.versioning.draft),
             Entry(self.unit_2.versioning.draft),
         ]
         with pytest.raises(authoring_models.ContainerVersion.DoesNotExist):
             # There is no published version of the subsection:
-            authoring_api.get_units_in_subsection(subsection, published=True)
+            content_api.get_units_in_subsection(subsection, published=True)
 
     def test_create_next_subsection_version_forcing_version_num(self):
         """
         Test creating a subsection version while forcing the next version number.
         """
-        subsection, _subsection_version = authoring_api.create_subsection_and_version(
+        subsection, _subsection_version = content_api.create_subsection_and_version(
             learning_package_id=self.learning_package.id,
             key="subsection:key",
             title="Subsection",
             created=self.now,
             created_by=None,
         )
-        subsection_version_v2 = authoring_api.create_next_subsection_version(
+        subsection_version_v2 = content_api.create_next_subsection_version(
             subsection=subsection,
             title="Subsection",
             units=[self.unit_1, self.unit_2],
@@ -381,14 +381,14 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         """
         Test creating a subsection version with one unpinned and one pinned 📌 unit.
         """
-        subsection, _subsection_version = authoring_api.create_subsection_and_version(
+        subsection, _subsection_version = content_api.create_subsection_and_version(
             learning_package_id=self.learning_package.id,
             key="subsection:key",
             title="Subsection",
             created=self.now,
             created_by=None,
         )
-        subsection_version_v2 = authoring_api.create_next_subsection_version(
+        subsection_version_v2 = content_api.create_next_subsection_version(
             subsection=subsection,
             title="Subsection",
             units=[self.unit_1, self.unit_2_v1],  # Note the "v1" pinning 📌 the second one to version 1
@@ -397,13 +397,13 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         )
         assert subsection_version_v2.version_num == 2
         assert subsection_version_v2 in subsection.versioning.versions.all()
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(self.unit_1_v1),
             Entry(self.unit_2_v1, pinned=True),  # Pinned 📌 to v1
         ]
         with pytest.raises(authoring_models.ContainerVersion.DoesNotExist):
             # There is no published version of the subsection:
-            authoring_api.get_units_in_subsection(subsection, published=True)
+            content_api.get_units_in_subsection(subsection, published=True)
 
     def test_auto_publish_children(self):
         """
@@ -414,14 +414,14 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         # Also create another unit that's not in the subsection at all:
         other_unit, _ou_v1 = self.create_unit(title="A draft unit not in the subsection", key="unit:3")
 
-        assert authoring_api.contains_unpublished_changes(subsection.pk)
+        assert content_api.contains_unpublished_changes(subsection.pk)
         assert self.unit_1.versioning.published is None
         assert self.unit_2.versioning.published is None
 
         # Publish ONLY the subsection. This should however also auto-publish units 1 & 2 since they're children
-        authoring_api.publish_from_drafts(
+        content_api.publish_from_drafts(
             self.learning_package.pk,
-            draft_qset=authoring_api.get_all_drafts(self.learning_package.pk).filter(
+            draft_qset=content_api.get_all_drafts(self.learning_package.pk).filter(
                 entity=subsection.publishable_entity
             ),
         )
@@ -430,7 +430,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         self.unit_1.refresh_from_db()
         assert subsection.versioning.has_unpublished_changes is False  # Shallow check
         assert self.unit_1.versioning.has_unpublished_changes is False
-        assert authoring_api.contains_unpublished_changes(subsection.pk) is False  # Deep check
+        assert content_api.contains_unpublished_changes(subsection.pk) is False  # Deep check
         assert self.unit_1.versioning.published == self.unit_1_v1  # v1 is now the published version.
 
         # But our other unit that's outside the subsection is not affected:
@@ -456,14 +456,14 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         assert subsection.versioning.published is None
         with pytest.raises(authoring_models.ContainerVersion.DoesNotExist):
             # There is no published version of the subsection:
-            authoring_api.get_units_in_subsection(subsection, published=True)
+            content_api.get_units_in_subsection(subsection, published=True)
 
     def test_add_unit_after_publish(self):
         """
         Adding a unit to a published subsection will create a new version and
         show that the subsection has unpublished changes.
         """
-        subsection, subsection_version = authoring_api.create_subsection_and_version(
+        subsection, subsection_version = content_api.create_subsection_and_version(
             learning_package_id=self.learning_package.id,
             key="subsection:key",
             title="Subsection",
@@ -474,25 +474,25 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         assert subsection.versioning.published is None
         assert subsection.versioning.has_unpublished_changes
         # Publish the empty subsection:
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         subsection.refresh_from_db()  # Reloading the subsection is necessary
         assert subsection.versioning.has_unpublished_changes is False  # Shallow check for subsection only, not children
-        assert authoring_api.contains_unpublished_changes(subsection.pk) is False  # Deeper check
+        assert content_api.contains_unpublished_changes(subsection.pk) is False  # Deeper check
 
         # Add a published unit (unpinned):
         assert self.unit_1.versioning.has_unpublished_changes is False
-        subsection_version_v2 = authoring_api.create_next_subsection_version(
+        subsection_version_v2 = content_api.create_next_subsection_version(
             subsection=subsection,
             title=subsection_version.title,
             units=[self.unit_1],
             created=self.now,
             created_by=None,
-            entities_action=authoring_api.ChildrenEntitiesAction.APPEND,
+            entities_action=content_api.ChildrenEntitiesAction.APPEND,
         )
         # Now the subsection should have unpublished changes:
         subsection.refresh_from_db()  # Reloading the subsection is necessary
         assert subsection.versioning.has_unpublished_changes  # Shallow check: adding a child changes the subsection
-        assert authoring_api.contains_unpublished_changes(subsection.pk)  # Deeper check
+        assert content_api.contains_unpublished_changes(subsection.pk)  # Deeper check
         assert subsection.versioning.draft == subsection_version_v2
         assert subsection.versioning.published == subsection_version
 
@@ -509,11 +509,11 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         assert subsection.versioning.has_unpublished_changes
 
         # Publish the subsection and the unit:
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         subsection.refresh_from_db()  # Reloading the subsection is necessary if we accessed 'versioning' before publish
         self.unit_1.refresh_from_db()
         assert subsection.versioning.has_unpublished_changes is False  # Shallow check
-        assert authoring_api.contains_unpublished_changes(subsection.pk) is False  # Deeper check
+        assert content_api.contains_unpublished_changes(subsection.pk) is False  # Deeper check
         assert self.unit_1.versioning.has_unpublished_changes is False
 
         # Now modify the unit by changing its title (it remains a draft):
@@ -523,26 +523,26 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         subsection.refresh_from_db()  # Refresh to avoid stale 'versioning' cache
         self.unit_1.refresh_from_db()
         assert subsection.versioning.has_unpublished_changes is False  # Shallow check: subsection unchanged
-        assert authoring_api.contains_unpublished_changes(subsection.pk)  # But subsection DOES contain changes
+        assert content_api.contains_unpublished_changes(subsection.pk)  # But subsection DOES contain changes
         assert self.unit_1.versioning.has_unpublished_changes
 
         # Since the unit changes haven't been published, they should only appear in the draft subsection
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(unit_1_v2),  # new version
         ]
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == [
+        assert content_api.get_units_in_subsection(subsection, published=True) == [
             Entry(self.unit_1_v1),  # old version
         ]
 
         # But if we publish the unit, the changes will appear in the published version of the subsection.
         self.publish_unit(self.unit_1)
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(unit_1_v2),  # new version
         ]
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == [
+        assert content_api.get_units_in_subsection(subsection, published=True) == [
             Entry(unit_1_v2),  # new version
         ]
-        assert authoring_api.contains_unpublished_changes(subsection.pk) is False  # No more unpublished changes
+        assert content_api.contains_unpublished_changes(subsection.pk) is False  # No more unpublished changes
 
     def test_modify_pinned_unit(self):
         """
@@ -554,11 +554,11 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         subsection = self.create_subsection_with_units([self.unit_1_v1])
 
         # Publish the subsection and the unit:
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         expected_subsection_contents = [
             Entry(self.unit_1_v1, pinned=True),  # pinned 📌 to v1
         ]
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == expected_subsection_contents
+        assert content_api.get_units_in_subsection(subsection, published=True) == expected_subsection_contents
 
         # Now modify the unit by changing its title (it remains a draft):
         self.modify_unit(self.unit_1, title="Modified Counting Problem with new title")
@@ -567,16 +567,16 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         subsection.refresh_from_db()  # Refresh to avoid stale 'versioning' cache
         self.unit_1.refresh_from_db()
         assert subsection.versioning.has_unpublished_changes is False  # Shallow check
-        assert authoring_api.contains_unpublished_changes(subsection.pk) is False  # Deep check
+        assert content_api.contains_unpublished_changes(subsection.pk) is False  # Deep check
         assert self.unit_1.versioning.has_unpublished_changes is True
 
         # Neither the draft nor the published version of the subsection is affected
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == expected_subsection_contents
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == expected_subsection_contents
+        assert content_api.get_units_in_subsection(subsection, published=False) == expected_subsection_contents
+        assert content_api.get_units_in_subsection(subsection, published=True) == expected_subsection_contents
         # Even if we publish the unit, the subsection stays pinned to the specified version:
         self.publish_unit(self.unit_1)
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == expected_subsection_contents
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == expected_subsection_contents
+        assert content_api.get_units_in_subsection(subsection, published=False) == expected_subsection_contents
+        assert content_api.get_units_in_subsection(subsection, published=True) == expected_subsection_contents
 
     def test_create_two_subsections_with_same_units(self):
         """
@@ -589,39 +589,39 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         subsection2 = self.create_subsection_with_units([self.unit_1_v1, self.unit_2, self.unit_1], key="u2")
 
         # Check that the contents are as expected:
-        assert [row.unit_version for row in authoring_api.get_units_in_subsection(subsection1, published=False)] == [
+        assert [row.unit_version for row in content_api.get_units_in_subsection(subsection1, published=False)] == [
             self.unit_2_v1, self.unit_2_v1, self.unit_1_v1,
         ]
-        assert [row.unit_version for row in authoring_api.get_units_in_subsection(subsection2, published=False)] == [
+        assert [row.unit_version for row in content_api.get_units_in_subsection(subsection2, published=False)] == [
             self.unit_1_v1, self.unit_2_v1, self.unit_1_v1,
         ]
 
         # Modify unit 1
         unit_1_v2 = self.modify_unit(self.unit_1, title="unit 1 v2")
         # Publish changes
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         # Modify unit 2 - only in the draft
         unit_2_v2 = self.modify_unit(self.unit_2, title="unit 2 DRAFT")
 
         # Check that the draft contents are as expected:
-        assert authoring_api.get_units_in_subsection(subsection1, published=False) == [
+        assert content_api.get_units_in_subsection(subsection1, published=False) == [
             Entry(unit_2_v2),  # v2 in the draft version
             Entry(self.unit_2_v1, pinned=True),  # pinned 📌 to v1
             Entry(unit_1_v2),  # v2
         ]
-        assert authoring_api.get_units_in_subsection(subsection2, published=False) == [
+        assert content_api.get_units_in_subsection(subsection2, published=False) == [
             Entry(self.unit_1_v1, pinned=True),  # pinned 📌 to v1
             Entry(unit_2_v2),  # v2 in the draft version
             Entry(unit_1_v2),  # v2
         ]
 
         # Check that the published contents are as expected:
-        assert authoring_api.get_units_in_subsection(subsection1, published=True) == [
+        assert content_api.get_units_in_subsection(subsection1, published=True) == [
             Entry(self.unit_2_v1),  # v1 in the published version
             Entry(self.unit_2_v1, pinned=True),  # pinned 📌 to v1
             Entry(unit_1_v2),  # v2
         ]
-        assert authoring_api.get_units_in_subsection(subsection2, published=True) == [
+        assert content_api.get_units_in_subsection(subsection2, published=True) == [
             Entry(self.unit_1_v1, pinned=True),  # pinned 📌 to v1
             Entry(self.unit_2_v1),  # v1 in the published version
             Entry(unit_1_v2),  # v2
@@ -642,15 +642,15 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         ]
         subsection1 = self.create_subsection_with_units([u1, u2, u3], title="Subsection 1", key="subsection:1")
         subsection2 = self.create_subsection_with_units([u2, u4, u5], title="Subsection 2", key="subsection:2")
-        authoring_api.publish_all_drafts(self.learning_package.id)
-        assert authoring_api.contains_unpublished_changes(subsection1.pk) is False
-        assert authoring_api.contains_unpublished_changes(subsection2.pk) is False
+        content_api.publish_all_drafts(self.learning_package.id)
+        assert content_api.contains_unpublished_changes(subsection1.pk) is False
+        assert content_api.contains_unpublished_changes(subsection2.pk) is False
 
         # 2️⃣ Then the author edits U2 inside of Subsection 1 making U2v2.
         u2_v2 = self.modify_unit(u2, title="U2 version 2")
         # Both S1 and S2 now contain unpublished changes since they share the unit.
-        assert authoring_api.contains_unpublished_changes(subsection1.pk)
-        assert authoring_api.contains_unpublished_changes(subsection2.pk)
+        assert content_api.contains_unpublished_changes(subsection1.pk)
+        assert content_api.contains_unpublished_changes(subsection2.pk)
         # (But the subsections themselves are unchanged:)
         subsection1.refresh_from_db()
         subsection2.refresh_from_db()
@@ -661,16 +661,16 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         u5_v2 = self.modify_unit(u5, title="U5 version 2")
 
         # 4️⃣ The author then publishes Subsection 1, and therefore everything in it.
-        authoring_api.publish_from_drafts(
+        content_api.publish_from_drafts(
             self.learning_package.pk,
-            draft_qset=authoring_api.get_all_drafts(self.learning_package.pk).filter(
+            draft_qset=content_api.get_all_drafts(self.learning_package.pk).filter(
                 # Note: we only publish the subsection; the publishing API should auto-publish its units too.
                 entity_id=subsection1.publishable_entity.id,
             ),
         )
 
         # Result: Subsection 1 will show the newly published version of U2:
-        assert authoring_api.get_units_in_subsection(subsection1, published=True) == [
+        assert content_api.get_units_in_subsection(subsection1, published=True) == [
             Entry(u1_v1),
             Entry(u2_v2),  # new published version of U2
             Entry(u3_v1),
@@ -679,25 +679,25 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         # Result: someone looking at Subsection 2 should see the newly published unit 2, because publishing it anywhere
         # publishes it everywhere. But publishing U2 and Subsection 1 does not affect the other units in Subsection 2.
         # (Publish propagates downward, not upward)
-        assert authoring_api.get_units_in_subsection(subsection2, published=True) == [
+        assert content_api.get_units_in_subsection(subsection2, published=True) == [
             Entry(u2_v2),  # new published version of U2
             Entry(u4_v1),  # still original version of U4 (it was never modified)
             Entry(u5_v1),  # still original version of U5 (it hasn't been published)
         ]
 
         # Result: Subsection 2 contains unpublished changes due to modified U5; Subsection 1 does not.
-        assert authoring_api.contains_unpublished_changes(subsection1.pk) is False
-        assert authoring_api.contains_unpublished_changes(subsection2.pk)
+        assert content_api.contains_unpublished_changes(subsection1.pk) is False
+        assert content_api.contains_unpublished_changes(subsection2.pk)
 
         # 5️⃣ Publish unit U5, which should be the only thing unpublished in the learning package
         self.publish_unit(u5)
         # Result: Subsection 2 shows the new version of C5 and no longer contains unpublished changes:
-        assert authoring_api.get_units_in_subsection(subsection2, published=True) == [
+        assert content_api.get_units_in_subsection(subsection2, published=True) == [
             Entry(u2_v2),  # new published version of U2
             Entry(u4_v1),  # still original version of U4 (it was never modified)
             Entry(u5_v2),  # new published version of U5
         ]
-        assert authoring_api.contains_unpublished_changes(subsection2.pk) is False
+        assert content_api.contains_unpublished_changes(subsection2.pk) is False
 
     def test_query_count_of_contains_unpublished_changes(self):
         """
@@ -714,15 +714,15 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
             )
             units.append(unit)
         subsection = self.create_subsection_with_units(units)
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         subsection.refresh_from_db()
         with self.assertNumQueries(1):
-            assert authoring_api.contains_unpublished_changes(subsection.pk) is False
+            assert content_api.contains_unpublished_changes(subsection.pk) is False
 
         # Modify the most recently created unit:
         self.modify_unit(unit, title="Modified Unit")
         with self.assertNumQueries(1):
-            assert authoring_api.contains_unpublished_changes(subsection.pk) is True
+            assert content_api.contains_unpublished_changes(subsection.pk) is True
 
     def test_metadata_change_doesnt_create_entity_list(self):
         """
@@ -735,7 +735,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         orig_version_num = subsection.versioning.draft.version_num
         orig_entity_list_id = subsection.versioning.draft.entity_list.pk
 
-        authoring_api.create_next_subsection_version(subsection, title="New Title", created=self.now)
+        content_api.create_next_subsection_version(subsection, title="New Title", created=self.now)
 
         subsection.refresh_from_db()
         new_version_num = subsection.versioning.draft.version_num
@@ -757,9 +757,9 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         unit, _cv = self.create_unit(title="Deleted unit")
         if publish_first:
             # Publish the unit:
-            authoring_api.publish_all_drafts(self.learning_package.id)
+            content_api.publish_all_drafts(self.learning_package.id)
         # Now delete it. The draft version is now deleted:
-        authoring_api.soft_delete_draft(unit.pk)
+        content_api.soft_delete_draft(unit.pk)
         # Now try adding that unit to a subsection:
         with pytest.raises(ValidationError, match="unit is deleted"):
             self.create_subsection_with_units([unit])
@@ -767,52 +767,52 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
     def test_removing_unit(self):
         """ Test removing a unit from a subsection (but not deleting it) """
         subsection = self.create_subsection_with_units([self.unit_1, self.unit_2])
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
 
         # Now remove unit 2
-        authoring_api.create_next_subsection_version(
+        content_api.create_next_subsection_version(
             subsection=subsection,
             title="Revised with unit 2 deleted",
             units=[self.unit_2],
             created=self.now,
-            entities_action=authoring_api.ChildrenEntitiesAction.REMOVE,
+            entities_action=content_api.ChildrenEntitiesAction.REMOVE,
         )
 
         # Now it should not be listed in the subsection:
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(self.unit_1_v1),
         ]
         subsection.refresh_from_db()
         assert subsection.versioning.has_unpublished_changes  # The subsection itself and its unit list have change
-        assert authoring_api.contains_unpublished_changes(subsection.pk)
+        assert content_api.contains_unpublished_changes(subsection.pk)
         # The published version of the subsection is not yet affected:
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == [
+        assert content_api.get_units_in_subsection(subsection, published=True) == [
             Entry(self.unit_1_v1),
             Entry(self.unit_2_v1),
         ]
 
         # But when we publish the new subsection version with the removal, the published version is affected:
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         # FIXME: Refreshing the subsection is necessary here because get_entities_in_published_container() accesses
         # container.versioning.published, and .versioning is cached with the old version. But this seems like
         # a footgun? We could avoid this if get_entities_in_published_container() took only an ID instead of an object,
         # but that would involve additional database lookup(s).
         subsection.refresh_from_db()
-        assert authoring_api.contains_unpublished_changes(subsection.pk) is False
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == [
+        assert content_api.contains_unpublished_changes(subsection.pk) is False
+        assert content_api.get_units_in_subsection(subsection, published=True) == [
             Entry(self.unit_1_v1),
         ]
 
     def test_soft_deleting_unit(self):
         """ Test soft deleting a unit that's in a subsection (but not removing it) """
         subsection = self.create_subsection_with_units([self.unit_1, self.unit_2])
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
 
         # Now soft delete unit 2
-        authoring_api.soft_delete_draft(self.unit_2.pk)
+        content_api.soft_delete_draft(self.unit_2.pk)
 
         # Now it should not be listed in the subsection:
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(self.unit_1_v1),
             # unit 2 is soft deleted from the draft.
             # TODO: should we return some kind of placeholder here, to indicate that a unit is still listed in the
@@ -820,72 +820,72 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
             # reverted?
         ]
         assert subsection.versioning.has_unpublished_changes is False  # Subsection and unit list unchanged
-        assert authoring_api.contains_unpublished_changes(subsection.pk)  # It still contains an unpublished deletion
+        assert content_api.contains_unpublished_changes(subsection.pk)  # It still contains an unpublished deletion
         # The published version of the subsection is not yet affected:
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == [
+        assert content_api.get_units_in_subsection(subsection, published=True) == [
             Entry(self.unit_1_v1),
             Entry(self.unit_2_v1),
         ]
 
         # But when we publish the deletion, the published version is affected:
-        authoring_api.publish_all_drafts(self.learning_package.id)
-        assert authoring_api.contains_unpublished_changes(subsection.pk) is False
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == [
+        content_api.publish_all_drafts(self.learning_package.id)
+        assert content_api.contains_unpublished_changes(subsection.pk) is False
+        assert content_api.get_units_in_subsection(subsection, published=True) == [
             Entry(self.unit_1_v1),
         ]
 
     def test_soft_deleting_and_removing_unit(self):
         """ Test soft deleting a unit that's in a subsection AND removing it """
         subsection = self.create_subsection_with_units([self.unit_1, self.unit_2])
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
 
         # Now soft delete unit 2
-        authoring_api.soft_delete_draft(self.unit_2.pk)
+        content_api.soft_delete_draft(self.unit_2.pk)
         # And remove it from the subsection:
-        authoring_api.create_next_subsection_version(
+        content_api.create_next_subsection_version(
             subsection=subsection,
             title="Revised with unit 2 deleted",
             units=[self.unit_2],
             created=self.now,
-            entities_action=authoring_api.ChildrenEntitiesAction.REMOVE,
+            entities_action=content_api.ChildrenEntitiesAction.REMOVE,
         )
 
         # Now it should not be listed in the subsection:
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(self.unit_1_v1),
         ]
         assert subsection.versioning.has_unpublished_changes is True
-        assert authoring_api.contains_unpublished_changes(subsection.pk)
+        assert content_api.contains_unpublished_changes(subsection.pk)
         # The published version of the subsection is not yet affected:
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == [
+        assert content_api.get_units_in_subsection(subsection, published=True) == [
             Entry(self.unit_1_v1),
             Entry(self.unit_2_v1),
         ]
 
         # But when we publish the deletion, the published version is affected:
-        authoring_api.publish_all_drafts(self.learning_package.id)
-        assert authoring_api.contains_unpublished_changes(subsection.pk) is False
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == [
+        content_api.publish_all_drafts(self.learning_package.id)
+        assert content_api.contains_unpublished_changes(subsection.pk) is False
+        assert content_api.get_units_in_subsection(subsection, published=True) == [
             Entry(self.unit_1_v1),
         ]
 
     def test_soft_deleting_pinned_unit(self):
         """ Test soft deleting a pinned 📌 unit that's in a subsection """
         subsection = self.create_subsection_with_units([self.unit_1_v1, self.unit_2_v1])
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
 
         # Now soft delete unit 2
-        authoring_api.soft_delete_draft(self.unit_2.pk)
+        content_api.soft_delete_draft(self.unit_2.pk)
 
         # Now it should still be listed in the subsection:
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(self.unit_1_v1, pinned=True),
             Entry(self.unit_2_v1, pinned=True),
         ]
         assert subsection.versioning.has_unpublished_changes is False  # Subsection and unit list unchanged
-        assert authoring_api.contains_unpublished_changes(subsection.pk) is False  # nor does it contain changes
+        assert content_api.contains_unpublished_changes(subsection.pk) is False  # nor does it contain changes
         # The published version of the subsection is also not affected:
-        assert authoring_api.get_units_in_subsection(subsection, published=True) == [
+        assert content_api.get_units_in_subsection(subsection, published=True) == [
             Entry(self.unit_1_v1, pinned=True),
             Entry(self.unit_2_v1, pinned=True),
         ]
@@ -901,19 +901,19 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         other_subsection = self.create_subsection_with_units([self.unit_1], key="other")
 
         # Publish everything:
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         # Delete the subsection:
-        authoring_api.soft_delete_draft(subsection_to_delete.publishable_entity_id)
+        content_api.soft_delete_draft(subsection_to_delete.publishable_entity_id)
         subsection_to_delete.refresh_from_db()
         # Now the draft subsection is soft deleted; units, published subsection, and other subsection are unaffected:
         assert subsection_to_delete.versioning.draft is None  # Subsection is soft deleted.
         assert subsection_to_delete.versioning.published is not None
         self.unit_1.refresh_from_db()
         assert self.unit_1.versioning.draft is not None
-        assert authoring_api.get_units_in_subsection(other_subsection, published=False) == [Entry(self.unit_1_v1)]
+        assert content_api.get_units_in_subsection(other_subsection, published=False) == [Entry(self.unit_1_v1)]
 
         # Publish everything:
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         # Now the subsection's published version is also deleted, but nothing else is affected.
         subsection_to_delete.refresh_from_db()
         assert subsection_to_delete.versioning.draft is None  # Subsection is soft deleted.
@@ -921,8 +921,8 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         self.unit_1.refresh_from_db()
         assert self.unit_1.versioning.draft is not None
         assert self.unit_1.versioning.published is not None
-        assert authoring_api.get_units_in_subsection(other_subsection, published=False) == [Entry(self.unit_1_v1)]
-        assert authoring_api.get_units_in_subsection(other_subsection, published=True) == [Entry(self.unit_1_v1)]
+        assert content_api.get_units_in_subsection(other_subsection, published=False) == [Entry(self.unit_1_v1)]
+        assert content_api.get_units_in_subsection(other_subsection, published=True) == [Entry(self.unit_1_v1)]
 
     def test_snapshots_of_published_subsection(self):
         """
@@ -932,43 +932,43 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         # At first the subsection has one unit (unpinned):
         subsection = self.create_subsection_with_units([self.unit_1])
         self.modify_unit(self.unit_1, title="Unit 1 as of checkpoint 1")
-        before_publish = authoring_api.get_units_in_published_subsection_as_of(subsection, 0)
+        before_publish = content_api.get_units_in_published_subsection_as_of(subsection, 0)
         assert before_publish is None
 
         # Publish everything, creating Checkpoint 1
-        checkpoint_1 = authoring_api.publish_all_drafts(self.learning_package.id, message="checkpoint 1")
+        checkpoint_1 = content_api.publish_all_drafts(self.learning_package.id, message="checkpoint 1")
 
         ########################################################################
 
         # Now we update the title of the unit.
         self.modify_unit(self.unit_1, title="Unit 1 as of checkpoint 2")
         # Publish everything, creating Checkpoint 2
-        checkpoint_2 = authoring_api.publish_all_drafts(self.learning_package.id, message="checkpoint 2")
+        checkpoint_2 = content_api.publish_all_drafts(self.learning_package.id, message="checkpoint 2")
         ########################################################################
 
         # Now add a second unit to the subsection:
         self.modify_unit(self.unit_1, title="Unit 1 as of checkpoint 3")
         self.modify_unit(self.unit_2, title="Unit 2 as of checkpoint 3")
-        authoring_api.create_next_subsection_version(
+        content_api.create_next_subsection_version(
             subsection=subsection,
             title="Subsection title in checkpoint 3",
             units=[self.unit_1, self.unit_2],
             created=self.now,
         )
         # Publish everything, creating Checkpoint 3
-        checkpoint_3 = authoring_api.publish_all_drafts(self.learning_package.id, message="checkpoint 3")
+        checkpoint_3 = content_api.publish_all_drafts(self.learning_package.id, message="checkpoint 3")
         ########################################################################
 
         # Now add a third unit to the subsection, a pinned 📌 version of unit 1.
         # This will test pinned versions and also test adding at the beginning rather than the end of the subsection.
-        authoring_api.create_next_subsection_version(
+        content_api.create_next_subsection_version(
             subsection=subsection,
             title="Subsection title in checkpoint 4",
             units=[self.unit_1_v1, self.unit_1, self.unit_2],
             created=self.now,
         )
         # Publish everything, creating Checkpoint 4
-        checkpoint_4 = authoring_api.publish_all_drafts(self.learning_package.id, message="checkpoint 4")
+        checkpoint_4 = content_api.publish_all_drafts(self.learning_package.id, message="checkpoint 4")
         ########################################################################
 
         # Modify the drafts, but don't publish:
@@ -976,20 +976,20 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         self.modify_unit(self.unit_2, title="Unit 2 draft")
 
         # Now fetch the snapshots:
-        as_of_checkpoint_1 = authoring_api.get_units_in_published_subsection_as_of(subsection, checkpoint_1.pk)
+        as_of_checkpoint_1 = content_api.get_units_in_published_subsection_as_of(subsection, checkpoint_1.pk)
         assert [cv.unit_version.title for cv in as_of_checkpoint_1] == [
             "Unit 1 as of checkpoint 1",
         ]
-        as_of_checkpoint_2 = authoring_api.get_units_in_published_subsection_as_of(subsection, checkpoint_2.pk)
+        as_of_checkpoint_2 = content_api.get_units_in_published_subsection_as_of(subsection, checkpoint_2.pk)
         assert [cv.unit_version.title for cv in as_of_checkpoint_2] == [
             "Unit 1 as of checkpoint 2",
         ]
-        as_of_checkpoint_3 = authoring_api.get_units_in_published_subsection_as_of(subsection, checkpoint_3.pk)
+        as_of_checkpoint_3 = content_api.get_units_in_published_subsection_as_of(subsection, checkpoint_3.pk)
         assert [cv.unit_version.title for cv in as_of_checkpoint_3] == [
             "Unit 1 as of checkpoint 3",
             "Unit 2 as of checkpoint 3",
         ]
-        as_of_checkpoint_4 = authoring_api.get_units_in_published_subsection_as_of(subsection, checkpoint_4.pk)
+        as_of_checkpoint_4 = content_api.get_units_in_published_subsection_as_of(subsection, checkpoint_4.pk)
         assert [cv.unit_version.title for cv in as_of_checkpoint_4] == [
             "Unit (1)",  # Pinned. This title is self.unit_1_v1.title (original v1 title)
             "Unit 1 as of checkpoint 3",  # we didn't modify these units so they're same as in snapshot 3
@@ -1025,7 +1025,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         with self.assertNumQueries(1):
             result = [
                 c.subsection for c in
-                authoring_api.get_containers_with_entity(self.unit_1.pk).select_related("subsection")
+                content_api.get_containers_with_entity(self.unit_1.pk).select_related("subsection")
             ]
         assert result == [
             subsection1_1pinned,
@@ -1039,7 +1039,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         with self.assertNumQueries(1):
             result2 = [
                 c.subsection for c in
-                authoring_api.get_containers_with_entity(
+                content_api.get_containers_with_entity(
                     self.unit_1.pk, ignore_pinned=True
                 ).select_related("subsection")
             ]
@@ -1056,15 +1056,15 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
             self.unit_2_v1,
         ])
         with self.assertNumQueries(4):
-            result = authoring_api.get_units_in_subsection(subsection, published=False)
+            result = content_api.get_units_in_subsection(subsection, published=False)
         assert result == [
             Entry(self.unit_1.versioning.draft),
             Entry(self.unit_2.versioning.draft),
             Entry(self.unit_2.versioning.draft, pinned=True),
         ]
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         with self.assertNumQueries(4):
-            result = authoring_api.get_units_in_subsection(subsection, published=True)
+            result = content_api.get_units_in_subsection(subsection, published=True)
         assert result == [
             Entry(self.unit_1.versioning.draft),
             Entry(self.unit_2.versioning.draft),
@@ -1075,7 +1075,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         """
         Test adding and removing children units from subsections.
         """
-        subsection, subsection_version = authoring_api.create_subsection_and_version(
+        subsection, subsection_version = content_api.create_subsection_and_version(
             learning_package_id=self.learning_package.id,
             key="subsection:key",
             title="Subsection",
@@ -1083,7 +1083,7 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
             created=self.now,
             created_by=None,
         )
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(self.unit_1.versioning.draft),
         ]
         unit_3, _ = self.create_unit(
@@ -1091,36 +1091,36 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
             title="Unit (3)",
         )
         # Add unit_2 and unit_3
-        subsection_version_v2 = authoring_api.create_next_subsection_version(
+        subsection_version_v2 = content_api.create_next_subsection_version(
             subsection=subsection,
             title=subsection_version.title,
             units=[self.unit_2, unit_3],
             created=self.now,
             created_by=None,
-            entities_action=authoring_api.ChildrenEntitiesAction.APPEND,
+            entities_action=content_api.ChildrenEntitiesAction.APPEND,
         )
         subsection.refresh_from_db()
         assert subsection_version_v2.version_num == 2
         assert subsection_version_v2 in subsection.versioning.versions.all()
         # Verify that unit_2 and unit_3 is added to end
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(self.unit_1.versioning.draft),
             Entry(self.unit_2.versioning.draft),
             Entry(unit_3.versioning.draft),
         ]
 
         # Remove unit_1
-        authoring_api.create_next_subsection_version(
+        content_api.create_next_subsection_version(
             subsection=subsection,
             title=subsection_version.title,
             units=[self.unit_1],
             created=self.now,
             created_by=None,
-            entities_action=authoring_api.ChildrenEntitiesAction.REMOVE,
+            entities_action=content_api.ChildrenEntitiesAction.REMOVE,
         )
         subsection.refresh_from_db()
         # Verify that unit_1 is removed
-        assert authoring_api.get_units_in_subsection(subsection, published=False) == [
+        assert content_api.get_units_in_subsection(subsection, published=False) == [
             Entry(self.unit_2.versioning.draft),
             Entry(unit_3.versioning.draft),
         ]
@@ -1130,34 +1130,34 @@ class SubSectionTestCase(UnitTestCase):  # pylint: disable=test-inherits-tests
         Test get_container_children_count()
         """
         subsection = self.create_subsection_with_units([self.unit_1])
-        assert authoring_api.get_container_children_count(subsection.container, published=False) == 1
+        assert content_api.get_container_children_count(subsection.container, published=False) == 1
         # publish
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         subsection_version = subsection.versioning.draft
-        authoring_api.create_next_subsection_version(
+        content_api.create_next_subsection_version(
             subsection=subsection,
             title=subsection_version.title,
             units=[self.unit_2],
             created=self.now,
             created_by=None,
-            entities_action=authoring_api.ChildrenEntitiesAction.APPEND,
+            entities_action=content_api.ChildrenEntitiesAction.APPEND,
         )
         subsection.refresh_from_db()
         # Should have two units in draft version and 1 in published version
-        assert authoring_api.get_container_children_count(subsection.container, published=False) == 2
-        assert authoring_api.get_container_children_count(subsection.container, published=True) == 1
+        assert content_api.get_container_children_count(subsection.container, published=False) == 2
+        assert content_api.get_container_children_count(subsection.container, published=True) == 1
         # publish
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        content_api.publish_all_drafts(self.learning_package.id)
         subsection.refresh_from_db()
-        assert authoring_api.get_container_children_count(subsection.container, published=True) == 2
+        assert content_api.get_container_children_count(subsection.container, published=True) == 2
         # Soft delete unit_1
-        authoring_api.soft_delete_draft(self.unit_1.pk)
+        content_api.soft_delete_draft(self.unit_1.pk)
         subsection.refresh_from_db()
         # Should contain only 1 child
-        assert authoring_api.get_container_children_count(subsection.container, published=False) == 1
-        authoring_api.publish_all_drafts(self.learning_package.id)
+        assert content_api.get_container_children_count(subsection.container, published=False) == 1
+        content_api.publish_all_drafts(self.learning_package.id)
         subsection.refresh_from_db()
-        assert authoring_api.get_container_children_count(subsection.container, published=True) == 1
+        assert content_api.get_container_children_count(subsection.container, published=True) == 1
 
     # Tests TODO:
     # Test that I can get a [PublishLog] history of a given subsection and all its children, including children
