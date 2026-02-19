@@ -9,7 +9,7 @@ consistent.
 # pylint: disable=wildcard-import
 from .applets.collections.models import *
 from .applets.components.models import *
-from .applets.contents.models import *
+from .applets.media.models import *
 from .applets.publishing.models import *
 from .applets.sections.models import *
 from .applets.subsections.models import *

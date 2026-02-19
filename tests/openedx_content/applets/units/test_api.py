@@ -74,7 +74,7 @@ class UnitTestCase(ComponentTestCase):
         """
         return content_api.create_next_component_version(
             component.pk,
-            content_to_replace={},
+            media_to_replace={},
             title=title,
             created=timestamp or self.now,
             created_by=None,

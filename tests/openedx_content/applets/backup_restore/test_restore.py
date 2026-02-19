@@ -117,12 +117,12 @@ class RestoreLearningPackageCommandTest(RestoreTestCase):
                 assert draft_version.created_by.username == "lp_user"
                 assert published_version is None
                 # Get the content associated with this component
-                contents = draft_version.componentversion.contents.all()
-                content = contents.first() if contents.exists() else None
-                assert content is not None
-                assert "<drag-and-drop-v2" in content.text
-                assert not content.has_file
-                assert str(content.media_type) == "application/vnd.openedx.xblock.v1.drag-and-drop-v2+xml"
+                all_media = draft_version.componentversion.media.all()
+                media = all_media.first() if all_media.exists() else None
+                assert media is not None
+                assert "<drag-and-drop-v2" in media.text
+                assert not media.has_file
+                assert str(media.media_type) == "application/vnd.openedx.xblock.v1.drag-and-drop-v2+xml"
             elif component.key == "xblock.v1:html:e32d5479-9492-41f6-9222-550a7346bc37":
                 assert component.component_type.name == "html"
                 assert component.component_type.namespace == "xblock.v1"

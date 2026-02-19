@@ -50,9 +50,9 @@ layers=
     # has no child elements.
     openedx_content.applets.components
 
-    # The "contents" applet stores the simplest pieces of binary and text data,
+    # The "media" applet stores the simplest pieces of binary and text data,
     # without versioning information. These belong to a single Learning Package.
-    openedx_content.applets.contents
+    openedx_content.applets.media
 
     # The "collections" applet stores arbitrary groupings of PublishableEntities.
     # Its only dependency should be the publishing app.

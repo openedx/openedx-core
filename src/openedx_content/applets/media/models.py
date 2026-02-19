@@ -30,14 +30,14 @@ logger = getLogger()
 
 __all__ = [
     "MediaType",
-    "Content",
+    "Media",
 ]
 
 
 @cache
 def get_storage() -> Storage:
     """
-    Return the Storage instance for our Content file persistence.
+    Return the Storage instance for our Media file persistence.
 
     This will first search for an OPENEDX_LEARNING config dictionary and return
     a Storage subclass based on that configuration.
@@ -63,10 +63,10 @@ def get_storage() -> Storage:
 
 class MediaType(models.Model):
     """
-    Stores Media types for use by Content models.
+    Stores Media types for use by Media models.
 
     This is the same as MIME types (the IANA renamed MIME Types to Media Types).
-    We don't pre-populate this table, so APIs that add Content must ensure that
+    We don't pre-populate this table, so APIs that add Media must ensure that
     the desired Media Type exists.
 
     Media types are written as {type}/{sub_type}+{suffix}, where suffixes are
@@ -77,9 +77,9 @@ class MediaType(models.Model):
     * image/svg+xml
     * application/vnd.openedx.xblock.v1.problem+xml
 
-    We have this as a separate model (instead of a field on Content) because:
+    We have this as a separate model (instead of a field on Media) because:
 
-    1. We can save a lot on storage and indexing for Content if we're just
+    1. We can save a lot on storage and indexing for Media if we're just
        storing foreign key references there, rather than the entire content
        string to be indexed. This is especially relevant for our (long) custom
        types like "application/vnd.openedx.xblock.v1.problem+xml".
@@ -87,9 +87,9 @@ class MediaType(models.Model):
        "application/javascript". Also, we will be using a fair number of "vnd."
        style of custom content types, and we may want the flexibility of
        changing that without having to worry about migrating millions of rows of
-       Content.
+       Media.
     """
-    # We're going to have many foreign key references from Content into this
+    # We're going to have many foreign key references from Media into this
     # model, and we don't need to store those as 8-byte BigAutoField, as is the
     # default for this app. It's likely that a SmallAutoField would work, but I
     # can just barely imagine using more than 32K Media types if we have a bunch
@@ -135,27 +135,27 @@ class MediaType(models.Model):
         return base
 
 
-class Content(models.Model):
+class Media(models.Model):
     """
-    This is the most primitive piece of content data.
+    This is the most primitive piece of content.
 
     This model serves to lookup, de-duplicate, and store text and files. A piece
-    of Content is identified purely by its data, the media type, and the
+    of Media is identified purely by its data, the media type, and the
     LearningPackage it is associated with. It has no version or file name
     metadata associated with it. It exists to be a dumb blob of data that higher
     level models like ComponentVersions can assemble together.
 
     # In-model Text vs. File
 
-    That being said, the Content model does have some complexity to accomodate
+    That being said, the Media model does have some complexity to accomodate
     different access patterns that we have in our app. In particular, it can
     store data in two ways: the ``text`` field and a file (``has_file=True``)
-    A Content object must use at least one of these methods, but can use both if
+    A Media object must use at least one of these methods, but can use both if
     it's appropriate.
 
     Use the ``text`` field when:
     * the content is a relatively small (< 50K, usually much less) piece of text
-    * you want to do be able to query up update across many rows at once
+    * you want to do be able to query across many rows at once
     * low, predictable latency is important
 
     Use file storage when:
@@ -170,36 +170,36 @@ class Content(models.Model):
 
     # Association with a LearningPackage
 
-    Content is associated with a specific LearningPackage. Doing so allows us to
+    Media is associated with a specific LearningPackage. Doing so allows us to
     more easily query for how much storge space a specific LearningPackage
     (likely a library) is using, and to clean up unused data.
 
-    When we get to borrowing Content across LearningPackages, it's likely that
+    When we get to borrowing Media across LearningPackages, it's likely that
     we will want to copy them. That way, even if the originating LearningPackage
     is deleted, it won't break other LearningPackages that are making use if it.
 
     # Media Types, and file duplication
 
-    Content is almost 1:1 with the files that it pushes to a storage backend,
+    Media is almost 1:1 with the files that it pushes to a storage backend,
     but not quite. The file locations are generated purely as a product of the
-    LearningPackage UUID and the Content's ``hash_digest``, but Content also
+    LearningPackage UUID and the Media's ``hash_digest``, but Media also
     takes into account the ``media_type``.
 
-    For example, say we had a Content with the following data:
+    For example, say we had a Media with the following data:
 
         ["hello", "world"]
 
     That is legal syntax for both JSON and YAML. If you want to attach some
     YAML-specific metadata in a new model, you could make it 1:1 with the
-    Content that matched the "application/yaml" media type. The YAML and JSON
-    versions of this data would be two separate Content rows that would share
+    Media that matched the "application/yaml" media type. The YAML and JSON
+    versions of this data would be two separate Media rows that would share
     the same ``hash_digest`` value. If they both stored a file, they would be
     pointing to the same file location. If they only used the ``text`` field,
-    then that value would be duplicated across the two separate Content rows.
+    then that value would be duplicated across the two separate Media rows.
 
     The alternative would have been to associate media types at the level where
     this data was being added to a ComponentVersion, but that would have added
-    more complexity. Right now, you could make an ImageContent 1:1 model that
+    more complexity. Right now, you could make an ImageMedia 1:1 model that
     analyzed images and created metatdata entries for them (dimensions, GPS)
     without having to understand how ComponentVerisons work.
 
@@ -213,14 +213,14 @@ class Content(models.Model):
 
     # Immutability
 
-    From the outside, Content should appear immutable. Since the Content is
+    From the outside, Media should appear immutable. Since the Media is
     looked up by a hash of its data, a change in the data means that we should
-    look up the hash value of that new data and create a new Content if we don't
+    look up the hash value of that new data and create a new Media if we don't
     find a match.
 
-    That being said, the Content model has different ways of storing that data,
-    and that is mutable. We could decide that a certain type of Content should
-    be optimized to store its text in the table. Or that a content type that we
+    That being said, the Media model has different ways of storing that data,
+    and that is mutable. We could decide that a certain type of Media should
+    be optimized to store its text in the table. Or that a media type that we
     had previously only stored as text now also needs to be stored on in the
     file storage backend so that it can be made available to be downloaded.
     These operations would be done as data migrations.
@@ -228,8 +228,8 @@ class Content(models.Model):
     # Extensibility
 
     Third-party apps are encouraged to create models that have a OneToOneField
-    relationship with Content. For instance, an ImageContent model might join
-    1:1 with all Content that has image/* media types, and provide additional
+    relationship with Media. For instance, an ImageMedia model might join
+    1:1 with all Media that has image/* media types, and provide additional
     metadata for that data.
     """
     # Max size of the file.
@@ -240,7 +240,7 @@ class Content(models.Model):
     # could be as much as 200K of data if we had nothing but emojis.
     MAX_TEXT_LENGTH = 50_000
 
-    objects: models.Manager[Content] = WithRelationsManager('media_type')
+    objects: models.Manager[Media] = WithRelationsManager('media_type')
 
     learning_package = models.ForeignKey(LearningPackage, on_delete=models.CASCADE)
 
@@ -260,17 +260,17 @@ class Content(models.Model):
     # file or not. When storing just a file, we hash the bytes in the file.
     hash_digest = hash_field()
 
-    # Do we have file data stored for this Content in our file storage backend?
+    # Do we have file data stored for this Media in our file storage backend?
     # We use has_file instead of a FileField because it's more space efficient.
-    # The location of a Content's file data is derivable from the Learning
-    # Package's UUID and the hash of the Content. There's no need to waste that
+    # The location of a Media's file data is derivable from the Learning
+    # Package's UUID and the hash of the Media. There's no need to waste that
     # space to encode it in every row.
     has_file = models.BooleanField()
 
-    # The ``text`` field contains the text representation of the Content, if
+    # The ``text`` field contains the text representation of the Media, if
     # it is available. A blank value means means that we are storing text for
-    # this Content, and that text happens to be an empty string. A null value
-    # here means that we are not storing any text here, and the Content exists
+    # this Media, and that text happens to be an empty string. A null value
+    # here means that we are not storing any text here, and the Media exists
     # only in file form. It is an error for ``text`` to be None and ``has_file``
     # to be False, since that would mean we haven't stored data anywhere at all.
     #
@@ -287,7 +287,7 @@ class Content(models.Model):
         }
     )
 
-    # This should be manually set so that multiple Content rows being set in
+    # This should be manually set so that multiple Media rows being set in
     # the same transaction are created with the same timestamp. The timestamp
     # should be UTC.
     created = manual_date_time_field()
@@ -295,7 +295,7 @@ class Content(models.Model):
     @cached_property
     def mime_type(self) -> str:
         """
-        The IANA media type (a.k.a. MIME type) of the Content, in string form.
+        The IANA media type (a.k.a. MIME type) of the Media, in string form.
 
         MIME types reference:
           https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types
@@ -311,12 +311,15 @@ class Content(models.Model):
         root. This file may not exist because has_file=False, or because we
         haven't written the file yet (this is the method we call when trying to
         figure out where the file *should* go).
+
+        For historical reasons (and backwards compatibility), the prefix for
+        this path is "content/" and not "media/".
         """
         return f"content/{self.learning_package.uuid}/{self.hash_digest}"
 
     def os_path(self):
         """
-        The full OS path for the underlying file for this Content.
+        The full OS path for the underlying file for this Media.
 
         This will not be supported by all Storage class types.
 
@@ -334,7 +337,7 @@ class Content(models.Model):
         Get a File object that has been open for reading.
 
         We intentionally don't expose an `open()` call where callers can open
-        this file in write mode. Writing a Content file should happen at most
+        this file in write mode. Writing a Media file should happen at most
         once, and the logic is not obvious (see ``write_file``).
 
         At the end of the day, the caller can close the returned File and reopen
@@ -347,23 +350,23 @@ class Content(models.Model):
         """
         Write file contents to the file storage backend.
 
-        This function does nothing if the file already exists. Note that Content
+        This function does nothing if the file already exists. Note that Media
         is supposed to be immutable, so this should normally only be called once
-        for a given Content row.
+        for a given Media row.
         """
         storage = get_storage()
 
         # There are two reasons why a file might already exist even if the the
-        # Content row is new:
+        # Media row is new:
         #
         # 1. We tried adding the file earlier, but an error rolled back the
         # state of the database. The file storage system isn't covered by any
         # sort of transaction semantics, so it won't get rolled back.
         #
-        # 2. The Content is of a different MediaType. The same exact bytes can
-        # be two logically separate Content entries if they are different file
-        # types. This lets other models add data to Content via 1:1 relations by
-        # ContentType (e.g. all SRT files). This is definitely an edge case.
+        # 2. The Media is of a different MediaType. The same exact bytes can
+        # be two logically separate Media entries if they are different file
+        # types. This lets other models add data to Media via 1:1 relations by
+        # MediaType (e.g. all SRT files). This is definitely an edge case.
         #
         # 3. Similar to (2), but only part of the file was written before an
         # error occurred. This seems unlikely, but possible if the underlying
@@ -382,12 +385,12 @@ class Content(models.Model):
         """
         Make sure we're actually storing *something*.
 
-        If this Content has neither a file or text data associated with it,
+        If this Media has neither a file or text data associated with it,
         it's in a broken/useless state and shouldn't be saved.
         """
         if (not self.has_file) and (self.text is None):
             raise ValidationError(
-                f"Content {self.pk} with hash {self.hash_digest} must either "
+                f"Media {self.pk} with hash {self.hash_digest} must either "
                 "set a string value for 'text', or it must set has_file=True "
                 "(or both)."
             )
@@ -407,11 +410,11 @@ class Content(models.Model):
         ]
         indexes = [
             # LearningPackage (reverse) Size Index:
-            #   * Find the largest Content entries.
+            #   * Find the largest Media entries.
             models.Index(
                 fields=["learning_package", "-size"],
                 name="oel_content_idx_lp_rsize",
             ),
         ]
-        verbose_name = "Content"
-        verbose_name_plural = "Contents"
+        verbose_name = "Media"
+        verbose_name_plural = "Media"

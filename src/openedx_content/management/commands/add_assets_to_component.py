@@ -74,7 +74,7 @@ class Command(BaseCommand):
 
         next_version = create_next_component_version(
             component.pk,
-            content_to_replace=local_keys_to_content_bytes,
+            media_to_replace=local_keys_to_content_bytes,
             created=created,
         )
 
@@ -82,5 +82,5 @@ class Command(BaseCommand):
             f"Created v{next_version.version_num} of "
             f"{next_version.component.key} ({next_version.uuid}):"
         )
-        for cvc in next_version.componentversioncontent_set.all():
-            self.stdout.write(f"- {cvc.key} ({cvc.uuid})")
+        for cvm in next_version.componentversionmedia_set.all():
+            self.stdout.write(f"- {cvm.key} ({cvm.uuid})")
