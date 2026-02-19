@@ -1,5 +1,5 @@
 """
-Django admin for contents models
+Django admin for media.models
 """
 import base64
 
@@ -8,10 +8,10 @@ from django.utils.html import format_html
 
 from openedx_django_lib.admin_utils import ReadOnlyModelAdmin
 
-from .models import Content
+from .models import Media
 
 
-@admin.register(Content)
+@admin.register(Media)
 class ContentAdmin(ReadOnlyModelAdmin):
     """
     Django admin for Content model
@@ -40,32 +40,32 @@ class ContentAdmin(ReadOnlyModelAdmin):
     search_fields = ("hash_digest",)
 
     @admin.display(description="OS Path")
-    def os_path(self, content: Content):
-        return content.os_path() or ""
+    def os_path(self, media: Media):
+        return media.os_path() or ""
 
-    def path(self, content: Content):
-        return content.path if content.has_file else ""
+    def path(self, media: Media):
+        return media.path if media.has_file else ""
 
-    def text_preview(self, content: Content):
-        if not content.text:
+    def text_preview(self, media: Media):
+        if not media.text:
             return ""
         return format_html(
             '<pre style="white-space: pre-wrap;">\n{}\n</pre>',
-            content.text,
+            media.text,
         )
 
-    def image_preview(self, content: Content):
+    def image_preview(self, media: Media):
         """
         Return HTML for an image, if that is the underlying Content.
 
         Otherwise, just return a blank string.
         """
-        if content.media_type.type != "image":
+        if media.media_type.type != "image":
             return ""
 
-        data = content.read_file().read()
+        data = media.read_file().read()
         return format_html(
             '<img src="data:{};base64, {}" style="max-width: 100%;" />',
-            content.mime_type,
+            media.mime_type,
             base64.encodebytes(data).decode('utf8'),
         )

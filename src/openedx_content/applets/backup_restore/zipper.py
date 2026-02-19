@@ -22,16 +22,16 @@ from openedx_content.models_api import (
     Collection,
     ComponentType,
     ComponentVersion,
-    ComponentVersionContent,
-    Content,
+    ComponentVersionMedia,
     LearningPackage,
+    Media,
     PublishableEntity,
     PublishableEntityVersion,
 )
 
 from ..collections import api as collections_api
 from ..components import api as components_api
-from ..contents import api as contents_api
+from ..media import api as media_api
 from ..publishing import api as publishing_api
 from ..sections import api as sections_api
 from ..subsections import api as subsections_api
@@ -191,14 +191,14 @@ class LearningPackageZipper:
                 # especially with large libraries (up to 100K items),
                 # which is too large for this type of prefetch.
                 Prefetch(
-                    "draft__version__componentversion__componentversioncontent_set",
-                    queryset=ComponentVersionContent.objects.select_related("content"),
-                    to_attr="prefetched_contents",
+                    "draft__version__componentversion__componentversionmedia_set",
+                    queryset=ComponentVersionMedia.objects.select_related("media"),
+                    to_attr="prefetched_media",
                 ),
                 Prefetch(
-                    "published__version__componentversion__componentversioncontent_set",
-                    queryset=ComponentVersionContent.objects.select_related("content"),
-                    to_attr="prefetched_contents",
+                    "published__version__componentversion__componentversionmedia_set",
+                    queryset=ComponentVersionMedia.objects.select_related("media"),
+                    to_attr="prefetched_media",
                 ),
             )
             .order_by("key")
@@ -372,29 +372,29 @@ class LearningPackageZipper:
                         # ------ COMPONENT STATIC CONTENT -------------
                         component_version: ComponentVersion = version.componentversion
 
-                        # Get content data associated with this version
-                        contents: QuerySet[
-                            ComponentVersionContent
-                        ] = component_version.prefetched_contents  # type: ignore[attr-defined]
+                        # Get media data associated with this version
+                        prefetched_media: QuerySet[
+                            ComponentVersionMedia
+                        ] = component_version.prefetched_media  # type: ignore[attr-defined]
 
-                        for component_version_content in contents:
-                            content: Content = component_version_content.content
+                        for component_version_media in prefetched_media:
+                            media: Media = component_version_media.media
 
-                            # Important: The component_version_content.key contains implicitly
+                            # Important: The component_version_media.key contains implicitly
                             # the file name and the file extension
-                            file_path = version_folder / component_version_content.key
+                            file_path = version_folder / component_version_media.key
 
-                            if content.has_file and content.path:
+                            if media.has_file and media.path:
                                 # If has_file, we pull it from the file system
-                                with content.read_file() as f:
+                                with media.read_file() as f:
                                     file_data = f.read()
-                            elif not content.has_file and content.text:
-                                # Otherwise, we use the text content as the file data
-                                file_data = content.text
+                            elif not media.has_file and media.text:
+                                # Otherwise, we use the text media as the file data
+                                file_data = media.text
                             else:
-                                # If no file and no text, we skip this content
+                                # If no file and no text, we skip this media
                                 continue
-                            self.add_file_to_zip(zipf, file_path, file_data, timestamp=content.created)
+                            self.add_file_to_zip(zipf, file_path, file_data, timestamp=media.created)
 
             # ------ COLLECTION SERIALIZATION -------------
             collections = self.get_collections()
@@ -792,13 +792,13 @@ class LearningPackageUnzipper:
         for valid_published in components.get("components_published", []):
             entity_key = valid_published.pop("entity_key")
             version_num = valid_published["version_num"]  # Should exist, validated earlier
-            content_to_replace = self._resolve_static_files(version_num, entity_key, component_static_files)
+            media_to_replace = self._resolve_static_files(version_num, entity_key, component_static_files)
             self.all_published_entities_versions.add(
                 (entity_key, version_num)
             )  # Track published version
             components_api.create_next_component_version(
                 self.components_map_by_key[entity_key].publishable_entity.id,
-                content_to_replace=content_to_replace,
+                media_to_replace=media_to_replace,
                 force_version_num=valid_published.pop("version_num", None),
                 created_by=self.user_id,
                 **valid_published
@@ -876,14 +876,14 @@ class LearningPackageUnzipper:
             version_num = valid_draft["version_num"]  # Should exist, validated earlier
             if self._is_version_already_exists(entity_key, version_num):
                 continue
-            content_to_replace = self._resolve_static_files(version_num, entity_key, component_static_files)
+            media_to_replace = self._resolve_static_files(version_num, entity_key, component_static_files)
             components_api.create_next_component_version(
                 self.components_map_by_key[entity_key].publishable_entity.id,
-                content_to_replace=content_to_replace,
+                media_to_replace=media_to_replace,
                 force_version_num=valid_draft.pop("version_num", None),
-                # Drafts can diverge from published, so we allow ignoring previous content
+                # Drafts can diverge from published, so we allow ignoring previous media
                 # Use case: published v1 had files A, B; draft v2 only has file A
-                ignore_previous_content=True,
+                ignore_previous_media=True,
                 created_by=self.user_id,
                 **valid_draft
             )
@@ -970,7 +970,7 @@ class LearningPackageUnzipper:
             entity_key: str,
             static_files_map: dict[str, List[str]]
     ) -> dict[str, bytes | int]:
-        """Resolve static file paths into their binary content."""
+        """Resolve static file paths into their binary media content."""
         resolved_files: dict[str, bytes | int] = {}
 
         static_file_key = f"{entity_key}:v{num_version}"  # e.g., "xblock.v1:html:my_component_123456:v1"
@@ -979,21 +979,21 @@ class LearningPackageUnzipper:
         for static_file in static_files:
             local_key = static_file.split(f"v{num_version}/")[-1]
             with self.zipf.open(static_file, "r") as f:
-                content_bytes = f.read()
+                media_bytes = f.read()
             if local_key == "block.xml":
                 # Special handling for block.xml to ensure
-                # storing the value as a content instance
+                # storing the value as a media instance
                 if not self.learning_package_id:
                     raise ValueError("learning_package_id must be set before resolving static files.")
-                text_content = contents_api.get_or_create_text_content(
+                text_media = media_api.get_or_create_text_media(
                     self.learning_package_id,
-                    contents_api.get_or_create_media_type(f"application/vnd.openedx.xblock.v1.{block_type}+xml").id,
-                    text=content_bytes.decode("utf-8"),
+                    media_api.get_or_create_media_type(f"application/vnd.openedx.xblock.v1.{block_type}+xml").id,
+                    text=media_bytes.decode("utf-8"),
                     created=self.utc_now,
                 )
-                resolved_files[local_key] = text_content.id
+                resolved_files[local_key] = text_media.id
             else:
-                resolved_files[local_key] = content_bytes
+                resolved_files[local_key] = media_bytes
         return resolved_files
 
     def _resolve_children(self, entity_data: dict[str, Any], lookup_map: dict[str, Any]) -> list[Any]:

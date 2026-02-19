@@ -13,7 +13,7 @@ from django.test import TestCase
 
 from openedx_content import api
 from openedx_content.applets.backup_restore.zipper import LearningPackageZipper
-from openedx_content.models_api import Collection, Component, Content, LearningPackage, PublishableEntity
+from openedx_content.models_api import Collection, Component, LearningPackage, Media, PublishableEntity
 
 User = get_user_model()
 
@@ -32,7 +32,7 @@ class LpDumpCommandTestCase(TestCase):
     published_component: Component
     published_component2: Component
     draft_component: Component
-    html_asset_content: Content
+    html_asset_media: Media
     collection: Collection
 
     @classmethod
@@ -96,19 +96,19 @@ class LpDumpCommandTestCase(TestCase):
         new_problem_version = api.create_next_component_version(
             cls.published_component.pk,
             title="My published problem draft v2",
-            content_to_replace={},
+            media_to_replace={},
             created=cls.now,
         )
 
-        new_txt_content = api.get_or_create_text_content(
+        new_txt_media = api.get_or_create_text_media(
             cls.learning_package.pk,
             text_media_type.id,
             text="This is some data",
             created=cls.now,
         )
-        api.create_component_version_content(
+        api.create_component_version_media(
             new_problem_version.pk,
-            new_txt_content.pk,
+            new_txt_media.pk,
             key="hello.txt",
         )
 
@@ -125,19 +125,19 @@ class LpDumpCommandTestCase(TestCase):
         new_html_version = api.create_next_component_version(
             cls.draft_component.pk,
             title="My draft html v2",
-            content_to_replace={},
+            media_to_replace={},
             created=cls.now,
         )
 
-        cls.html_asset_content = api.get_or_create_file_content(
+        cls.html_asset_media = api.get_or_create_file_media(
             cls.learning_package.id,
             html_media_type.id,
             data=b"<html>hello world!</html>",
             created=cls.now,
         )
-        api.create_component_version_content(
+        api.create_component_version_media(
             new_html_version.pk,
-            cls.html_asset_content.id,
+            cls.html_asset_media.id,
             key="static/other/subdirectory/hello.html",
         )
 

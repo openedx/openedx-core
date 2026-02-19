@@ -11,7 +11,7 @@ publishing app. Component maps 1:1 to PublishableEntity and ComponentVersion
 maps 1:1 to PublishableEntityVersion.
 
 Multiple pieces of Content may be associated with a ComponentVersion, through
-the ComponentVersionContent model. ComponentVersionContent allows to specify a
+the ComponentVersionMedia model. ComponentVersionMedia allows to specify a
 ComponentVersion-local identifier. We're using this like a file path by
 convention, but it's possible we might want to have special identifiers later.
 """
@@ -24,14 +24,14 @@ from django.db import models
 from openedx_django_lib.fields import case_sensitive_char_field, key_field
 from openedx_django_lib.managers import WithRelationsManager
 
-from ..contents.models import Content
+from ..media.models import Media
 from ..publishing.models import LearningPackage, PublishableEntityMixin, PublishableEntityVersionMixin
 
 __all__ = [
     "ComponentType",
     "Component",
     "ComponentVersion",
-    "ComponentVersionContent",
+    "ComponentVersionMedia",
 ]
 
 
@@ -199,8 +199,8 @@ class ComponentVersion(PublishableEntityVersionMixin):
     """
     A particular version of a Component.
 
-    This holds the content using a M:M relationship with Content via
-    ComponentVersionContent.
+    This holds the media using a M:M relationship with Content via
+    ComponentVersionMedia.
     """
 
     # This is technically redundant, since we can get this through
@@ -210,11 +210,11 @@ class ComponentVersion(PublishableEntityVersionMixin):
         Component, on_delete=models.CASCADE, related_name="versions"
     )
 
-    # The contents hold the actual interesting data associated with this
+    # The media relation holds the actual interesting data associated with this
     # ComponentVersion.
-    contents: models.ManyToManyField[Content, ComponentVersionContent] = models.ManyToManyField(
-        Content,
-        through="ComponentVersionContent",
+    media: models.ManyToManyField[Media, ComponentVersionMedia] = models.ManyToManyField(
+        Media,
+        through="ComponentVersionMedia",
         related_name="component_versions",
     )
 
@@ -223,7 +223,7 @@ class ComponentVersion(PublishableEntityVersionMixin):
         verbose_name_plural = "Component Versions"
 
 
-class ComponentVersionContent(models.Model):
+class ComponentVersionMedia(models.Model):
     """
     Determines the Content for a given ComponentVersion.
 
@@ -240,7 +240,7 @@ class ComponentVersionContent(models.Model):
     """
 
     component_version = models.ForeignKey(ComponentVersion, on_delete=models.CASCADE)
-    content = models.ForeignKey(Content, on_delete=models.RESTRICT)
+    media = models.ForeignKey(Media, on_delete=models.RESTRICT)
 
     # "key" is a reserved word for MySQL, so we're temporarily using the column
     # name of "_key" to avoid breaking downstream tooling. A possible
@@ -252,7 +252,7 @@ class ComponentVersionContent(models.Model):
     class Meta:
         constraints = [
             # Uniqueness is only by ComponentVersion and key. If for some reason
-            # a ComponentVersion wants to associate the same piece of content
+            # a ComponentVersion wants to associate the same piece of Media
             # with two different identifiers, that is permitted.
             models.UniqueConstraint(
                 fields=["component_version", "key"],
@@ -261,11 +261,11 @@ class ComponentVersionContent(models.Model):
         ]
         indexes = [
             models.Index(
-                fields=["content", "component_version"],
-                name="oel_cvcontent_c_cv",
+                fields=["media", "component_version"],
+                name="oel_cvmedia_c_cv",
             ),
             models.Index(
-                fields=["component_version", "content"],
-                name="oel_cvcontent_cv_d",
+                fields=["component_version", "media"],
+                name="oel_cvmedia_cv_d",
             ),
         ]

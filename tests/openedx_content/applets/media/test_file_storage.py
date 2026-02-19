@@ -7,8 +7,8 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase, override_settings
 
-from openedx_content.applets.contents import api as contents_api
-from openedx_content.applets.contents.models import get_storage
+from openedx_content.applets.media import api as media_api
+from openedx_content.applets.media.models import get_storage
 from openedx_content.applets.publishing import api as publishing_api
 
 
@@ -32,8 +32,8 @@ class ContentFileStorageTestCase(TestCase):
             key="ContentFileStorageTestCase-test-key",
             title="Content File Storage Test Case Learning Package",
         )
-        self.html_media_type = contents_api.get_or_create_media_type("text/html")
-        self.html_content = contents_api.get_or_create_file_content(
+        self.html_media_type = media_api.get_or_create_media_type("text/html")
+        self.html_media = media_api.get_or_create_file_media(
             learning_package.id,
             self.html_media_type.id,
             data=b"<html>hello world!</html>",
@@ -49,15 +49,15 @@ class ContentFileStorageTestCase(TestCase):
         breaking backwards compatibility for everyone. Please be very careful if
         you're updating this test.
         """
-        content = self.html_content
-        assert content.path == f"content/{content.learning_package.uuid}/{content.hash_digest}"
+        media = self.html_media
+        assert media.path == f"content/{media.learning_package.uuid}/{media.hash_digest}"
 
         storage_root = settings.OPENEDX_LEARNING['MEDIA']['OPTIONS']['location']
-        assert content.os_path() == f"{storage_root}/{content.path}"
+        assert media.os_path() == f"{storage_root}/{media.path}"
 
     def test_read(self):
         """Make sure we can read the file data back."""
-        assert b"<html>hello world!</html>" == self.html_content.read_file().read()
+        assert b"<html>hello world!</html>" == self.html_media.read_file().read()
 
     @override_settings()
     def test_misconfiguration(self):
@@ -75,4 +75,4 @@ class ContentFileStorageTestCase(TestCase):
         get_storage.cache_clear()
         del settings.OPENEDX_LEARNING
         with self.assertRaises(ImproperlyConfigured):
-            self.html_content.read_file()
+            self.html_media.read_file()
