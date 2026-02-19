@@ -8,7 +8,7 @@ When this repo was created, it was intended to only encompass learning concepts.
 
 Over time, we realized that we actually needed to start by developing write-optimized CMS-friendly models, many of which are ideal to be also be used in LMS. We ended up with an "Authoring API" which powered the Studio-only Content Libraries feature.
 
-Now, we are working on CBE, Pathways, and Catalog-realted features in this repo. There's also still a Tagging API in this repo. So, the scope of Learning Core has increased, although it still makes sense to develop these important foundational, stable packages together in one core repository.
+Now, we are working on CBE, Pathways, and Catalog-related features in this repo. There's also still a Tagging API in this repo. So, the scope of Learning Core has increased, although it still makes sense to develop these important foundational, stable packages together in one core repository.
 
 Decision
 --------
