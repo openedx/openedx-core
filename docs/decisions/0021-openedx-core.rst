@@ -33,7 +33,7 @@ Long term, we are open to more stable, core APIs moving in, such as:
 * ``openedx_events``
 * ``openedx_filters``
 * ``openedx_authz``
-* ``openedx_keys`` (renamed from ``opaque_keys``)
+* ``openedx_keys`` (renamed from ``opaque_keys`` and ``ccx_keys``)
 
 There are dependencies between these apps we'd want to keep in mind. For example, we wouldn't want to move in ``openedx_keys`` without moving in ``openedx_authz`` first, otherwise we'd create a cyclical dependency between ``openex-authz`` and ``openedx-core``.
 
