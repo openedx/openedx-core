@@ -65,7 +65,7 @@ class CourseRunAdmin(admin.ModelAdmin):
     The CourseRun model admin.
     """
 
-    list_display = ["display_name", "created_date", "catalog_course", "run", "org_code"]
+    list_display = ["display_name", "created_date", "catalog_course", "org_code", "course_code", "run", "warnings"]
     readonly_fields = ("course_id",)
     # There may be thousands of catalog courses, so don't use <select>
     raw_id_fields = ["catalog_course"]
@@ -76,9 +76,20 @@ class CourseRunAdmin(admin.ModelAdmin):
         return self.readonly_fields
 
     @admin.display(description=_("Created"), ordering="created")
-    def created_date(self, obj: CatalogCourse) -> datetime.date:
+    def created_date(self, obj: CourseRun) -> datetime.date:
         """Display the created date without the timestamp"""
         return obj.created.date()
+
+    def warnings(self, obj: CourseRun) -> str:
+        """Display warnings of any detected issues"""
+        if obj.course_code != obj.catalog_course.course_code:
+            return "🚨 Critical: mismatched course code"
+        if obj.org_code != obj.catalog_course.org.short_name:
+            if obj.org_code.lower() == obj.catalog_course.org.short_name.lower():
+                return "⚠️ Warning: Incorrect org code capitalization"
+            return "🚨 Critical: mismatched org code"
+        # It would be nice to indicate if there's associated course content or not, but openedx-core isn't aware of
+        # modulestore so we have no way to check that here.
 
 
 admin.site.register(CourseRun, CourseRunAdmin)
