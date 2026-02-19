@@ -16,4 +16,6 @@ class CatalogAppConfig(AppConfig):
     label = "openedx_catalog"
 
     def ready(self) -> None:
-        pass
+
+        # Connect signal handlers.
+        from . import signals  # pylint: disable=import-outside-toplevel,unused-import
