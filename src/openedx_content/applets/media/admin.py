@@ -8,10 +8,10 @@ from django.utils.html import format_html
 
 from openedx_django_lib.admin_utils import ReadOnlyModelAdmin
 
-from .models import Content
+from .models import Media
 
 
-@admin.register(Content)
+@admin.register(Media)
 class ContentAdmin(ReadOnlyModelAdmin):
     """
     Django admin for Content model
@@ -40,13 +40,13 @@ class ContentAdmin(ReadOnlyModelAdmin):
     search_fields = ("hash_digest",)
 
     @admin.display(description="OS Path")
-    def os_path(self, content: Content):
+    def os_path(self, content: Media):
         return content.os_path() or ""
 
-    def path(self, content: Content):
+    def path(self, content: Media):
         return content.path if content.has_file else ""
 
-    def text_preview(self, content: Content):
+    def text_preview(self, content: Media):
         if not content.text:
             return ""
         return format_html(
@@ -54,7 +54,7 @@ class ContentAdmin(ReadOnlyModelAdmin):
             content.text,
         )
 
-    def image_preview(self, content: Content):
+    def image_preview(self, content: Media):
         """
         Return HTML for an image, if that is the underlying Content.
 

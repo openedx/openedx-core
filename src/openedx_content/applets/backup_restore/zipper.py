@@ -22,8 +22,8 @@ from openedx_content.models_api import (
     Collection,
     ComponentType,
     ComponentVersion,
-    ComponentVersionContent,
-    Content,
+    ComponentVersionMedia,
+    Media,
     LearningPackage,
     PublishableEntity,
     PublishableEntityVersion,
@@ -192,12 +192,12 @@ class LearningPackageZipper:
                 # which is too large for this type of prefetch.
                 Prefetch(
                     "draft__version__componentversion__componentversioncontent_set",
-                    queryset=ComponentVersionContent.objects.select_related("content"),
+                    queryset=ComponentVersionMedia.objects.select_related("content"),
                     to_attr="prefetched_contents",
                 ),
                 Prefetch(
                     "published__version__componentversion__componentversioncontent_set",
-                    queryset=ComponentVersionContent.objects.select_related("content"),
+                    queryset=ComponentVersionMedia.objects.select_related("content"),
                     to_attr="prefetched_contents",
                 ),
             )
@@ -374,11 +374,11 @@ class LearningPackageZipper:
 
                         # Get content data associated with this version
                         contents: QuerySet[
-                            ComponentVersionContent
+                            ComponentVersionMedia
                         ] = component_version.prefetched_contents  # type: ignore[attr-defined]
 
                         for component_version_content in contents:
-                            content: Content = component_version_content.content
+                            content: Media = component_version_content.content
 
                             # Important: The component_version_content.key contains implicitly
                             # the file name and the file extension

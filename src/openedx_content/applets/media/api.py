@@ -14,7 +14,7 @@ from django.db.transaction import atomic
 
 from openedx_django_lib.fields import create_hash_digest
 
-from .models import Content, MediaType
+from .models import Media, MediaType
 
 # The public API that will be re-exported by openedx_content.api
 # is listed in the __all__ entries below. Internal helper functions that are
@@ -67,7 +67,7 @@ def get_or_create_media_type(mime_type: str) -> MediaType:
     return media_type
 
 
-def get_content(content_id: int, /) -> Content:
+def get_content(content_id: int, /) -> Media:
     """
     Get a single Content object by its ID.
 
@@ -77,7 +77,7 @@ def get_content(content_id: int, /) -> Content:
     include this function anyway because it's tiny to write and it's better than
     someone using a get_or_create_* function when they really just want to get.
     """
-    return Content.objects.get(id=content_id)
+    return Media.objects.get(id=content_id)
 
 
 def get_or_create_text_content(
@@ -87,7 +87,7 @@ def get_or_create_text_content(
     text: str,
     created: datetime,
     create_file: bool = False,
-) -> Content:
+) -> Media:
     """
     Get or create a Content entry with text data stored in the database.
 
@@ -110,13 +110,13 @@ def get_or_create_text_content(
 
     with atomic():
         try:
-            content = Content.objects.get(
+            content = Media.objects.get(
                 learning_package_id=learning_package_id,
                 media_type_id=media_type_id,
                 hash_digest=hash_digest,
             )
-        except Content.DoesNotExist:
-            content = Content(
+        except Media.DoesNotExist:
+            content = Media(
                 learning_package_id=learning_package_id,
                 media_type_id=media_type_id,
                 hash_digest=hash_digest,
@@ -140,7 +140,7 @@ def get_or_create_file_content(
     /,
     data: bytes,
     created: datetime,
-) -> Content:
+) -> Media:
     """
     Get or create a Content with data stored in a file storage backend.
 
@@ -153,13 +153,13 @@ def get_or_create_file_content(
     hash_digest = create_hash_digest(data)
     with atomic():
         try:
-            content = Content.objects.get(
+            content = Media.objects.get(
                 learning_package_id=learning_package_id,
                 media_type_id=media_type_id,
                 hash_digest=hash_digest,
             )
-        except Content.DoesNotExist:
-            content = Content(
+        except Media.DoesNotExist:
+            content = Media(
                 learning_package_id=learning_package_id,
                 media_type_id=media_type_id,
                 hash_digest=hash_digest,
@@ -176,7 +176,7 @@ def get_or_create_file_content(
         return content
 
 
-def get_content_info_headers(content: Content) -> dict[str, str]:
+def get_content_info_headers(content: Media) -> dict[str, str]:
     """
     Return HTTP headers that are specific to this Content.
 

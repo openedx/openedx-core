@@ -13,7 +13,7 @@ from django.test import TestCase
 
 from openedx_content import api
 from openedx_content.applets.backup_restore.zipper import LearningPackageZipper
-from openedx_content.models_api import Collection, Component, Content, LearningPackage, PublishableEntity
+from openedx_content.models_api import Collection, Component, Media, LearningPackage, PublishableEntity
 
 User = get_user_model()
 
@@ -32,7 +32,7 @@ class LpDumpCommandTestCase(TestCase):
     published_component: Component
     published_component2: Component
     draft_component: Component
-    html_asset_content: Content
+    html_asset_content: Media
     collection: Collection
 
     @classmethod

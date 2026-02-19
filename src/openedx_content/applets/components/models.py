@@ -24,14 +24,14 @@ from django.db import models
 from openedx_django_lib.fields import case_sensitive_char_field, key_field
 from openedx_django_lib.managers import WithRelationsManager
 
-from ..media.models import Content
+from ..media.models import Media
 from ..publishing.models import LearningPackage, PublishableEntityMixin, PublishableEntityVersionMixin
 
 __all__ = [
     "ComponentType",
     "Component",
     "ComponentVersion",
-    "ComponentVersionContent",
+    "ComponentVersionMedia",
 ]
 
 
@@ -212,8 +212,8 @@ class ComponentVersion(PublishableEntityVersionMixin):
 
     # The contents hold the actual interesting data associated with this
     # ComponentVersion.
-    contents: models.ManyToManyField[Content, ComponentVersionContent] = models.ManyToManyField(
-        Content,
+    contents: models.ManyToManyField[Media, ComponentVersionMedia] = models.ManyToManyField(
+        Media,
         through="ComponentVersionContent",
         related_name="component_versions",
     )
@@ -223,7 +223,7 @@ class ComponentVersion(PublishableEntityVersionMixin):
         verbose_name_plural = "Component Versions"
 
 
-class ComponentVersionContent(models.Model):
+class ComponentVersionMedia(models.Model):
     """
     Determines the Content for a given ComponentVersion.
 
@@ -240,7 +240,7 @@ class ComponentVersionContent(models.Model):
     """
 
     component_version = models.ForeignKey(ComponentVersion, on_delete=models.CASCADE)
-    content = models.ForeignKey(Content, on_delete=models.RESTRICT)
+    content = models.ForeignKey(Media, on_delete=models.RESTRICT)
 
     # "key" is a reserved word for MySQL, so we're temporarily using the column
     # name of "_key" to avoid breaking downstream tooling. A possible

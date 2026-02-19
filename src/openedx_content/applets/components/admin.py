@@ -11,7 +11,7 @@ from django.utils.safestring import SafeText
 
 from openedx_django_lib.admin_utils import ReadOnlyModelAdmin
 
-from .models import Component, ComponentVersion, ComponentVersionContent
+from .models import Component, ComponentVersion, ComponentVersionMedia
 
 
 class ComponentVersionInline(admin.TabularInline):
@@ -134,7 +134,7 @@ def format_text_for_admin_display(text: str) -> SafeText:
     )
 
 
-def content_preview(cvc_obj: ComponentVersionContent) -> SafeText:
+def content_preview(cvc_obj: ComponentVersionMedia) -> SafeText:
     """
     Get the HTML to display a preview of the given ComponentVersionContent
     """
