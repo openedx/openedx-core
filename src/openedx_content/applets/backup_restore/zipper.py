@@ -31,7 +31,7 @@ from openedx_content.models_api import (
 
 from ..collections import api as collections_api
 from ..components import api as components_api
-from ..contents import api as contents_api
+from ..media import api as media_api
 from ..publishing import api as publishing_api
 from ..sections import api as sections_api
 from ..subsections import api as subsections_api
@@ -985,9 +985,9 @@ class LearningPackageUnzipper:
                 # storing the value as a content instance
                 if not self.learning_package_id:
                     raise ValueError("learning_package_id must be set before resolving static files.")
-                text_content = contents_api.get_or_create_text_content(
+                text_content = media.api.get_or_create_text_content(
                     self.learning_package_id,
-                    contents_api.get_or_create_media_type(f"application/vnd.openedx.xblock.v1.{block_type}+xml").id,
+                    media.api.get_or_create_media_type(f"application/vnd.openedx.xblock.v1.{block_type}+xml").id,
                     text=content_bytes.decode("utf-8"),
                     created=self.utc_now,
                 )

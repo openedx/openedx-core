@@ -1,5 +1,5 @@
 """
-Django admin for contents models
+Django admin for media.models
 """
 import base64
 

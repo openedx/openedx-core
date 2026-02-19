@@ -24,7 +24,7 @@ from django.db import models
 from openedx_django_lib.fields import case_sensitive_char_field, key_field
 from openedx_django_lib.managers import WithRelationsManager
 
-from ..contents.models import Content
+from ..media.models import Content
 from ..publishing.models import LearningPackage, PublishableEntityMixin, PublishableEntityVersionMixin
 
 __all__ = [

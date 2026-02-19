@@ -9,7 +9,7 @@ from django.test import TestCase
 
 from openedx_content.applets.components import api as components_api
 from openedx_content.applets.components.api import AssetError
-from openedx_content.applets.contents import api as contents_api
+from openedx_content.applets.media import api as media_api
 from openedx_content.applets.publishing import api as publishing_api
 from openedx_content.applets.publishing.models import LearningPackage
 
@@ -18,17 +18,17 @@ class AssetTestCase(TestCase):
     """
     Test serving static assets (Content files, via Component lookup).
     """
-    python_source_media_type: contents_api.MediaType
-    problem_block_media_type: contents_api.MediaType
-    html_media_type: contents_api.MediaType
+    python_source_media_type: media.api.MediaType
+    problem_block_media_type: media.api.MediaType
+    html_media_type: media.api.MediaType
 
     problem_type: components_api.ComponentType
     component: components_api.Component
     component_version: components_api.ComponentVersion
 
-    problem_content: contents_api.Content
-    python_source_asset: contents_api.Content
-    html_asset_content: contents_api.Content
+    problem_content: media.api.Content
+    python_source_asset: media.api.Content
+    html_asset_content: media.api.Content
 
     learning_package: LearningPackage
     now: datetime
@@ -44,13 +44,13 @@ class AssetTestCase(TestCase):
         cls.problem_type = components_api.get_or_create_component_type(
             "xblock.v1", "problem"
         )
-        cls.python_source_media_type = contents_api.get_or_create_media_type(
+        cls.python_source_media_type = media.api.get_or_create_media_type(
             "text/x-python",
         )
-        cls.problem_block_media_type = contents_api.get_or_create_media_type(
+        cls.problem_block_media_type = media.api.get_or_create_media_type(
             "application/vnd.openedx.xblock.v1.problem+xml",
         )
-        cls.html_media_type = contents_api.get_or_create_media_type("text/html")
+        cls.html_media_type = media.api.get_or_create_media_type("text/html")
 
         cls.learning_package = publishing_api.create_learning_package(
             key="ComponentTestCase-test-key",
@@ -66,7 +66,7 @@ class AssetTestCase(TestCase):
         )
 
         # ProblemBlock content that is stored as text Content, not a file.
-        cls.problem_content = contents_api.get_or_create_text_content(
+        cls.problem_content = media.api.get_or_create_text_content(
             cls.learning_package.id,
             cls.problem_block_media_type.id,
             text="<problem>(pretend problem OLX is here)</problem>",
@@ -80,7 +80,7 @@ class AssetTestCase(TestCase):
 
         # Python source file, stored as a file. This is hypothetical, as we
         # don't actually support bundling grader files like this today.
-        cls.python_source_asset = contents_api.get_or_create_file_content(
+        cls.python_source_asset = media.api.get_or_create_file_content(
             cls.learning_package.id,
             cls.python_source_media_type.id,
             data=b"print('hello world!')",
@@ -93,7 +93,7 @@ class AssetTestCase(TestCase):
         )
 
         # An HTML file that is student downloadable
-        cls.html_asset_content = contents_api.get_or_create_file_content(
+        cls.html_asset_content = media.api.get_or_create_file_content(
             cls.learning_package.id,
             cls.html_media_type.id,
             data=b"<html>hello world!</html>",

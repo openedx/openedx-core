@@ -6,7 +6,7 @@ This module aggregates all applet Django Admin modules.
 from .applets.backup_restore.admin import *
 from .applets.collections.admin import *
 from .applets.components.admin import *
-from .applets.contents.admin import *
+from .applets.media.admin import *
 from .applets.publishing.admin import *
 from .applets.sections.admin import *
 from .applets.subsections.admin import *
