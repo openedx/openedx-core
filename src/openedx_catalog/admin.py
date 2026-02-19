@@ -2,15 +2,23 @@
 Django Admin pages for openedx_catalog.
 """
 
+from __future__ import annotations
+
 import datetime
+from typing import TYPE_CHECKING
 
 from django.contrib import admin
-from django.db.models import Count
+from django.db.models import Count, QuerySet
 from django.urls import reverse
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 
 from .models import CatalogCourse, CourseRun
+
+if TYPE_CHECKING:
+
+    class CatalogCourseWithRunCount(CatalogCourse):
+        run_count: int
 
 
 class CatalogCourseAdmin(admin.ModelAdmin):
@@ -21,12 +29,12 @@ class CatalogCourseAdmin(admin.ModelAdmin):
     list_filter = ["org__short_name", "language"]
     list_display = ["display_name", "org_display", "course_code", "runs_summary", "created_date", "language"]
 
-    def get_readonly_fields(self, request, obj: CatalogCourse | None = None):
+    def get_readonly_fields(self, request, obj: CatalogCourse | None = None) -> tuple[str, ...]:
         if obj:  # editing an existing object
-            return self.readonly_fields + ("org", "course_code")
-        return self.readonly_fields
+            return ("org", "course_code")
+        return tuple()
 
-    def get_queryset(self, request):
+    def get_queryset(self, request) -> QuerySet[CatalogCourseWithRunCount]:
         """Add the 'run_count' to the list_display queryset"""
         qs = super().get_queryset(request)
         qs = qs.annotate(run_count=Count("runs"))
@@ -45,7 +53,7 @@ class CatalogCourseAdmin(admin.ModelAdmin):
         return obj.created.date()
 
     @admin.display(description=_("Runs"))
-    def runs_summary(self, obj: CatalogCourse) -> str:
+    def runs_summary(self, obj: CatalogCourseWithRunCount) -> str:
         """Summarize the runs"""
         if obj.run_count == 0:
             return "-"
@@ -53,7 +61,7 @@ class CatalogCourseAdmin(admin.ModelAdmin):
         first_few_runs = obj.runs.order_by("-run")[:3]
         runs_summary = ", ".join(run.run for run in first_few_runs)
         if obj.run_count > 4:
-            runs_summary += f", ... ({obj.runs_count})"
+            runs_summary += f", ... ({obj.run_count})"
         return format_html('<a href="{}">{}</a>', url, runs_summary)
 
 
@@ -80,7 +88,7 @@ class CourseRunAdmin(admin.ModelAdmin):
         """Display the created date without the timestamp"""
         return obj.created.date()
 
-    def warnings(self, obj: CourseRun) -> str:
+    def warnings(self, obj: CourseRun) -> str | None:
         """Display warnings of any detected issues"""
         if obj.course_code != obj.catalog_course.course_code:
             return "🚨 Critical: mismatched course code"
@@ -90,6 +98,7 @@ class CourseRunAdmin(admin.ModelAdmin):
             return "🚨 Critical: mismatched org code"
         # It would be nice to indicate if there's associated course content or not, but openedx-core isn't aware of
         # modulestore so we have no way to check that here.
+        return None
 
 
 admin.site.register(CourseRun, CourseRunAdmin)
