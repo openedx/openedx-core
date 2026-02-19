@@ -17,11 +17,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]  # Add macos-latest later?
         python-version: ['3.11', '3.12']
-        toxenv: ["django42", "django52", "package", "quality"]
-        # We're only testing against MySQL 8 right now because 5.7 is
-        # incompatible with Djagno 4.2. We'd have to make the tox.ini file more
-        # complicated than it's worth given the short expected shelf-life of
-        # MySQL 5.7 in our stack.
+        toxenv: ["django52", "package", "quality"]
         mysql-version: ["8"]
     services:
       mysql:
