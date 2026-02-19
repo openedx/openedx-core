@@ -8,7 +8,7 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from organizations.api import ensure_organization  # type: ignore[import]
-from organizations.models import Organization
+from organizations.models import Organization  # type: ignore[import]
 
 from openedx_catalog.models import CatalogCourse, CourseRun
 

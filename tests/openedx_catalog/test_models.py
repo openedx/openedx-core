@@ -1,6 +1,9 @@
 """
 Tests related to the Catalog models (CatalogCourse, CourseRun)
 """
+# mypy: disable-error-code="misc"
+# (Ignore 'Unexpected attribute "org_code" for model "CatalogCourse"' until
+#  https://github.com/typeddjango/django-stubs/issues/1034 is fixed.)
 
 import ddt  # type: ignore[import]
 import pytest
@@ -10,7 +13,7 @@ from django.db.utils import IntegrityError
 from django.test import TestCase, override_settings
 from opaque_keys.edx.locator import CourseLocator
 from organizations.api import ensure_organization  # type: ignore[import]
-from organizations.models import Organization
+from organizations.models import Organization  # type: ignore[import]
 
 from openedx_catalog.models import CatalogCourse, CourseRun
 
@@ -150,6 +153,7 @@ class TestCourseRunModel(TestCase):
     """
     Low-level tests of the CourseRun model.
     """
+    catalog_course: CatalogCourse
 
     @classmethod
     def setUpClass(cls):

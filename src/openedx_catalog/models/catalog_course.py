@@ -10,7 +10,7 @@ from django.db import models
 from django.db.models.functions import Length
 from django.db.models.lookups import Regex
 from django.utils.translation import gettext_lazy as _
-from organizations.models import Organization
+from organizations.models import Organization  # type: ignore[import]
 
 from openedx_django_lib.fields import case_insensitive_char_field, case_sensitive_char_field
 from openedx_django_lib.validators import validate_utc_datetime
@@ -66,7 +66,7 @@ class CatalogCourse(models.Model):
         # Initially, I had to_field="short_name" here, which has the nice property that we can look up an org's
         # short_name without doing a JOIN. But that also prevents changing the org's short_name, which could be
         # necessary to fix capitalization problems. (We wouldn't want to allow other changes to an org's short_name
-        # though; only fixing capitalization.)
+        # though; only fixing capitalization - see openedx_catalog.signals.verify_organization_change.)
     )
     course_code = case_insensitive_char_field(
         max_length=255,
@@ -142,7 +142,7 @@ class CatalogCourse(models.Model):
             self.display_name = self.course_code
         super().save(*args, **kwargs)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{self.display_name} ({self.org_code} {self.course_code})"
 
     class Meta:

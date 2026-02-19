@@ -8,7 +8,7 @@ import logging
 from django.core.exceptions import ValidationError
 from django.db.models.signals import pre_save
 from django.dispatch import receiver
-from organizations.models import Organization
+from organizations.models import Organization  # type: ignore[import]
 
 from .models import CourseRun
 
