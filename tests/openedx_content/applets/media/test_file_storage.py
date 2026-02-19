@@ -32,8 +32,8 @@ class ContentFileStorageTestCase(TestCase):
             key="ContentFileStorageTestCase-test-key",
             title="Content File Storage Test Case Learning Package",
         )
-        self.html_media_type = media.api.get_or_create_media_type("text/html")
-        self.html_content = media.api.get_or_create_file_content(
+        self.html_media_type = media_api.get_or_create_media_type("text/html")
+        self.html_content = media_api.get_or_create_file_content(
             learning_package.id,
             self.html_media_type.id,
             data=b"<html>hello world!</html>",

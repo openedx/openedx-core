@@ -390,7 +390,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
             created=cls.now,
             created_by=None,
         )
-        cls.text_media_type = media.api.get_or_create_media_type("text/plain")
+        cls.text_media_type = media_api.get_or_create_media_type("text/plain")
 
     def test_add(self):
         new_version = components_api.create_component_version(
@@ -400,7 +400,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
             created=self.now,
             created_by=None,
         )
-        new_content = media.api.get_or_create_text_content(
+        new_content = media_api.get_or_create_text_content(
             self.learning_package.pk,
             self.text_media_type.id,
             text="This is some data",
@@ -460,19 +460,19 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         assert content_raw_txt.read_file().read() == bytes_content
 
     def test_multiple_versions(self):
-        hello_content = media.api.get_or_create_text_content(
+        hello_content = media_api.get_or_create_text_content(
             self.learning_package.id,
             self.text_media_type.id,
             text="Hello World!",
             created=self.now,
         )
-        goodbye_content = media.api.get_or_create_text_content(
+        goodbye_content = media_api.get_or_create_text_content(
             self.learning_package.id,
             self.text_media_type.id,
             text="Goodbye World!",
             created=self.now,
         )
-        blank_content = media.api.get_or_create_text_content(
+        blank_content = media_api.get_or_create_text_content(
             self.learning_package.id,
             self.text_media_type.id,
             text="",
@@ -570,10 +570,10 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         Test creating multiple next versions with different content.
         This includes a case where we want to ignore previous content.
         """
-        python_source_media_type = media.api.get_or_create_media_type(
+        python_source_media_type = media_api.get_or_create_media_type(
             "text/x-python",
         )
-        python_source_asset = media.api.get_or_create_file_content(
+        python_source_asset = media_api.get_or_create_file_content(
             self.learning_package.id,
             python_source_media_type.id,
             data=b"print('hello world!')",

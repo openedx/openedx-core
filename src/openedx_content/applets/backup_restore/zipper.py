@@ -985,9 +985,9 @@ class LearningPackageUnzipper:
                 # storing the value as a content instance
                 if not self.learning_package_id:
                     raise ValueError("learning_package_id must be set before resolving static files.")
-                text_content = media.api.get_or_create_text_content(
+                text_content = media_api.get_or_create_text_content(
                     self.learning_package_id,
-                    media.api.get_or_create_media_type(f"application/vnd.openedx.xblock.v1.{block_type}+xml").id,
+                    media_api.get_or_create_media_type(f"application/vnd.openedx.xblock.v1.{block_type}+xml").id,
                     text=content_bytes.decode("utf-8"),
                     created=self.utc_now,
                 )

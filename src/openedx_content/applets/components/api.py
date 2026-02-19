@@ -255,8 +255,8 @@ def create_next_component_version(
                     # We use "application/octet-stream" as a generic fallback media type, per
                     # RFC 2046: https://datatracker.ietf.org/doc/html/rfc2046
                     media_type_str = media_type_str or "application/octet-stream"
-                    media_type = media.api.get_or_create_media_type(media_type_str)
-                    content = media.api.get_or_create_file_content(
+                    media_type = media_api.get_or_create_media_type(media_type_str)
+                    content = media_api.get_or_create_file_content(
                         component.learning_package.id,
                         media_type.id,
                         data=file_content,
@@ -647,10 +647,10 @@ def get_redirect_response_for_component_asset(
 
     # At this point, we know that there is valid Content that we want to send.
     # This adds Content-level headers, like the hash/etag and content type.
-    info_headers.update(media.api.get_content_info_headers(content))
+    info_headers.update(media_api.get_content_info_headers(content))
 
     # Recompute redirect headers (reminder: this should never be cached).
-    redirect_headers = media.api.get_redirect_headers(content.path, public)
+    redirect_headers = media_api.get_redirect_headers(content.path, public)
     logger.info(
         "Asset redirect (uncached metadata): "
         f"{component_version_uuid}/{asset_path} -> {redirect_headers}"
