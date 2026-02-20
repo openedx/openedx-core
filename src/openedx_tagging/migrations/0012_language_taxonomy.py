@@ -18,7 +18,7 @@ def create_language_taxonomy(apps, schema_editor):
         "allow_multiple": False,
         "allow_free_text": False,
         "visible_to_authors": True,
-        "_taxonomy_class": "openedx_tagging.models.system_defined.LanguageTaxonomy",
+        "_taxonomy_class": "openedx_tagging.core.tagging.models.system_defined.LanguageTaxonomy",
     })
 
     # But delete any unused tags created by the old fixture:
