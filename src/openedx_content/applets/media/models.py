@@ -311,6 +311,9 @@ class Media(models.Model):
         root. This file may not exist because has_file=False, or because we
         haven't written the file yet (this is the method we call when trying to
         figure out where the file *should* go).
+
+        For historical reasons (and backwards compatibility), the prefix for
+        this path is "content/" and not "media/".
         """
         return f"content/{self.learning_package.uuid}/{self.hash_digest}"
 
@@ -414,4 +417,4 @@ class Media(models.Model):
             ),
         ]
         verbose_name = "Media"
-        verbose_name_plural = "Medias"
+        verbose_name_plural = "Media"

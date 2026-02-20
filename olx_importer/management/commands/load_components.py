@@ -120,7 +120,7 @@ class Command(BaseCommand):
             mime_type=mime_type,
             created=now,
         )
-        content_api.create_component_version_content(
+        content_api.create_component_version_media(
             component_version,
             content.id,
             key=key,
@@ -170,7 +170,7 @@ class Command(BaseCommand):
                 created=now,
             )
             # Add the OLX source text to the ComponentVersion
-            content_api.create_component_version_content(
+            content_api.create_component_version_media(
                 component_version,
                 text_content.pk,
                 key="block.xml",

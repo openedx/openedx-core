@@ -72,7 +72,7 @@ class AssetTestCase(TestCase):
             text="<problem>(pretend problem OLX is here)</problem>",
             created=cls.now,
         )
-        components_api.create_component_version_content(
+        components_api.create_component_version_media(
             cls.component_version.pk,
             cls.problem_content.id,
             key="block.xml",
@@ -86,7 +86,7 @@ class AssetTestCase(TestCase):
             data=b"print('hello world!')",
             created=cls.now,
         )
-        components_api.create_component_version_content(
+        components_api.create_component_version_media(
             cls.component_version.pk,
             cls.python_source_asset.id,
             key="src/grader.py",
@@ -99,7 +99,7 @@ class AssetTestCase(TestCase):
             data=b"<html>hello world!</html>",
             created=cls.now,
         )
-        components_api.create_component_version_content(
+        components_api.create_component_version_media(
             cls.component_version.pk,
             cls.html_asset_content.id,
             key="static/hello.html",

@@ -191,11 +191,6 @@ class Component(PublishableEntityMixin):
         verbose_name = "Component"
         verbose_name_plural = "Components"
 
-    @property
-    def contents(self):
-        """Temp backwards compatibility shim."""
-        return self.media
-
     def __str__(self) -> str:
         return f"{self.component_type.namespace}:{self.component_type.name}:{self.local_key}"
 

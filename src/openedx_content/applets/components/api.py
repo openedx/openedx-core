@@ -46,8 +46,8 @@ __all__ = [
     "component_exists_by_key",
     "get_collection_components",
     "get_components",
-    "create_component_version_content",
-    "look_up_component_version_content",
+    "create_component_version_media",
+    "look_up_component_version_media",
     "AssetError",
     "get_redirect_response_for_component_asset",
 ]
@@ -155,46 +155,46 @@ def create_component_version(
 def create_next_component_version(
     component_pk: int,
     /,
-    content_to_replace: dict[str, int | None | bytes],
+    media_to_replace: dict[str, int | None | bytes],
     created: datetime,
     title: str | None = None,
     created_by: int | None = None,
     *,
     force_version_num: int | None = None,
-    ignore_previous_content: bool = False,
+    ignore_previous_media: bool = False,
 ) -> ComponentVersion:
     """
     Create a new ComponentVersion based on the most recent version.
 
     Args:
         component_pk (int): The primary key of the Component to version.
-        content_to_replace (dict): Mapping of file keys to Content IDs,
-            None (for deletion), or bytes (for new file content).
+        media_to_replace (dict): Mapping of file keys to Media IDs,
+            None (for deletion), or bytes (for new file media).
         created (datetime): The creation timestamp for the new version.
         title (str, optional): Title for the new version. If None, uses the previous version's title.
         created_by (int, optional): User ID of the creator.
         force_version_num (int, optional): If provided, overrides the automatic version number increment and sets
             this version's number explicitly. Use this if you need to restore or import a version with a specific
             version number, such as during data migration or when synchronizing with external systems.
-        ignore_previous_content (bool): If True, do not copy over content from the previous version.
+        ignore_previous_media (bool): If True, do not copy over media from the previous version.
 
     Returns:
         ComponentVersion: The newly created ComponentVersion instance.
 
     A very common pattern for making a new ComponentVersion is going to be "make
     it just like the last version, except changing these one or two things".
-    Before calling this, you should create any new contents via the contents
-    API or send the content bytes as part of ``content_to_replace`` values.
+    Before calling this, you should create any new media via the media
+    API or send the media bytes as part of ``media_to_replace`` values.
 
-    The ``content_to_replace`` dict is a mapping of strings representing the
-    local path/key for a file, to ``Content.id`` or content bytes values. Using
+    The ``media_to_replace`` dict is a mapping of strings representing the
+    local path/key for a file, to ``Media.id`` or media bytes values. Using
     `None` for a value in this dict means to delete that key in the next version.
 
     Make sure to wrap the function call on a atomic statement:
     ``with transaction.atomic():``
 
     It is okay to mark entries for deletion that don't exist. For instance, if a
-    version has ``a.txt`` and ``b.txt``, sending a ``content_to_replace`` value
+    version has ``a.txt`` and ``b.txt``, sending a ``media_to_replace`` value
     of ``{"a.txt": None, "c.txt": None}`` will remove ``a.txt`` from the next
     version, leave ``b.txt`` alone, and will not error–even though there is no
     ``c.txt`` in the previous version. This is to make it a little more
@@ -244,25 +244,25 @@ def create_next_component_version(
             component_id=component_pk,
         )
         # First copy the new stuff over...
-        for key, media_pk_or_bytes in content_to_replace.items():
+        for key, media_pk_or_bytes in media_to_replace.items():
             # If the media_pk is None, it means we want to remove the
-            # content represented by our key from the next version. Otherwise,
+            # media represented by our key from the next version. Otherwise,
             # we add our key->media_pk mapping to the next version.
             if media_pk_or_bytes is not None:
                 if isinstance(media_pk_or_bytes, bytes):
-                    file_path, file_content = key, media_pk_or_bytes
+                    file_path, file_media = key, media_pk_or_bytes
                     media_type_str, _encoding = mimetypes.guess_type(file_path)
                     # We use "application/octet-stream" as a generic fallback media type, per
                     # RFC 2046: https://datatracker.ietf.org/doc/html/rfc2046
                     media_type_str = media_type_str or "application/octet-stream"
                     media_type = media_api.get_or_create_media_type(media_type_str)
-                    content = media_api.get_or_create_file_media(
+                    media = media_api.get_or_create_file_media(
                         component.learning_package.id,
                         media_type.id,
-                        data=file_content,
+                        data=file_media,
                         created=created,
                     )
-                    media_pk = content.pk
+                    media_pk = media.pk
                 else:
                     media_pk = media_pk_or_bytes
                 ComponentVersionMedia.objects.create(
@@ -271,15 +271,15 @@ def create_next_component_version(
                     key=key,
                 )
 
-        if ignore_previous_content:
+        if ignore_previous_media:
             return component_version
 
         # Now copy any old associations that existed, as long as they aren't
         # in conflict with the new stuff or marked for deletion.
-        last_version_content_mapping = ComponentVersionMedia.objects \
-                                                              .filter(component_version=last_version)
-        for cvrc in last_version_content_mapping:
-            if cvrc.key not in content_to_replace:
+        last_version_media_mapping = ComponentVersionMedia.objects \
+                                                          .filter(component_version=last_version)
+        for cvrc in last_version_media_mapping:
+            if cvrc.key not in media_to_replace:
                 ComponentVersionMedia.objects.create(
                     media_id=cvrc.media_id,
                     component_version=component_version,
@@ -449,17 +449,17 @@ def get_collection_components(
     ).order_by('pk')
 
 
-def look_up_component_version_content(
+def look_up_component_version_media(
     learning_package_key: str,
     component_key: str,
     version_num: int,
     key: Path,
 ) -> ComponentVersionMedia:
     """
-    Look up ComponentVersionContent by human readable keys.
+    Look up ComponentVersionMedia by human readable keys.
 
     Can raise a django.core.exceptions.ObjectDoesNotExist error if there is no
-    matching ComponentVersionContent.
+    matching ComponentVersionMedia.
 
     This API call was only used in our proof-of-concept assets media server, and
     I don't know if we wantto make it a part of the public interface.
@@ -472,22 +472,22 @@ def look_up_component_version_content(
     )
     return ComponentVersionMedia.objects \
                                   .select_related(
-                                      "content",
-                                      "content__media_type",
+                                      "media",
+                                      "media__media_type",
                                       "component_version",
                                       "component_version__component",
                                       "component_version__component__learning_package",
                                   ).get(queries)
 
 
-def create_component_version_content(
+def create_component_version_media(
     component_version_id: int,
     media_id: int,
     /,
     key: str,
 ) -> ComponentVersionMedia:
     """
-    Add a Content to the given ComponentVersion
+    Add a Media to the given ComponentVersion
 
     We don't allow keys that would be absolute paths, e.g. ones that start with
     '/'. Storing these causes headaches with building relative paths and because
@@ -499,7 +499,7 @@ def create_component_version_content(
         logger.warning(
             "Absolute paths are not supported: "
             f"removed leading '/' from ComponentVersion {component_version_id} "
-            f"content key: {repr(key)} (media_id: {media_id})"
+            f"media key: {repr(key)} (media_id: {media_id})"
         )
         key = key.lstrip('/')
 
@@ -588,7 +588,7 @@ def get_redirect_response_for_component_asset(
     **Asset Redirection**
 
     For performance reasons, the ``HttpResponse`` object returned by this
-    function does not contain the actual content data of the asset. It requires
+    function does not contain the actual media data of the asset. It requires
     an appropriately configured reverse proxy server that handles the
     ``X-Accel-Redirect`` header (both Caddy and Nginx support this).
 
@@ -619,9 +619,9 @@ def get_redirect_response_for_component_asset(
     # those headers...
     info_headers = _get_component_version_info_headers(component_version)
 
-    # Check: Does the ComponentVersion have the requested asset (Content)?
+    # Check: Does the ComponentVersion have the requested asset (Media)?
     try:
-        cv_content = component_version.componentversionmedia_set.get(key=asset_path)
+        cv_media = component_version.componentversionmedia_set.get(key=asset_path)
     except ComponentVersionMedia.DoesNotExist:
         logger.error(f"ComponentVersion {component_version_uuid} has no asset {asset_path}")
         info_headers.update(
@@ -629,12 +629,12 @@ def get_redirect_response_for_component_asset(
         )
         return HttpResponseNotFound(headers=info_headers)
 
-    # Check: Does the Content have a downloadable file, instead of just inline
-    # text? It's easy for us to grab this content and stream it to the user
+    # Check: Does the Media have a downloadable file, instead of just inline
+    # text? It's easy for us to grab this media and stream it to the user
     # anyway, but we're explicitly not doing so because streaming large text
     # fields from the database is less scalable, and we don't want to encourage
     # that usage pattern.
-    media = cv_content.media
+    media = cv_media.media
     if not media.has_file:
         logger.error(
            f"ComponentVersion {component_version_uuid} has asset {asset_path}, "
@@ -645,8 +645,8 @@ def get_redirect_response_for_component_asset(
         )
         return HttpResponseNotFound(headers=info_headers)
 
-    # At this point, we know that there is valid Content that we want to send.
-    # This adds Content-level headers, like the hash/etag and content type.
+    # At this point, we know that there is valid Media that we want to send.
+    # This adds Media-level headers, like the hash/etag and content type.
     info_headers.update(media_api.get_media_info_headers(media))
 
     # Recompute redirect headers (reminder: this should never be cached).

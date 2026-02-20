@@ -74,7 +74,7 @@ class Command(BaseCommand):
 
         next_version = create_next_component_version(
             component.pk,
-            content_to_replace=local_keys_to_content_bytes,
+            media_to_replace=local_keys_to_content_bytes,
             created=created,
         )
 

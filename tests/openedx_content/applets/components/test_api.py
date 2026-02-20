@@ -406,7 +406,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
             text="This is some data",
             created=self.now,
         )
-        components_api.create_component_version_content(
+        components_api.create_component_version_media(
             new_version.pk,
             new_content.pk,
             key="my/path/to/hello.txt",
@@ -422,7 +422,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
 
         # Write the same content again, but to an absolute path (should auto-
         # strip) the leading '/'s.
-        components_api.create_component_version_content(
+        components_api.create_component_version_media(
             new_version.pk,
             new_content.pk,
             key="//nested/path/hello.txt",
@@ -441,7 +441,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_1 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 1",
-            content_to_replace={
+            media_to_replace={
                 "raw.txt": bytes_content,
                 "no_ext": bytes_content,
             },
@@ -483,7 +483,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_1 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 1",
-            content_to_replace={
+            media_to_replace={
                 "hello.txt": hello_content.pk,
                 "goodbye.txt": goodbye_content.pk,
             },
@@ -509,7 +509,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_2 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 2",
-            content_to_replace={
+            media_to_replace={
                 "hello.txt": blank_content.pk,
                 "blank.txt": blank_content.pk,
             },
@@ -538,7 +538,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_3 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 3",
-            content_to_replace={
+            media_to_replace={
                 "hello.txt": hello_content.pk,
                 "blank.txt": None,
                 "goodbye.txt": None,
@@ -559,7 +559,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_1 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 1",
-            content_to_replace={},
+            media_to_replace={},
             created=self.now,
             force_version_num=5,
         )
@@ -579,19 +579,19 @@ class CreateNewVersionsTestCase(ComponentTestCase):
             data=b"print('hello world!')",
             created=self.now,
         )
-        content_to_replace_for_published = {
+        media_to_replace_for_published = {
             'static/profile.webp': python_source_asset.pk,
             'static/background.webp': python_source_asset.pk,
         }
 
-        content_to_replace_for_draft = {
+        media_to_replace_for_draft = {
             'static/profile.webp': python_source_asset.pk,
             'static/new_file.webp': python_source_asset.pk,
         }
         version_1_published = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 1",
-            content_to_replace=content_to_replace_for_published,
+            media_to_replace=media_to_replace_for_published,
             created=self.now,
         )
         assert version_1_published.version_num == 1
@@ -604,9 +604,9 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_2_draft = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 2",
-            content_to_replace=content_to_replace_for_draft,
+            media_to_replace=media_to_replace_for_draft,
             created=self.now,
-            ignore_previous_content=True,
+            ignore_previous_media=True,
         )
         assert version_2_draft.version_num == 2
         assert version_2_draft.media.count() == 2
