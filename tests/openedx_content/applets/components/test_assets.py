@@ -26,9 +26,9 @@ class AssetTestCase(TestCase):
     component: components_api.Component
     component_version: components_api.ComponentVersion
 
-    problem_content: media_api.Media
+    problem_media: media_api.Media
     python_source_asset: media_api.Media
-    html_asset_content: media_api.Media
+    html_asset_media: media_api.Media
 
     learning_package: LearningPackage
     now: datetime
@@ -66,7 +66,7 @@ class AssetTestCase(TestCase):
         )
 
         # ProblemBlock content that is stored as text Content, not a file.
-        cls.problem_content = media_api.get_or_create_text_media(
+        cls.problem_media = media_api.get_or_create_text_media(
             cls.learning_package.id,
             cls.problem_block_media_type.id,
             text="<problem>(pretend problem OLX is here)</problem>",
@@ -74,7 +74,7 @@ class AssetTestCase(TestCase):
         )
         components_api.create_component_version_media(
             cls.component_version.pk,
-            cls.problem_content.id,
+            cls.problem_media.id,
             key="block.xml",
         )
 
@@ -93,7 +93,7 @@ class AssetTestCase(TestCase):
         )
 
         # An HTML file that is student downloadable
-        cls.html_asset_content = media_api.get_or_create_file_media(
+        cls.html_asset_media = media_api.get_or_create_file_media(
             cls.learning_package.id,
             cls.html_media_type.id,
             data=b"<html>hello world!</html>",
@@ -101,7 +101,7 @@ class AssetTestCase(TestCase):
         )
         components_api.create_component_version_media(
             cls.component_version.pk,
-            cls.html_asset_content.id,
+            cls.html_asset_media.id,
             key="static/hello.html",
         )
 
@@ -159,9 +159,9 @@ class AssetTestCase(TestCase):
         """Assert expected HttpResponse headers for a downloadable HTML file."""
         self._assert_has_component_version_headers(response.headers)
         assert response.status_code == 200
-        assert response.headers["Etag"] == self.html_asset_content.hash_digest
+        assert response.headers["Etag"] == self.html_asset_media.hash_digest
         assert response.headers["Content-Type"] == "text/html"
-        assert response.headers["X-Accel-Redirect"] == self.html_asset_content.path
+        assert response.headers["X-Accel-Redirect"] == self.html_asset_media.path
         assert "X-Open-edX-Error" not in response.headers
 
     def test_public_asset_response(self):

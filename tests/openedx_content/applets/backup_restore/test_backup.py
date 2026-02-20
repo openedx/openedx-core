@@ -32,7 +32,7 @@ class LpDumpCommandTestCase(TestCase):
     published_component: Component
     published_component2: Component
     draft_component: Component
-    html_asset_content: Media
+    html_asset_media: Media
     collection: Collection
 
     @classmethod
@@ -100,7 +100,7 @@ class LpDumpCommandTestCase(TestCase):
             created=cls.now,
         )
 
-        new_txt_content = api.get_or_create_text_media(
+        new_txt_media = api.get_or_create_text_media(
             cls.learning_package.pk,
             text_media_type.id,
             text="This is some data",
@@ -108,7 +108,7 @@ class LpDumpCommandTestCase(TestCase):
         )
         api.create_component_version_media(
             new_problem_version.pk,
-            new_txt_content.pk,
+            new_txt_media.pk,
             key="hello.txt",
         )
 
@@ -129,7 +129,7 @@ class LpDumpCommandTestCase(TestCase):
             created=cls.now,
         )
 
-        cls.html_asset_content = api.get_or_create_file_media(
+        cls.html_asset_media = api.get_or_create_file_media(
             cls.learning_package.id,
             html_media_type.id,
             data=b"<html>hello world!</html>",
@@ -137,7 +137,7 @@ class LpDumpCommandTestCase(TestCase):
         )
         api.create_component_version_media(
             new_html_version.pk,
-            cls.html_asset_content.id,
+            cls.html_asset_media.id,
             key="static/other/subdirectory/hello.html",
         )
 

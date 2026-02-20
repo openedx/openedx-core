@@ -114,7 +114,7 @@ class Command(BaseCommand):
             logger.warning(f'  Static reference not found: "{real_path}"')
             return  # Might as well bail if we can't find the file.
 
-        content = content_api.get_or_create_file_media(
+        media = content_api.get_or_create_file_media(
             self.learning_package.id,
             data=data_bytes,
             mime_type=mime_type,
@@ -122,7 +122,7 @@ class Command(BaseCommand):
         )
         content_api.create_component_version_media(
             component_version,
-            content.id,
+            media.id,
             key=key,
         )
 
