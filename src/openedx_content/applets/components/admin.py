@@ -81,15 +81,15 @@ class ContentInline(admin.TabularInline):
     ]
     extra = 0
 
-    def has_file(self, cvc_obj):
-        return cvc_obj.media.has_file
+    def has_file(self, cvm_obj):
+        return cvm_obj.media.has_file
 
-    def rendered_data(self, cvc_obj):
-        return media_preview(cvc_obj)
+    def rendered_data(self, cvm_obj):
+        return media_preview(cvm_obj)
 
     @admin.display(description="Size")
-    def format_size(self, cvc_obj):
-        return filesizeformat(cvc_obj.media.size)
+    def format_size(self, cvm_obj):
+        return filesizeformat(cvm_obj.media.size)
 
 
 @admin.register(ComponentVersion)
@@ -134,11 +134,11 @@ def format_text_for_admin_display(text: str) -> SafeText:
     )
 
 
-def media_preview(cvc_obj: ComponentVersionMedia) -> SafeText:
+def media_preview(cvm_obj: ComponentVersionMedia) -> SafeText:
     """
-    Get the HTML to display a preview of the given ComponentVersionContent
+    Get the HTML to display a preview of the given ComponentVersionMedia
     """
-    media_obj = cvc_obj.media
+    media_obj = cvm_obj.media
 
     if media_obj.media_type.type == "image":
         # This base64 encoding looks really goofy and is bad for performance,

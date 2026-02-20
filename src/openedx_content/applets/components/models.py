@@ -11,7 +11,7 @@ publishing app. Component maps 1:1 to PublishableEntity and ComponentVersion
 maps 1:1 to PublishableEntityVersion.
 
 Multiple pieces of Content may be associated with a ComponentVersion, through
-the ComponentVersionContent model. ComponentVersionContent allows to specify a
+the ComponentVersionMedia model. ComponentVersionMedia allows to specify a
 ComponentVersion-local identifier. We're using this like a file path by
 convention, but it's possible we might want to have special identifiers later.
 """

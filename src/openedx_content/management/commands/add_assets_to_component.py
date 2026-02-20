@@ -82,5 +82,5 @@ class Command(BaseCommand):
             f"Created v{next_version.version_num} of "
             f"{next_version.component.key} ({next_version.uuid}):"
         )
-        for cvc in next_version.componentversionmedia_set.all():
-            self.stdout.write(f"- {cvc.key} ({cvc.uuid})")
+        for cvm in next_version.componentversionmedia_set.all():
+            self.stdout.write(f"- {cvm.key} ({cvm.uuid})")
