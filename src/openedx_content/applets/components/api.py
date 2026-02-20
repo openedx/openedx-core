@@ -244,13 +244,13 @@ def create_next_component_version(
             component_id=component_pk,
         )
         # First copy the new stuff over...
-        for key, content_pk_or_bytes in content_to_replace.items():
-            # If the content_pk is None, it means we want to remove the
+        for key, media_pk_or_bytes in content_to_replace.items():
+            # If the media_pk is None, it means we want to remove the
             # content represented by our key from the next version. Otherwise,
-            # we add our key->content_pk mapping to the next version.
-            if content_pk_or_bytes is not None:
-                if isinstance(content_pk_or_bytes, bytes):
-                    file_path, file_content = key, content_pk_or_bytes
+            # we add our key->media_pk mapping to the next version.
+            if media_pk_or_bytes is not None:
+                if isinstance(media_pk_or_bytes, bytes):
+                    file_path, file_content = key, media_pk_or_bytes
                     media_type_str, _encoding = mimetypes.guess_type(file_path)
                     # We use "application/octet-stream" as a generic fallback media type, per
                     # RFC 2046: https://datatracker.ietf.org/doc/html/rfc2046
@@ -262,11 +262,11 @@ def create_next_component_version(
                         data=file_content,
                         created=created,
                     )
-                    content_pk = content.pk
+                    media_pk = content.pk
                 else:
-                    content_pk = content_pk_or_bytes
+                    media_pk = media_pk_or_bytes
                 ComponentVersionMedia.objects.create(
-                    content_id=content_pk,
+                    media_id=media_pk,
                     component_version=component_version,
                     key=key,
                 )
@@ -281,7 +281,7 @@ def create_next_component_version(
         for cvrc in last_version_content_mapping:
             if cvrc.key not in content_to_replace:
                 ComponentVersionMedia.objects.create(
-                    content_id=cvrc.content_id,
+                    media_id=cvrc.media_id,
                     component_version=component_version,
                     key=cvrc.key,
                 )
@@ -482,7 +482,7 @@ def look_up_component_version_content(
 
 def create_component_version_content(
     component_version_id: int,
-    content_id: int,
+    media_id: int,
     /,
     key: str,
 ) -> ComponentVersionMedia:
@@ -499,13 +499,13 @@ def create_component_version_content(
         logger.warning(
             "Absolute paths are not supported: "
             f"removed leading '/' from ComponentVersion {component_version_id} "
-            f"content key: {repr(key)} (content_id: {content_id})"
+            f"content key: {repr(key)} (media_id: {media_id})"
         )
         key = key.lstrip('/')
 
     cvrc, _created = ComponentVersionMedia.objects.get_or_create(
         component_version_id=component_version_id,
-        content_id=content_id,
+        media_id=media_id,
         key=key,
     )
     return cvrc
@@ -621,7 +621,7 @@ def get_redirect_response_for_component_asset(
 
     # Check: Does the ComponentVersion have the requested asset (Content)?
     try:
-        cv_content = component_version.componentversioncontent_set.get(key=asset_path)
+        cv_content = component_version.componentversionmedia_set.get(key=asset_path)
     except ComponentVersionMedia.DoesNotExist:
         logger.error(f"ComponentVersion {component_version_uuid} has no asset {asset_path}")
         info_headers.update(
@@ -634,8 +634,8 @@ def get_redirect_response_for_component_asset(
     # anyway, but we're explicitly not doing so because streaming large text
     # fields from the database is less scalable, and we don't want to encourage
     # that usage pattern.
-    content = cv_content.content
-    if not content.has_file:
+    media = cv_content.media
+    if not media.has_file:
         logger.error(
            f"ComponentVersion {component_version_uuid} has asset {asset_path}, "
            "but it is not downloadable (has_file=False)."
@@ -647,10 +647,10 @@ def get_redirect_response_for_component_asset(
 
     # At this point, we know that there is valid Content that we want to send.
     # This adds Content-level headers, like the hash/etag and content type.
-    info_headers.update(media_api.get_content_info_headers(content))
+    info_headers.update(media_api.get_content_info_headers(media))
 
     # Recompute redirect headers (reminder: this should never be cached).
-    redirect_headers = media_api.get_redirect_headers(content.path, public)
+    redirect_headers = media_api.get_redirect_headers(media.path, public)
     logger.info(
         "Asset redirect (uncached metadata): "
         f"{component_version_uuid}/{asset_path} -> {redirect_headers}"

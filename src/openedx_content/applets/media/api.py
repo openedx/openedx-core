@@ -67,7 +67,7 @@ def get_or_create_media_type(mime_type: str) -> MediaType:
     return media_type
 
 
-def get_content(content_id: int, /) -> Media:
+def get_content(media_id: int, /) -> Media:
     """
     Get a single Content object by its ID.
 
@@ -77,7 +77,7 @@ def get_content(content_id: int, /) -> Media:
     include this function anyway because it's tiny to write and it's better than
     someone using a get_or_create_* function when they really just want to get.
     """
-    return Media.objects.get(id=content_id)
+    return Media.objects.get(id=media_id)
 
 
 def get_or_create_text_content(

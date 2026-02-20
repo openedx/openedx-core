@@ -117,7 +117,7 @@ class RestoreLearningPackageCommandTest(RestoreTestCase):
                 assert draft_version.created_by.username == "lp_user"
                 assert published_version is None
                 # Get the content associated with this component
-                contents = draft_version.componentversion.contents.all()
+                contents = draft_version.componentversion.media.all()
                 content = contents.first() if contents.exists() else None
                 assert content is not None
                 assert "<drag-and-drop-v2" in content.text

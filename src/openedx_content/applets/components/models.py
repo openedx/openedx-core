@@ -191,6 +191,11 @@ class Component(PublishableEntityMixin):
         verbose_name = "Component"
         verbose_name_plural = "Components"
 
+    @property
+    def contents(self):
+        """Temp backwards compatibility shim."""
+        return self.media
+
     def __str__(self) -> str:
         return f"{self.component_type.namespace}:{self.component_type.name}:{self.local_key}"
 
@@ -200,7 +205,7 @@ class ComponentVersion(PublishableEntityVersionMixin):
     A particular version of a Component.
 
     This holds the content using a M:M relationship with Content via
-    ComponentVersionContent.
+    ComponentVersionMedia.
     """
 
     # This is technically redundant, since we can get this through
@@ -210,11 +215,11 @@ class ComponentVersion(PublishableEntityVersionMixin):
         Component, on_delete=models.CASCADE, related_name="versions"
     )
 
-    # The contents hold the actual interesting data associated with this
+    # The media relation holds the actual interesting data associated with this
     # ComponentVersion.
-    contents: models.ManyToManyField[Media, ComponentVersionMedia] = models.ManyToManyField(
+    media: models.ManyToManyField[Media, ComponentVersionMedia] = models.ManyToManyField(
         Media,
-        through="ComponentVersionContent",
+        through="ComponentVersionMedia",
         related_name="component_versions",
     )
 
@@ -240,7 +245,7 @@ class ComponentVersionMedia(models.Model):
     """
 
     component_version = models.ForeignKey(ComponentVersion, on_delete=models.CASCADE)
-    content = models.ForeignKey(Media, on_delete=models.RESTRICT)
+    media = models.ForeignKey(Media, on_delete=models.RESTRICT)
 
     # "key" is a reserved word for MySQL, so we're temporarily using the column
     # name of "_key" to avoid breaking downstream tooling. A possible
@@ -261,11 +266,11 @@ class ComponentVersionMedia(models.Model):
         ]
         indexes = [
             models.Index(
-                fields=["content", "component_version"],
-                name="oel_cvcontent_c_cv",
+                fields=["media", "component_version"],
+                name="oel_cvmedia_c_cv",
             ),
             models.Index(
-                fields=["component_version", "content"],
-                name="oel_cvcontent_cv_d",
+                fields=["component_version", "media"],
+                name="oel_cvmedia_cv_d",
             ),
         ]

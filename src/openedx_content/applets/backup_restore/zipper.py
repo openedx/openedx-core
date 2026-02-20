@@ -191,14 +191,14 @@ class LearningPackageZipper:
                 # especially with large libraries (up to 100K items),
                 # which is too large for this type of prefetch.
                 Prefetch(
-                    "draft__version__componentversion__componentversioncontent_set",
-                    queryset=ComponentVersionMedia.objects.select_related("content"),
-                    to_attr="prefetched_contents",
+                    "draft__version__componentversion__componentversionmedia_set",
+                    queryset=ComponentVersionMedia.objects.select_related("media"),
+                    to_attr="prefetched_media",
                 ),
                 Prefetch(
-                    "published__version__componentversion__componentversioncontent_set",
-                    queryset=ComponentVersionMedia.objects.select_related("content"),
-                    to_attr="prefetched_contents",
+                    "published__version__componentversion__componentversionmedia_set",
+                    queryset=ComponentVersionMedia.objects.select_related("media"),
+                    to_attr="prefetched_media",
                 ),
             )
             .order_by("key")
@@ -375,10 +375,10 @@ class LearningPackageZipper:
                         # Get content data associated with this version
                         contents: QuerySet[
                             ComponentVersionMedia
-                        ] = component_version.prefetched_contents  # type: ignore[attr-defined]
+                        ] = component_version.prefetched_media  # type: ignore[attr-defined]
 
                         for component_version_content in contents:
-                            content: Media = component_version_content.content
+                            content: Media = component_version_content.media
 
                             # Important: The component_version_content.key contains implicitly
                             # the file name and the file extension

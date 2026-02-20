@@ -618,7 +618,7 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
             expected_data = import_export_api.export_tags(taxonomy, ParserFormat.CSV)
 
         assert response.headers['Content-Type'] == content_type
-        assert response.content == expected_data.encode("utf-8")
+        assert response.media == expected_data.encode("utf-8")
 
     @ddt.data(
         ("csv", "text/csv"),
@@ -645,7 +645,7 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
 
         assert response.headers['Content-Type'] == content_type
         assert response.headers['Content-Disposition'] == f'attachment; filename="{taxonomy.name}.{output_format}"'
-        assert response.content == expected_data.encode("utf-8")
+        assert response.media == expected_data.encode("utf-8")
 
     def test_export_taxonomy_invalid_param_output_format(self):
         """

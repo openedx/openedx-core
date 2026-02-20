@@ -54,14 +54,14 @@ class ContentInline(admin.TabularInline):
     """
     Django admin configuration for Content
     """
-    model = ComponentVersion.contents.through
+    model = ComponentVersion.media.through
 
     def get_queryset(self, request):
         queryset = super().get_queryset(request)
         return queryset.select_related(
-            "content",
-            "content__learning_package",
-            "content__media_type",
+            "media",
+            "media__learning_package",
+            "media__media_type",
             "component_version",
             "component_version__publishable_entity_version",
             "component_version__component",
@@ -74,7 +74,7 @@ class ContentInline(admin.TabularInline):
         "rendered_data",
     ]
     readonly_fields = [
-        "content",
+        "media",
         "key",
         "format_size",
         "rendered_data",
@@ -82,14 +82,14 @@ class ContentInline(admin.TabularInline):
     extra = 0
 
     def has_file(self, cvc_obj):
-        return cvc_obj.content.has_file
+        return cvc_obj.media.has_file
 
     def rendered_data(self, cvc_obj):
-        return content_preview(cvc_obj)
+        return media_preview(cvc_obj)
 
     @admin.display(description="Size")
     def format_size(self, cvc_obj):
-        return filesizeformat(cvc_obj.content.size)
+        return filesizeformat(cvc_obj.media.size)
 
 
 @admin.register(ComponentVersion)
@@ -103,7 +103,7 @@ class ComponentVersionAdmin(ReadOnlyModelAdmin):
         "title",
         "version_num",
         "created",
-        "contents",
+        "media",
     ]
     fields = [
         "component",
@@ -134,26 +134,26 @@ def format_text_for_admin_display(text: str) -> SafeText:
     )
 
 
-def content_preview(cvc_obj: ComponentVersionMedia) -> SafeText:
+def media_preview(cvc_obj: ComponentVersionMedia) -> SafeText:
     """
     Get the HTML to display a preview of the given ComponentVersionContent
     """
-    content_obj = cvc_obj.content
+    media_obj = cvc_obj.media
 
-    if content_obj.media_type.type == "image":
+    if media_obj.media_type.type == "image":
         # This base64 encoding looks really goofy and is bad for performance,
         # but image previews in the admin are extremely useful, and this lets us
         # have them without creating a separate view in Open edX Core. (Keep in
         # mind that these assets are private, so they cannot be accessed via the
         # MEDIA_URL like most Django uploaded assets.)
-        data = content_obj.read_file().read()
+        data = media_obj.read_file().read()
         return format_html(
             '<img src="data:{};base64, {}" style="max-width: 100%;" /><br><pre>{}</pre>',
-            content_obj.mime_type,
+            media_obj.mime_type,
             base64.encodebytes(data).decode('utf8'),
-            content_obj.os_path(),
+            media_obj.os_path(),
         )
 
     return format_text_for_admin_display(
-        content_obj.text or ""
+        media_obj.text or ""
     )
