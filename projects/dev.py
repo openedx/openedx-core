@@ -34,7 +34,11 @@ INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.admindocs",
 
+    # Open edX Organizations (dependency for openedx_catalog)
+    "organizations",
+
     # Our Apps
+    "openedx_catalog",
     "openedx_tagging",
     "openedx_content",
     *openedx_content_backcompat_apps_to_install(),
