@@ -114,7 +114,7 @@ class Command(BaseCommand):
             logger.warning(f'  Static reference not found: "{real_path}"')
             return  # Might as well bail if we can't find the file.
 
-        content = content_api.get_or_create_file_content(
+        content = content_api.get_or_create_file_media(
             self.learning_package.id,
             data=data_bytes,
             mime_type=mime_type,
@@ -163,7 +163,7 @@ class Command(BaseCommand):
 
             # Create the Content entry for the raw data...
             text = xml_file_path.read_text('utf-8')
-            text_content, _created = content_api.get_or_create_text_content(
+            text_content, _created = content_api.get_or_create_text_media(
                 self.learning_package.id,
                 text=text,
                 mime_type=f"application/vnd.openedx.xblock.v1.{block_type_name}+xml",

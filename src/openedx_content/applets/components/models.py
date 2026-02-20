@@ -204,7 +204,7 @@ class ComponentVersion(PublishableEntityVersionMixin):
     """
     A particular version of a Component.
 
-    This holds the content using a M:M relationship with Content via
+    This holds the media using a M:M relationship with Content via
     ComponentVersionMedia.
     """
 
@@ -257,7 +257,7 @@ class ComponentVersionMedia(models.Model):
     class Meta:
         constraints = [
             # Uniqueness is only by ComponentVersion and key. If for some reason
-            # a ComponentVersion wants to associate the same piece of content
+            # a ComponentVersion wants to associate the same piece of Media
             # with two different identifiers, that is permitted.
             models.UniqueConstraint(
                 fields=["component_version", "key"],

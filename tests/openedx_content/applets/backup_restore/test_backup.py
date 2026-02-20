@@ -100,7 +100,7 @@ class LpDumpCommandTestCase(TestCase):
             created=cls.now,
         )
 
-        new_txt_content = api.get_or_create_text_content(
+        new_txt_content = api.get_or_create_text_media(
             cls.learning_package.pk,
             text_media_type.id,
             text="This is some data",
@@ -129,7 +129,7 @@ class LpDumpCommandTestCase(TestCase):
             created=cls.now,
         )
 
-        cls.html_asset_content = api.get_or_create_file_content(
+        cls.html_asset_content = api.get_or_create_file_media(
             cls.learning_package.id,
             html_media_type.id,
             data=b"<html>hello world!</html>",
