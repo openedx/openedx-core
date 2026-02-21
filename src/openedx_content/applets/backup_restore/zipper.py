@@ -373,11 +373,11 @@ class LearningPackageZipper:
                         component_version: ComponentVersion = version.componentversion
 
                         # Get media data associated with this version
-                        media: QuerySet[
+                        prefetched_media: QuerySet[
                             ComponentVersionMedia
                         ] = component_version.prefetched_media  # type: ignore[attr-defined]
 
-                        for component_version_media in media:
+                        for component_version_media in prefetched_media:
                             media: Media = component_version_media.media
 
                             # Important: The component_version_media.key contains implicitly
