@@ -116,16 +116,21 @@ class TestCatalogCourseModel(TestCase):
         ("en", True),
         ("en-us", True),
         ("fr", True),
+        ("fr-fr", True),
+        ("fr-ca", True),
         ("pt-br", True),
-        ("ca@valencia", True),  # This is one of the valid values in openedx-platform's default LANGUAGES setting
+        ("es-419", True),  # Spanish (Latin America)
+        ("ca-es-valencia", True),  # Catalan (Valencia)
         # ❌ Invalid language codes:
         ("", False),
         ("x", False),
         ("EN", False),  # must be lowercase
         ("en-US", False),  # must be lowercase
         ("en_us", False),  # hyphen, not underscore, for consistency
+        ("en--us", False),  # typo
         ("English", False),
         ("english", False),
+        ("ca@valencia", False),  # Don't support old gettext-style locales; should be "ca-es-valencia"
     )
     @ddt.unpack
     def test_language_code_validation(self, language_code: str, valid: bool) -> None:
@@ -147,12 +152,32 @@ class TestCatalogCourseModel(TestCase):
                     org_code="Org1", course_code="Python100", language=language_code, display_name="x"
                 ).full_clean()
 
+    @ddt.data(
+        # input field, expected .language value, expected .language_short value
+        ({"language": "fr"}, "fr", "fr"),
+        ({"language": "fr-ca"}, "fr-ca", "fr"),
+        ({"language": "zh-cn"}, "zh-cn", "zh_HANS"),
+        ({"language": "zh-hk"}, "zh-hk", "zh_HANT"),
+        ({"language_short": "zh_HANS"}, "zh-cn", "zh_HANS"),
+        ({"language_short": "zh_HANT"}, "zh-hk", "zh_HANT"),
+        ({"language_short": "fr"}, "fr", "fr"),
+        ({"language": "zh-hans"}, "zh-cn", "zh_HANS"),  # Input is invalid but gets corrected by clean()
+        ({"language": "zh-hant"}, "zh-hk", "zh_HANT"),  # Input is invalid but gets corrected by clean()
+    )
+    @ddt.unpack
+    def test_language_code_compatibility(self, kwargs: dict, expected_full_lang: str, expected_short: str) -> None:
+        """Test that the language_short field is fully backwards compatible with CourseOverview.language"""
+        cc = CatalogCourse.objects.create(org_code="Org1", course_code="Locale100", **kwargs)
+        assert cc.language == expected_full_lang
+        assert cc.language_short == expected_short
+
 
 @ddt.ddt
 class TestCourseRunModel(TestCase):
     """
     Low-level tests of the CourseRun model.
     """
+
     catalog_course: CatalogCourse
 
     @classmethod

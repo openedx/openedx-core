@@ -19,7 +19,13 @@ log = logging.getLogger(__name__)
 
 
 def get_default_language_code() -> str:
-    return settings.LANGUAGE_CODE
+    """
+    Default language code used for CatalogCourse.language
+
+    Note: this function is used in migration 0001 so update that migration if
+    moving it or changing its signature.
+    """
+    return settings.LANGUAGE_CODE  # e.g. "en-us", "fr-ca"
 
 
 # Make 'length' available for CHECK constraints. OK if this is called multiple times.
@@ -93,6 +99,11 @@ class CatalogCourse(models.Model):
             'Individual course runs may override this, e.g. "Into to Calc (Fall 2026 with Dr. Newton)".'
         ),
     )
+    # Note: language codes used on the Open edX platform are inconsistent.
+    # See https://github.com/openedx/openedx-platform/issues/38036
+    # For this model going forward, we normalized them to match settings.LANGUAGES (en, fr-ca, zh-cn, zh-hk) but for
+    # backwards compatibility, you can get/set the language_short field which uses the mostly two-letter values from
+    # the platform's ALL_LANGUAGES setting (en, fr, es, zh_HANS, zh_HANT).
     language = case_sensitive_char_field(  # Case sensitive but constraints force it to be lowercase.
         max_length=64,
         blank=False,
@@ -100,14 +111,46 @@ class CatalogCourse(models.Model):
         default=get_default_language_code,
         help_text=_(
             "The code representing the language of this catalog course's content. "
-            "The first two digits must be the lowercase ISO 639-1 language code. "
-            'e.g. "en", "es", "en-us", "pt-br". '
+            "The first two digits must be the lowercase ISO 639-1 language code, "
+            "optionally followed by a country/locale code. "
+            'e.g. "en", "es", "fr-ca", "pt-br", "zh-cn", "zh-hk". '
         ),
     )
 
     # 🛑 Avoid adding additional fields here. The core Open edX platform doesn't do much with catalog courses, so
     #    we don't need "description", "visibility", "prereqs", or anything else. If you want to use such fields and
     #    expose them to users, you'll need to supplement this with additional data/models as mentioned in the docstring.
+
+    @property
+    def language_short(self) -> str:
+        """
+        Get the language code used by this catalog course, without locale.
+        This is always a two-digit code, except for Mandarin and Cantonese.
+        (This should be a value from settings.ALL_LANGUAGES, and should match
+         the CourseOverview.language field.)
+        """
+        if self.language == "zh-cn":  # Chinese (Mainland China)
+            return "zh_HANS"  # Mandarin / Simplified
+        elif self.language == "zh-hk":  # Chinese (Hong Kong)
+            return "zh_HANT"  # Cantonese / Traditional
+        return self.language[:2]  # Strip locale
+
+    @language_short.setter
+    def language_short(self, legacy_code: str) -> str:
+        """
+        Set the language code used by this catalog course, without locale.
+        This is always a two-digit code, except for Mandarin and Cantonese.
+        (This should be a value from settings.ALL_LANGUAGES, and should match
+         the CourseOverview.language field.)
+        """
+        if hasattr(settings, "ALL_LANGUAGES"):
+            assert legacy_code in [code for (code, _name) in settings.ALL_LANGUAGES]
+        if legacy_code == "zh_HANS":  # Mandarin / Simplified
+            self.language = "zh-cn"  # Chinese (Mainland China)
+        elif legacy_code == "zh_HANT":  # Cantonese / Traditional
+            self.language = "zh-hk"  # Chinese (Hong Kong)
+        else:
+            self.language = legacy_code
 
     @property
     @admin.display(ordering="org__short_name")
@@ -135,11 +178,21 @@ class CatalogCourse(models.Model):
         # not possible on MySQL, using the default collation used by the Organizations app.
         # So we do not worry about that possibility here.
 
-    def save(self, *args, **kwargs):
-        """Save the model, with defaults and validation."""
+    def clean(self):
+        """Validate/normalize fields when edited via Django admin"""
         # Set a default value for display_name:
         if not self.display_name:
             self.display_name = self.course_code
+        # Normalize language codes to match settings.LANGUAGES.
+        # It's safe to assume language is lowercase here, because if it's not the DB will reject its CHECK constraint.
+        if self.language == "zh-hans":
+            self.language = "zh-cn"
+        if self.language == "zh-hant":
+            self.language = "zh-hk"
+
+    def save(self, *args, **kwargs):
+        """Save the model, with some defaults and validation."""
+        self.clean()
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:
@@ -163,11 +216,11 @@ class CatalogCourse(models.Model):
             ),
             # Language code must be lowercase, and locale codes separated by "-" (django convention) not "_"
             models.CheckConstraint(
-                condition=Regex(models.F("language"), r"^[a-z][a-z]((\-|@)[a-z]+)?$"),
+                condition=Regex(models.F("language"), r"^[a-z][a-z](\-[a-z0-9]+)*$"),
                 name="oex_catalog_catalogcourse_language_regex",
                 violation_error_message=_(
                     'The language code must be lowercase, e.g. "en". If a country/locale code is provided, '
-                    'it must be separated by a hyphen or @ sign, e.g. "en-us", "zh-hk", or "ca@valencia". '
+                    'it must be separated by a hyphen, e.g. "en-us", "zh-hk". '
                 ),
             ),
         ]

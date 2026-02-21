@@ -60,7 +60,7 @@ class Migration(migrations.Migration):
                     openedx_django_lib.fields.MultiCollationCharField(
                         db_collations={"mysql": "utf8mb4_bin", "sqlite": "BINARY"},
                         default=openedx_catalog.models.catalog_course.get_default_language_code,
-                        help_text='The code representing the language of this catalog course\'s content. The first two digits must be the lowercase ISO 639-1 language code. e.g. "en", "es", "en-us", "pt-br". ',
+                        help_text='The code representing the language of this catalog course\'s content. The first two digits must be the lowercase ISO 639-1 language code, optionally followed by a country/locale code. e.g. "en", "es", "fr-ca", "pt-br", "zh-cn", "zh-hk". ',
                         max_length=64,
                     ),
                 ),
@@ -159,9 +159,9 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="catalogcourse",
             constraint=models.CheckConstraint(
-                condition=django.db.models.lookups.Regex(models.F("language"), "^[a-z][a-z]((\\-|@)[a-z]+)?$"),
+                condition=django.db.models.lookups.Regex(models.F("language"), "^[a-z][a-z](\\-[a-z0-9]+)*$"),
                 name="oex_catalog_catalogcourse_language_regex",
-                violation_error_message='The language code must be lowercase, e.g. "en". If a country/locale code is provided, it must be separated by a hyphen or @ sign, e.g. "en-us", "zh-hk", or "ca@valencia". ',
+                violation_error_message='The language code must be lowercase, e.g. "en". If a country/locale code is provided, it must be separated by a hyphen, e.g. "en-us", "zh-hk". ',
             ),
         ),
         migrations.AddConstraint(
