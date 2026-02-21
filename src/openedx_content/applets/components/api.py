@@ -471,13 +471,13 @@ def look_up_component_version_media(
         & Q(key=key)
     )
     return ComponentVersionMedia.objects \
-                                  .select_related(
-                                      "media",
-                                      "media__media_type",
-                                      "component_version",
-                                      "component_version__component",
-                                      "component_version__component__learning_package",
-                                  ).get(queries)
+                                 .select_related(
+                                     "media",
+                                     "media__media_type",
+                                     "component_version",
+                                     "component_version__component",
+                                     "component_version__component__learning_package",
+                                 ).get(queries)
 
 
 def create_component_version_media(
