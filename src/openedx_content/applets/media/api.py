@@ -1,5 +1,5 @@
 """
-Low Level Contents API (warning: UNSTABLE, in progress API)
+Low Level media.api (warning: UNSTABLE, in progress API)
 
 Please look at the models.py file for more information about the kinds of data
 are stored in this app.
@@ -14,7 +14,7 @@ from django.db.transaction import atomic
 
 from openedx_django_lib.fields import create_hash_digest
 
-from .models import Content, MediaType
+from .models import Media, MediaType
 
 # The public API that will be re-exported by openedx_content.api
 # is listed in the __all__ entries below. Internal helper functions that are
@@ -23,10 +23,10 @@ from .models import Content, MediaType
 # to be callable only by other apps in the authoring package.
 __all__ = [
     "get_or_create_media_type",
-    "get_content",
-    "get_content_info_headers",
-    "get_or_create_text_content",
-    "get_or_create_file_content",
+    "get_media",
+    "get_media_info_headers",
+    "get_or_create_text_media",
+    "get_or_create_file_media",
 ]
 
 
@@ -67,29 +67,29 @@ def get_or_create_media_type(mime_type: str) -> MediaType:
     return media_type
 
 
-def get_content(content_id: int, /) -> Content:
+def get_media(media_id: int, /) -> Media:
     """
-    Get a single Content object by its ID.
+    Get a single Media object by its ID.
 
-    Content is always attached to something when it's created, like to a
-    ComponentVersion. That means the "right" way to access a Content is almost
+    Media is always attached to something when it's created, like to a
+    ComponentVersion. That means the "right" way to access a Media is almost
     always going to be via those relations and not via this function. But I
     include this function anyway because it's tiny to write and it's better than
     someone using a get_or_create_* function when they really just want to get.
     """
-    return Content.objects.get(id=content_id)
+    return Media.objects.get(id=media_id)
 
 
-def get_or_create_text_content(
+def get_or_create_text_media(
     learning_package_id: int,
     media_type_id: int,
     /,
     text: str,
     created: datetime,
     create_file: bool = False,
-) -> Content:
+) -> Media:
     """
-    Get or create a Content entry with text data stored in the database.
+    Get or create a Media entry with text data stored in the database.
 
     Use this when you want to create relatively small chunks of text that need
     to be accessed quickly, especially if you're pulling back multiple rows at
@@ -110,13 +110,13 @@ def get_or_create_text_content(
 
     with atomic():
         try:
-            content = Content.objects.get(
+            media = Media.objects.get(
                 learning_package_id=learning_package_id,
                 media_type_id=media_type_id,
                 hash_digest=hash_digest,
             )
-        except Content.DoesNotExist:
-            content = Content(
+        except Media.DoesNotExist:
+            media = Media(
                 learning_package_id=learning_package_id,
                 media_type_id=media_type_id,
                 hash_digest=hash_digest,
@@ -125,41 +125,41 @@ def get_or_create_text_content(
                 text=text,
                 has_file=create_file,
             )
-            content.full_clean()
-            content.save()
+            media.full_clean()
+            media.save()
 
             if create_file:
-                content.write_file(ContentFile(text_as_bytes))
+                media.write_file(ContentFile(text_as_bytes))
 
-        return content
+        return media
 
 
-def get_or_create_file_content(
+def get_or_create_file_media(
     learning_package_id: int,
     media_type_id: int,
     /,
     data: bytes,
     created: datetime,
-) -> Content:
+) -> Media:
     """
-    Get or create a Content with data stored in a file storage backend.
+    Get or create a Media with data stored in a file storage backend.
 
     Use this function to store non-text data, large data, or data where low
     latency access is not necessary. Also use this function (or
-    ``get_or_create_text_content`` with ``create_file=True``) to store any
-    Content that you want to be downloadable by browsers in the LMS, since the
-    static asset serving system will only work with file-backed Content.
+    ``get_or_create_text_media`` with ``create_file=True``) to store any
+    Media that you want to be downloadable by browsers in the LMS, since the
+    static asset serving system will only work with file-backed Media.
     """
     hash_digest = create_hash_digest(data)
     with atomic():
         try:
-            content = Content.objects.get(
+            media = Media.objects.get(
                 learning_package_id=learning_package_id,
                 media_type_id=media_type_id,
                 hash_digest=hash_digest,
             )
-        except Content.DoesNotExist:
-            content = Content(
+        except Media.DoesNotExist:
+            media = Media(
                 learning_package_id=learning_package_id,
                 media_type_id=media_type_id,
                 hash_digest=hash_digest,
@@ -168,24 +168,24 @@ def get_or_create_file_content(
                 text=None,
                 has_file=True,
             )
-            content.full_clean()
-            content.save()
+            media.full_clean()
+            media.save()
 
-            content.write_file(ContentFile(data))
+            media.write_file(ContentFile(data))
 
-        return content
+        return media
 
 
-def get_content_info_headers(content: Content) -> dict[str, str]:
+def get_media_info_headers(media: Media) -> dict[str, str]:
     """
-    Return HTTP headers that are specific to this Content.
+    Return HTTP headers that are specific to this Media.
 
     This currently only consists of the Content-Type and ETag. These values are
     safe to cache.
     """
     return {
-        "Content-Type": str(content.media_type),
-        "Etag": content.hash_digest,
+        "Content-Type": str(media.media_type),
+        "Etag": media.hash_digest,
     }
 
 
@@ -229,7 +229,7 @@ def get_redirect_headers(
         cache_directive = "private"
 
         # This only stays on the user's browser, so cache for a whole day. This
-        # is okay to do because Content data is typically immutable–i.e. if an
+        # is okay to do because Media data is typically immutable–i.e. if an
         # asset actually changes, the user should be directed to a different URL
         # for it.
         max_age = max_age or (60 * 60 * 24)

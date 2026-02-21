@@ -12,8 +12,8 @@ from openedx_content.applets.collections import api as collection_api
 from openedx_content.applets.collections.models import Collection
 from openedx_content.applets.components import api as components_api
 from openedx_content.applets.components.models import Component, ComponentType
-from openedx_content.applets.contents import api as contents_api
-from openedx_content.applets.contents.models import MediaType
+from openedx_content.applets.media import api as media_api
+from openedx_content.applets.media.models import MediaType
 from openedx_content.applets.publishing import api as publishing_api
 from openedx_content.applets.publishing.models import LearningPackage
 
@@ -390,7 +390,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
             created=cls.now,
             created_by=None,
         )
-        cls.text_media_type = contents_api.get_or_create_media_type("text/plain")
+        cls.text_media_type = media_api.get_or_create_media_type("text/plain")
 
     def test_add(self):
         new_version = components_api.create_component_version(
@@ -400,15 +400,15 @@ class CreateNewVersionsTestCase(ComponentTestCase):
             created=self.now,
             created_by=None,
         )
-        new_content = contents_api.get_or_create_text_content(
+        new_media = media_api.get_or_create_text_media(
             self.learning_package.pk,
             self.text_media_type.id,
             text="This is some data",
             created=self.now,
         )
-        components_api.create_component_version_content(
+        components_api.create_component_version_media(
             new_version.pk,
-            new_content.pk,
+            new_media.pk,
             key="my/path/to/hello.txt",
         )
         # re-fetch from the database to check to see if we wrote it correctly
@@ -416,63 +416,63 @@ class CreateNewVersionsTestCase(ComponentTestCase):
                                     .versions \
                                     .get(publishable_entity_version__version_num=1)
         assert (
-            new_content ==
-            new_version.contents.get(componentversioncontent__key="my/path/to/hello.txt")
+            new_media ==
+            new_version.media.get(componentversionmedia__key="my/path/to/hello.txt")
         )
 
         # Write the same content again, but to an absolute path (should auto-
         # strip) the leading '/'s.
-        components_api.create_component_version_content(
+        components_api.create_component_version_media(
             new_version.pk,
-            new_content.pk,
+            new_media.pk,
             key="//nested/path/hello.txt",
         )
         new_version = components_api.get_component(self.problem.pk) \
                                     .versions \
                                     .get(publishable_entity_version__version_num=1)
         assert (
-            new_content ==
-            new_version.contents.get(componentversioncontent__key="nested/path/hello.txt")
+            new_media ==
+            new_version.media.get(componentversionmedia__key="nested/path/hello.txt")
         )
 
     def test_bytes_content(self):
-        bytes_content = b'raw content'
+        bytes_media = b'raw content'
 
         version_1 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 1",
-            content_to_replace={
-                "raw.txt": bytes_content,
-                "no_ext": bytes_content,
+            media_to_replace={
+                "raw.txt": bytes_media,
+                "no_ext": bytes_media,
             },
             created=self.now,
         )
 
-        content_txt = version_1.contents.get(componentversioncontent__key="raw.txt")
-        content_raw_txt = version_1.contents.get(componentversioncontent__key="no_ext")
+        content_txt = version_1.media.get(componentversionmedia__key="raw.txt")
+        content_raw_txt = version_1.media.get(componentversionmedia__key="no_ext")
 
-        assert content_txt.size == len(bytes_content)
+        assert content_txt.size == len(bytes_media)
         assert str(content_txt.media_type) == 'text/plain'
-        assert content_txt.read_file().read() == bytes_content
+        assert content_txt.read_file().read() == bytes_media
 
-        assert content_raw_txt.size == len(bytes_content)
+        assert content_raw_txt.size == len(bytes_media)
         assert str(content_raw_txt.media_type) == 'application/octet-stream'
-        assert content_raw_txt.read_file().read() == bytes_content
+        assert content_raw_txt.read_file().read() == bytes_media
 
     def test_multiple_versions(self):
-        hello_content = contents_api.get_or_create_text_content(
+        hello_media = media_api.get_or_create_text_media(
             self.learning_package.id,
             self.text_media_type.id,
             text="Hello World!",
             created=self.now,
         )
-        goodbye_content = contents_api.get_or_create_text_content(
+        goodbye_media = media_api.get_or_create_text_media(
             self.learning_package.id,
             self.text_media_type.id,
             text="Goodbye World!",
             created=self.now,
         )
-        blank_content = contents_api.get_or_create_text_content(
+        blank_media = media_api.get_or_create_text_media(
             self.learning_package.id,
             self.text_media_type.id,
             text="",
@@ -483,25 +483,25 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_1 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 1",
-            content_to_replace={
-                "hello.txt": hello_content.pk,
-                "goodbye.txt": goodbye_content.pk,
+            media_to_replace={
+                "hello.txt": hello_media.pk,
+                "goodbye.txt": goodbye_media.pk,
             },
             created=self.now,
         )
         assert version_1.version_num == 1
         assert version_1.title == "Problem Version 1"
-        version_1_contents = list(version_1.contents.all())
+        version_1_contents = list(version_1.media.all())
         assert len(version_1_contents) == 2
         assert (
-            hello_content ==
-            version_1.contents
-                     .get(componentversioncontent__key="hello.txt")
+            hello_media ==
+            version_1.media
+                     .get(componentversionmedia__key="hello.txt")
         )
         assert (
-            goodbye_content ==
-            version_1.contents
-                     .get(componentversioncontent__key="goodbye.txt")
+            goodbye_media ==
+            version_1.media
+                     .get(componentversionmedia__key="goodbye.txt")
         )
 
         # This should keep the old value for goodbye.txt, add blank.txt, and set
@@ -509,28 +509,28 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_2 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 2",
-            content_to_replace={
-                "hello.txt": blank_content.pk,
-                "blank.txt": blank_content.pk,
+            media_to_replace={
+                "hello.txt": blank_media.pk,
+                "blank.txt": blank_media.pk,
             },
             created=self.now,
         )
         assert version_2.version_num == 2
-        assert version_2.contents.count() == 3
+        assert version_2.media.count() == 3
         assert (
-            blank_content ==
-            version_2.contents
-                     .get(componentversioncontent__key="hello.txt")
+            blank_media ==
+            version_2.media
+                     .get(componentversionmedia__key="hello.txt")
         )
         assert (
-            goodbye_content ==
-            version_2.contents
-                     .get(componentversioncontent__key="goodbye.txt")
+            goodbye_media ==
+            version_2.media
+                     .get(componentversionmedia__key="goodbye.txt")
         )
         assert (
-            blank_content ==
-            version_2.contents
-                     .get(componentversioncontent__key="blank.txt")
+            blank_media ==
+            version_2.media
+                     .get(componentversionmedia__key="blank.txt")
         )
 
         # Now we're going to set "hello.txt" back to hello_content, but remove
@@ -538,8 +538,8 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_3 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 3",
-            content_to_replace={
-                "hello.txt": hello_content.pk,
+            media_to_replace={
+                "hello.txt": hello_media.pk,
                 "blank.txt": None,
                 "goodbye.txt": None,
                 "nothere.txt": None,  # should not error
@@ -547,11 +547,11 @@ class CreateNewVersionsTestCase(ComponentTestCase):
             created=self.now,
         )
         assert version_3.version_num == 3
-        assert version_3.contents.count() == 1
+        assert version_3.media.count() == 1
         assert (
-            hello_content ==
-            version_3.contents
-                     .get(componentversioncontent__key="hello.txt")
+            hello_media ==
+            version_3.media
+                     .get(componentversionmedia__key="hello.txt")
         )
 
     def test_create_next_version_forcing_num_version(self):
@@ -559,7 +559,7 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_1 = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 1",
-            content_to_replace={},
+            media_to_replace={},
             created=self.now,
             force_version_num=5,
         )
@@ -570,28 +570,28 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         Test creating multiple next versions with different content.
         This includes a case where we want to ignore previous content.
         """
-        python_source_media_type = contents_api.get_or_create_media_type(
+        python_source_media_type = media_api.get_or_create_media_type(
             "text/x-python",
         )
-        python_source_asset = contents_api.get_or_create_file_content(
+        python_source_asset = media_api.get_or_create_file_media(
             self.learning_package.id,
             python_source_media_type.id,
             data=b"print('hello world!')",
             created=self.now,
         )
-        content_to_replace_for_published = {
+        media_to_replace_for_published = {
             'static/profile.webp': python_source_asset.pk,
             'static/background.webp': python_source_asset.pk,
         }
 
-        content_to_replace_for_draft = {
+        media_to_replace_for_draft = {
             'static/profile.webp': python_source_asset.pk,
             'static/new_file.webp': python_source_asset.pk,
         }
         version_1_published = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 1",
-            content_to_replace=content_to_replace_for_published,
+            media_to_replace=media_to_replace_for_published,
             created=self.now,
         )
         assert version_1_published.version_num == 1
@@ -604,26 +604,26 @@ class CreateNewVersionsTestCase(ComponentTestCase):
         version_2_draft = components_api.create_next_component_version(
             self.problem.pk,
             title="Problem Version 2",
-            content_to_replace=content_to_replace_for_draft,
+            media_to_replace=media_to_replace_for_draft,
             created=self.now,
-            ignore_previous_content=True,
+            ignore_previous_media=True,
         )
         assert version_2_draft.version_num == 2
-        assert version_2_draft.contents.count() == 2
+        assert version_2_draft.media.count() == 2
         assert (
             python_source_asset ==
-            version_2_draft.contents.get(
-                componentversioncontent__key="static/profile.webp")
+            version_2_draft.media.get(
+                componentversionmedia__key="static/profile.webp")
         )
         assert (
             python_source_asset ==
-            version_2_draft.contents.get(
-                componentversioncontent__key="static/new_file.webp")
+            version_2_draft.media.get(
+                componentversionmedia__key="static/new_file.webp")
         )
         with self.assertRaises(ObjectDoesNotExist):
             # This file was in the published version, but not in the draft version
             # since we ignored previous content.
-            version_2_draft.contents.get(componentversioncontent__key="static/background.webp")
+            version_2_draft.media.get(componentversionmedia__key="static/background.webp")
 
 
 class SetCollectionsTestCase(ComponentTestCase):
