@@ -3,6 +3,7 @@ Implementation of the `openedx_catalog` API.
 """
 
 import logging
+from typing import overload
 
 from django.conf import settings
 from opaque_keys.edx.keys import CourseKey
@@ -23,22 +24,49 @@ __all__ = [
 ]
 
 
-def get_catalog_course(org_code: str, course_code: str) -> CatalogCourse:
+@overload
+def get_catalog_course(*, org_code: str, course_code: str) -> CatalogCourse: ...
+@overload
+def get_catalog_course(*, url_slug: str) -> CatalogCourse: ...
+@overload
+def get_catalog_course(*, pk: int) -> CatalogCourse: ...
+
+
+def get_catalog_course(
+    pk: int | None = None,
+    url_slug: str = "",
+    org_code: str = "",
+    course_code: str = "",
+) -> CatalogCourse:
     """
     Get a catalog course (set of runs).
 
-    Does not check permissions nor load related models.
+    ⚠️ Does not check permissions or visibility rules.
 
     The CatalogCourse may not have any runs associated with it.
     """
-    return CatalogCourse.objects.get(org__short_name=org_code, course_code=course_code)
+    if pk:
+        assert not org_code
+        assert not url_slug
+        return CatalogCourse.objects.get(pk=pk)
+    if url_slug:
+        assert not org_code
+        assert not course_code
+        org_code, course_code = url_slug.split(":", 1)
+    # We might as well select_related org because we're joining to check the org__short_name field anyways.
+    return CatalogCourse.objects.select_related("org").get(org__short_name=org_code, course_code=course_code)
 
 
 def get_course_run(course_id: CourseKey) -> CourseRun:
     """
-    Get a single course run. Does not check permissions nor load related models.
+    Get a single course run.
+
+    ⚠️ Does not check permissions or visibility rules.
 
     The CourseRun may or may not have content associated with it.
+
+    Tip: to get all runs associated with a CatalogCourse, use
+    `get_catalog_course(...).runs`
     """
     return CourseRun.objects.get(course_id__exact=course_id)
 
@@ -73,7 +101,7 @@ def create_course_run_for_modulestore_course_with(
     course_id: CourseKey,
     *,
     display_name: str,
-    # The short language code (one of settings.ALL_LANGUAGES), e.g. "en", "es", "zh_HANS"
+    # The short language code (in openedx-platform, this is one of settings.ALL_LANGUAGES), e.g. "en", "es", "zh_HANS"
     language_short: str | None = None,
 ) -> CourseRun:
     """
