@@ -74,6 +74,12 @@ class TestCatalogCourseModel(TestCase):
             # Using .update() will bypass all checks and defaults in save()/clean(), to see if the DB enforces this:
             CatalogCourse.objects.filter(pk=cc.pk).update(course_code="")
 
+    # url_slug field tests:
+    def test_url_slug(self) -> None:
+        """Test that url_slug is generated automatically"""
+        cc = CatalogCourse.objects.create(org_code="Org1", course_code="Python100")
+        assert cc.url_slug == "Org1:Python100"
+
     # display_name field tests:
 
     def test_display_name_default(self) -> None:

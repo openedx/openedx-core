@@ -178,6 +178,18 @@ class CatalogCourse(models.Model):
         # not possible on MySQL, using the default collation used by the Organizations app.
         # So we do not worry about that possibility here.
 
+    @property
+    def url_slug(self):  # Do we need this? Would an opaque key be better?
+        """
+        An ID that can be used to identify this catalog course in URLs or APIs.
+        In the future, this may be an editable SlugField, so don't assume that
+        it never changes.
+        """
+        # '+' is a bad separator because it can mean " " in URLs.
+        # '-', '.', and '_' cannot be used since they're allowed in the org code
+        # So for now we use ':', and in the future we may make the whole slug customizable.
+        return f"{self.org_code}:{self.course_code}"
+
     def clean(self):
         """Validate/normalize fields when edited via Django admin"""
         # Set a default value for display_name:

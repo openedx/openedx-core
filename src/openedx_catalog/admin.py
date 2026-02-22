@@ -27,7 +27,15 @@ class CatalogCourseAdmin(admin.ModelAdmin):
     """
 
     list_filter = ["org__short_name", "language"]
-    list_display = ["display_name", "org_display", "course_code", "runs_summary", "created_date", "language"]
+    list_display = [
+        "display_name",
+        "org_display",
+        "course_code",
+        "runs_summary",
+        "url_slug",
+        "created_date",
+        "language",
+    ]
 
     def get_readonly_fields(self, request, obj: CatalogCourse | None = None) -> tuple[str, ...]:
         if obj:  # editing an existing object
