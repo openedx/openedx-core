@@ -6,4 +6,5 @@ mutated using API methods available in `openedx_catalog.api`.
 See the `openedx_catalog.api` docstring for much more details.
 """
 
+# pylint: disable=unused-import
 from .models import CatalogCourse, CourseRun

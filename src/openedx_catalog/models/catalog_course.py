@@ -136,7 +136,7 @@ class CatalogCourse(models.Model):
         return self.language[:2]  # Strip locale
 
     @language_short.setter
-    def language_short(self, legacy_code: str) -> str:
+    def language_short(self, legacy_code: str) -> None:
         """
         Set the language code used by this catalog course, without locale.
         This is always a two-digit code, except for Mandarin and Cantonese.
@@ -144,7 +144,7 @@ class CatalogCourse(models.Model):
          the CourseOverview.language field.)
         """
         if hasattr(settings, "ALL_LANGUAGES"):
-            assert legacy_code in [code for (code, _name) in settings.ALL_LANGUAGES]
+            assert legacy_code in [code for (code, _name) in settings.ALL_LANGUAGES]  # type: ignore
         if legacy_code == "zh_HANS":  # Mandarin / Simplified
             self.language = "zh-cn"  # Chinese (Mainland China)
         elif legacy_code == "zh_HANT":  # Cantonese / Traditional

@@ -14,7 +14,6 @@ from organizations.models import Organization  # type: ignore[import]
 from openedx_catalog import api
 from openedx_catalog.models_api import CatalogCourse, CourseRun
 
-
 pytestmark = pytest.mark.django_db
 
 

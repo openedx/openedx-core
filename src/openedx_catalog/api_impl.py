@@ -5,9 +5,8 @@ Implementation of the `openedx_catalog` API.
 import logging
 from typing import overload
 
-from django.conf import settings
 from opaque_keys.edx.keys import CourseKey
-from organizations.api import ensure_organization
+from organizations.api import ensure_organization  # type: ignore[import]
 from organizations.api import exceptions as org_exceptions
 
 from .models import CatalogCourse, CourseRun
