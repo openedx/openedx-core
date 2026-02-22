@@ -7,7 +7,7 @@ import logging
 from django.conf import settings
 from django.contrib import admin
 from django.db import models
-from django.db.models.functions import Length
+from django.db.models.functions import Length, Lower
 from django.db.models.lookups import Regex
 from django.utils.translation import gettext_lazy as _
 from organizations.models import Organization  # type: ignore[import]
@@ -74,7 +74,7 @@ class CatalogCourse(models.Model):
         # necessary to fix capitalization problems. (We wouldn't want to allow other changes to an org's short_name
         # though; only fixing capitalization - see openedx_catalog.signals.verify_organization_change.)
     )
-    course_code = case_insensitive_char_field(
+    course_code = case_sensitive_char_field(
         max_length=255,
         blank=False,
         null=False,
@@ -214,11 +214,13 @@ class CatalogCourse(models.Model):
         verbose_name = _("Catalog Course")
         verbose_name_plural = _("Catalog Courses")
         ordering = ("-created",)
+        indexes = [
+            # We need fast lookups by (org, course_code) pairs. We generally want this lookup to be case sensitive.
+            models.Index(fields=["org", "course_code"]),
+        ]
         constraints = [
-            models.UniqueConstraint(
-                fields=["org", "course_code"],
-                name="oex_catalog_catalog_course_org_code_pair_uniq",
-            ),
+            # The course_course must be case-insensitively unique per org:
+            models.UniqueConstraint("org", Lower("course_code"), name="oex_catalog_catalogcourse_org_code_uniq_ci"),
             # Enforce at the DB level that these required fields are not blank:
             models.CheckConstraint(
                 condition=models.Q(course_code__length__gt=0), name="oex_catalog_catalogcourse_course_code_not_blank"

@@ -36,7 +36,7 @@ class Migration(migrations.Migration):
                 (
                     "course_code",
                     openedx_django_lib.fields.MultiCollationCharField(
-                        db_collations={"mysql": "utf8mb4_unicode_ci", "sqlite": "NOCASE"},
+                        db_collations={"mysql": "utf8mb4_bin", "sqlite": "BINARY"},
                         help_text='The course ID, e.g. "Math100".',
                         max_length=255,
                     ),
@@ -136,10 +136,16 @@ class Migration(migrations.Migration):
                 "ordering": ("-created",),
             },
         ),
+        migrations.AddIndex(
+            model_name="catalogcourse",
+            index=models.Index(fields=["org", "course_code"], name="openedx_cat_org_id_bd314b_idx"),
+        ),
         migrations.AddConstraint(
             model_name="catalogcourse",
             constraint=models.UniqueConstraint(
-                fields=("org", "course_code"), name="oex_catalog_catalog_course_org_code_pair_uniq"
+                models.F("org"),
+                django.db.models.functions.text.Lower("course_code"),
+                name="oex_catalog_catalogcourse_org_code_uniq_ci",
             ),
         ),
         migrations.AddConstraint(

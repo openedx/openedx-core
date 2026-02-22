@@ -68,8 +68,8 @@ def test_get_catalog_course_url_slug_case(python100: CatalogCourse) -> None:
     # FIXME: The Organization model's short_code is case sensitive on SQLite but case insensitive on MySQL :/
     # So for now, we only make assertions about the 'course_code' field case, which we can control.
     assert api.get_catalog_course(url_slug="Org1:Python100") == python100  # Correct case
-    assert api.get_catalog_course(url_slug="Org1:python100") == python100  # Wrong course code case
-    assert api.get_catalog_course(url_slug="Org1:PYTHON100").url_slug == "Org1:Python100"  # Gets normalized
+    with pytest.raises(CatalogCourse.DoesNotExist):
+        api.get_catalog_course(url_slug="Org1:python100")  # Wrong course code case
 
 
 # get_course_run
