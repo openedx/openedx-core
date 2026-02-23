@@ -58,7 +58,7 @@ cffi==2.0.0
     #   -r requirements/quality.txt
     #   cryptography
     #   pynacl
-chardet==5.2.0
+chardet==6.0.0.post1
     # via
     #   -r requirements/ci.txt
     #   diff-cover
@@ -195,11 +195,11 @@ edx-opaque-keys==3.0.0
     # via
     #   -r requirements/quality.txt
     #   edx-drf-extensions
-fastapi==0.129.0
+fastapi==0.131.0
     # via
     #   -r requirements/quality.txt
     #   import-linter
-filelock==3.24.1
+filelock==3.24.3
     # via
     #   -r requirements/ci.txt
     #   tox
@@ -233,7 +233,7 @@ iniconfig==2.3.0
     # via
     #   -r requirements/quality.txt
     #   pytest
-isort==7.0.0
+isort==8.0.0
     # via
     #   -r requirements/quality.txt
     #   pylint
@@ -267,7 +267,7 @@ kombu==5.6.2
     # via
     #   -r requirements/quality.txt
     #   celery
-librt==0.8.0
+librt==0.8.1
     # via
     #   -r requirements/quality.txt
     #   mypy
@@ -332,7 +332,7 @@ pathspec==1.0.4
     #   mypy
 pip-tools==7.5.3
     # via -r requirements/pip-tools.txt
-platformdirs==4.9.1
+platformdirs==4.9.2
     # via
     #   -r requirements/ci.txt
     #   -r requirements/quality.txt
@@ -385,7 +385,7 @@ pyjwt[crypto]==2.11.0
     #   -r requirements/quality.txt
     #   drf-jwt
     #   edx-drf-extensions
-pylint==4.0.4
+pylint==4.0.5
     # via
     #   -r requirements/quality.txt
     #   edx-lint
@@ -463,7 +463,7 @@ rfc3986==2.0.0
     # via
     #   -r requirements/quality.txt
     #   twine
-rich==14.3.2
+rich==14.3.3
     # via
     #   -r requirements/quality.txt
     #   import-linter
@@ -496,7 +496,7 @@ starlette==0.52.1
     # via
     #   -r requirements/quality.txt
     #   fastapi
-stevedore==5.6.0
+stevedore==5.7.0
     # via
     #   -r requirements/quality.txt
     #   code-annotations
@@ -510,7 +510,7 @@ tomlkit==0.14.0
     # via
     #   -r requirements/quality.txt
     #   pylint
-tox==4.36.0
+tox==4.44.0
     # via -r requirements/ci.txt
 twine==6.2.0
     # via -r requirements/quality.txt
@@ -554,7 +554,7 @@ urllib3==2.6.3
     #   id
     #   requests
     #   twine
-uvicorn==0.40.0
+uvicorn==0.41.0
     # via
     #   -r requirements/quality.txt
     #   import-linter
@@ -564,7 +564,7 @@ vine==5.1.0
     #   amqp
     #   celery
     #   kombu
-virtualenv==20.36.1
+virtualenv==20.38.0
     # via
     #   -r requirements/ci.txt
     #   tox
