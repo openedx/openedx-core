@@ -157,7 +157,7 @@ edx-opaque-keys==3.0.0
     # via
     #   -r requirements/test.txt
     #   edx-drf-extensions
-fastapi==0.129.0
+fastapi==0.131.0
     # via
     #   -r requirements/test.txt
     #   import-linter
@@ -193,7 +193,7 @@ kombu==5.6.2
     # via
     #   -r requirements/test.txt
     #   celery
-librt==0.8.0
+librt==0.8.1
     # via
     #   -r requirements/test.txt
     #   mypy
@@ -315,7 +315,7 @@ requests==2.32.5
     #   sphinx
 restructuredtext-lint==2.0.2
     # via doc8
-rich==14.3.2
+rich==14.3.3
     # via
     #   -r requirements/test.txt
     #   import-linter
@@ -366,7 +366,7 @@ starlette==0.52.1
     # via
     #   -r requirements/test.txt
     #   fastapi
-stevedore==5.6.0
+stevedore==5.7.0
     # via
     #   -r requirements/test.txt
     #   code-annotations
@@ -419,7 +419,7 @@ urllib3==2.6.3
     # via
     #   -r requirements/test.txt
     #   requests
-uvicorn==0.40.0
+uvicorn==0.41.0
     # via
     #   -r requirements/test.txt
     #   import-linter
