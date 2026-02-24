@@ -91,10 +91,11 @@ class Migration(migrations.Migration):
                 (
                     "course_id",
                     opaque_keys.edx.django.models.CourseKeyField(
+                        case_sensitive=True,
+                        db_index=True,
                         editable=False,
                         help_text="The main identifier for this course. Includes the org, course code, and run.",
                         max_length=255,
-                        unique=True,
                         verbose_name="Course ID",
                     ),
                 ),

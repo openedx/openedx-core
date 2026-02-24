@@ -86,13 +86,13 @@ class CourseRun(models.Model):
         editable=False,
     )
     course_id = CourseKeyField(
-        max_length=255,  # CourseKeyField should specify this, not us. But Django complains if it's missing.
-        unique=True,
+        case_sensitive=True,
+        db_index=True,
         verbose_name=_("Course ID"),
         help_text=_("The main identifier for this course. Includes the org, course code, and run."),
         editable=False,
-        # Note: CourseKeyField is case-insensitive on MySQL and case sensitive on SQLite, so we apply an additional
-        # constraint below in the Meta section to achieve consistent case-insensitivity on both databases.
+        # This column must be unique, but we don't specify 'unique=True' here because we have an even stronger "case
+        # insensitively unique" constraint applied to this field below in Meta.constraints.
     )
     # The catalog course stores the 'org' and 'course_code' fields, which must match the ones in the course ID.
     # Note: there is no need to load this relationship to get 'org' or 'course_code'; get them from `course_id` instead.
@@ -213,7 +213,7 @@ class CourseRun(models.Model):
         constraints = [
             # catalog_course (org+course_code) and run must be unique together:
             models.UniqueConstraint("catalog_course", "run", name="oex_catalog_courserun_catalog_course_run_uniq"),
-            # Make course_id case insensitively unique on SQLite for consistency with MySQL.
+            # course_id is case-sensitively unique but we also want it to be case-insensitively unique:
             models.UniqueConstraint(Lower("course_id"), name="oex_catalog_courserun_course_id_ci"),
             # Enforce at the DB level that these required fields are not blank:
             models.CheckConstraint(condition=models.Q(run__length__gt=0), name="oex_catalog_courserun_run_not_blank"),

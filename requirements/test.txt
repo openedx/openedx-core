@@ -138,7 +138,7 @@ edx-drf-extensions==10.6.0
     # via
     #   -r requirements/base.txt
     #   edx-organizations
-edx-opaque-keys==3.0.0
+edx-opaque-keys==3.1.0
     # via
     #   -r requirements/base.txt
     #   edx-drf-extensions
