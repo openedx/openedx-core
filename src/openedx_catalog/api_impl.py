@@ -16,10 +16,10 @@ log = logging.getLogger(__name__)
 # These are the public API methods that anyone can use
 __all__ = [
     "get_catalog_course",
+    "update_catalog_course",
     "get_course_run",
     "sync_course_run_details",
     "create_course_run_for_modulestore_course_with",
-    "update_catalog_course",
 ]
 
 
@@ -54,6 +54,34 @@ def get_catalog_course(
         org_code, course_code = url_slug.split(":", 1)
     # We might as well select_related org because we're joining to check the org__short_name field anyways.
     return CatalogCourse.objects.select_related("org").get(org__short_name=org_code, course_code=course_code)
+
+
+def update_catalog_course(
+    catalog_course: CatalogCourse | int,
+    *,
+    display_name: str | None = None,  # Specify a string to change the display name.
+    # The short language code (one of settings.ALL_LANGUAGES), e.g. "en", "es", "zh_HANS"
+    language_short: str | None = None,
+) -> None:
+    """
+    Update a `CatalogCourse`.
+
+    ⚠️ Does not check permissions.
+    """
+    if isinstance(catalog_course, CatalogCourse):
+        cc = catalog_course
+    else:
+        cc = CatalogCourse.objects.get(pk=catalog_course)
+
+    update_fields = []
+    if display_name:
+        cc.display_name = display_name
+        update_fields.append("display_name")
+    if language_short:
+        cc.language_short = language_short
+        update_fields.append("language")
+    if update_fields:
+        cc.save(update_fields=update_fields)
 
 
 def get_course_run(course_id: CourseKey) -> CourseRun:
@@ -174,31 +202,3 @@ def create_course_run_for_modulestore_course_with(
         log.warning('Expected to create CourseRun for "%s" but it already existed.', str(course_id))
 
     return new_run
-
-
-def update_catalog_course(
-    catalog_course: CatalogCourse | int,
-    *,
-    display_name: str | None = None,  # Specify a string to change the display name.
-    # The short language code (one of settings.ALL_LANGUAGES), e.g. "en", "es", "zh_HANS"
-    language_short: str | None = None,
-) -> None:
-    """
-    Update a `CatalogCourse`.
-
-    ⚠️ Does not check permissions.
-    """
-    if isinstance(catalog_course, CatalogCourse):
-        cc = catalog_course
-    else:
-        cc = CatalogCourse.objects.get(pk=catalog_course)
-
-    update_fields = []
-    if display_name:
-        cc.display_name = display_name
-        update_fields.append("display_name")
-    if language_short:
-        cc.language_short = language_short
-        update_fields.append("language")
-    if update_fields:
-        cc.save(update_fields=update_fields)
