@@ -187,7 +187,7 @@ def create_course_run_for_modulestore_course_with(
             course_code=course_code,
             defaults={
                 "display_name": display_name,
-                "language_short": language_short,
+                **({"language_short": language_short} if language_short else {}),
             },
         )
 
