@@ -1,5 +1,9 @@
-20. Mutability and Identity of Taxonomy Tags
+22. Mutability and Identity of Taxonomy Tags
 ============================================
+
+Status
+------
+Accepted
 
 Context
 -------
@@ -32,8 +36,5 @@ To maintain clean boundaries between internal systems and external data mobility
 2. Handling Identifier Mutability
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-(Note: This section requires team consensus based on the context above. Proposed options to discuss:)
-
-* **Option A: Strict Immutability.** 'external_id' remains permanently immutable. If a change is required, the user must create a new tag and manually migrate associations.
-* **Option B: API/UI Mutability with Import Limitations.** Allow 'external_id' to be mutated via the UI/API (using the internal DB 'id' as the lookup under the hood). However, during file-based import/export, changing an 'external_id' will result in the creation of a new tag, as the file has no knowledge of the system's internal DB 'id'.
-* **Option C: Implementation of an 'old_external_id' payload.** Allow full mutability, but require import payloads to explicitly declare an 'old_external_id' to safely resolve updates across system boundaries.
+* The taxonomy editor UI displays external IDs, but doesn't allow changing them. It may allow specifying them when creating a tag, and/or generate one based on the value if none is specified.
+* In the rare case where an external ID needs to be changed, that can be easily done by an administrator using the Django admin UI.
