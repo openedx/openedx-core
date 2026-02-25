@@ -184,7 +184,9 @@ class CourseRun(models.Model):
             correct_short_name = self.catalog_course.org.short_name
             if correct_short_name.lower() == self.course_id.org.lower():
                 log.warning(
-                    'Course run "{self.course_id}" does not match case of its org short_name "{correct_short_name}"'
+                    'Course run "%s" does not match case of its org short_name "%s"',
+                    self.course_id,
+                    correct_short_name,
                 )
             else:
                 raise ValidationError("The CatalogCourse 'org' field should match the org in the course_id key.")

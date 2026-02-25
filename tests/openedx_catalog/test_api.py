@@ -3,6 +3,7 @@ Tests related to the openedx_catalog python API
 """
 
 from datetime import datetime, timezone
+import logging
 
 import pytest
 from django.db import connection
@@ -227,7 +228,9 @@ def test_create_course_run_for_modulestore_course_with_existing_org():
 
 # FIXME: this test passes on MySQL but not SQLite. We need to update the Organizations code to behave consistently.
 @pytest.mark.skipif(connection.vendor == "sqlite", reason="Only passes on MySQL")
-def test_create_course_run_for_modulestore_course_with_existing_org_different_capitalization():
+def test_create_course_run_for_modulestore_course_with_existing_org_different_capitalization(
+    caplog: pytest.LogCaptureFixture,
+):
     """
     Test create_course_run_for_modulestore_course_with() when the org already
     exists but with different capitalization
@@ -239,6 +242,21 @@ def test_create_course_run_for_modulestore_course_with_existing_org_different_ca
     run = api.create_course_run_for_modulestore_course_with(
         course_id, display_name="Introducción a las pruebas", language_short="es"
     )
+
+    # Verify that a warning was logged. We actually get two warnings - one from the API and one from model.clean():
+    assert caplog.record_tuples == [
+        (
+            "openedx_catalog.api_impl",
+            logging.WARN,
+            'The course with ID "course-v1:NewOrg+Test+2026" does not match its Organization.short_name "nEWoRG"',
+        ),
+        (
+            "openedx_catalog.models.course_run",
+            logging.WARN,
+            'Course run "course-v1:NewOrg+Test+2026" does not match case of its org short_name "nEWoRG"',
+        ),
+    ]
+
     assert run.catalog_course.org_id == existing_org_id
     assert run.catalog_course.org_code == "nEWoRG"  # Uses canonical capitalization
     assert run.catalog_course.course_code == "Test"
@@ -290,7 +308,35 @@ def test_create_course_run_for_modulestore_course_with_existing_run():
     assert old_run.run == "2025"
     # When there was only one run, the catalog course would be given the name of that run:
     assert new_run.catalog_course.display_name == "Previous Run (2025)"
-    assert new_run.display_name
     assert new_run.run == "2026"
     assert new_run.display_name == "New Run (2026)"
     assert new_run.course_id == course_id
+
+
+def test_create_course_run_for_modulestore_course_run_that_exists(caplog: pytest.LogCaptureFixture) -> None:
+    """
+    Test create_course_run_for_modulestore_course_with() when that exact
+    CourseRun already exists, e.g. due to a race condition.
+    """
+    org_code, course_code, run_code = "NewOrg", "Test", "2026"
+    course_id = CourseKey.from_string(f"course-v1:{org_code}+{course_code}+{run_code}")
+
+    existing_run = api.create_course_run_for_modulestore_course_with(course_id, display_name="Original Name")
+    # Call the API again to create the exact same run that we just created:
+    new_run = api.create_course_run_for_modulestore_course_with(course_id, display_name="New Name (ignore)")
+
+    # Verify that a warning was logged:
+    assert caplog.record_tuples == [
+        (
+            "openedx_catalog.api_impl",
+            logging.WARN,
+            'Expected to create CourseRun for "course-v1:NewOrg+Test+2026" but it already existed.',
+        ),
+    ]
+
+    existing_run.refresh_from_db()  # Let's make sure it hasn't changed
+    assert existing_run == new_run
+    assert existing_run.display_name == "Original Name"
+    assert new_run.display_name == "Original Name"
+    assert new_run.catalog_course.display_name == "Original Name"
+    assert new_run.run == run_code
