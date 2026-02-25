@@ -2,8 +2,8 @@
 Tests related to the openedx_catalog python API
 """
 
-from datetime import datetime, timezone
 import logging
+from datetime import datetime, timezone
 
 import pytest
 from django.db import connection
