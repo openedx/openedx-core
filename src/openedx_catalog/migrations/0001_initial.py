@@ -37,7 +37,7 @@ class Migration(migrations.Migration):
                     "course_code",
                     openedx_django_lib.fields.MultiCollationCharField(
                         db_collations={"mysql": "utf8mb4_bin", "sqlite": "BINARY"},
-                        help_text='The course ID, e.g. "Math100".',
+                        help_text='The course code/number, e.g. "Math100".',
                         max_length=255,
                     ),
                 ),

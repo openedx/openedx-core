@@ -149,7 +149,7 @@ class CourseRun(models.Model):
     @property
     @admin.display(ordering="catalog_course__course_code")
     def course_code(self) -> str:
-        """Get the course code of this course, e.g. "Math100" """
+        """Get the course code/number of this course, e.g. "Math100" """
         # Note: 'self.catalog_course.course_code' may require a JOIN/query, but self.course_id.course does not.
         return self.course_id.course
 

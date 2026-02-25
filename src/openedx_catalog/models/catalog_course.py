@@ -78,7 +78,7 @@ class CatalogCourse(models.Model):
         max_length=255,
         blank=False,
         null=False,
-        help_text=_('The course ID, e.g. "Math100".'),
+        help_text=_('The course code/number, e.g. "Math100".'),
     )
     # When this catalog course was first created. We don't track "modified" as this model should be basically immutable,
     # and the only field that may ever change is "display_name"; we also don't want people to think that the "modified"
