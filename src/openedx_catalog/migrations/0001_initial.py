@@ -60,7 +60,7 @@ class Migration(migrations.Migration):
                     openedx_django_lib.fields.MultiCollationCharField(
                         db_collations={"mysql": "utf8mb4_bin", "sqlite": "BINARY"},
                         default=openedx_catalog.models.catalog_course.get_default_language_code,
-                        help_text='The code representing the language of this catalog course\'s content. The first two digits must be the lowercase ISO 639-1 language code, optionally followed by a country/locale code. e.g. "en", "es", "fr-ca", "pt-br", "zh-cn", "zh-hk". ',
+                        help_text='The code representing the primary language of this catalog course\'s content - the language in which the content is authored and which learners can learn without translation. (Translated versions of the course or parts of the course may be available in other languages if supported by the platform.) The first two digits must be the lowercase ISO 639-1 language code, optionally followed by a country/locale code. e.g. "en", "es", "fr-ca", "pt-br", "zh-cn", "zh-hk". ',
                         max_length=64,
                     ),
                 ),

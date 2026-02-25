@@ -110,10 +110,11 @@ class CatalogCourse(models.Model):
         null=False,
         default=get_default_language_code,
         help_text=_(
-            "The code representing the language of this catalog course's content. "
-            "The first two digits must be the lowercase ISO 639-1 language code, "
-            "optionally followed by a country/locale code. "
-            'e.g. "en", "es", "fr-ca", "pt-br", "zh-cn", "zh-hk". '
+            "The code representing the primary language of this catalog course's content - the language in which the "
+            "content is authored and which learners can learn without translation. (Translated versions of the course "
+            "or parts of the course may be available in other languages if supported by the platform.) "
+            "The first two digits must be the lowercase ISO 639-1 language code, optionally followed by a "
+            'country/locale code. e.g. "en", "es", "fr-ca", "pt-br", "zh-cn", "zh-hk". '
         ),
     )
 
