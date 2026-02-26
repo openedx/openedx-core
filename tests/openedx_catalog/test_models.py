@@ -1,6 +1,7 @@
 """
 Tests related to the Catalog models (CatalogCourse, CourseRun)
 """
+# pylint: disable=unused-argument
 # mypy: disable-error-code="misc"
 # (Ignore 'Unexpected attribute "org_code" for model "CatalogCourse"' until
 #  https://github.com/typeddjango/django-stubs/issues/1034 is fixed.)
