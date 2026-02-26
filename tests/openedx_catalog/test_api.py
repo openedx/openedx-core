@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 from django.db import connection
+from django.db.models import ProtectedError
 from django.test import override_settings
 from freezegun import freeze_time
 from opaque_keys.edx.keys import CourseKey
@@ -139,6 +140,22 @@ def test_update_ignore_other_fields(python100: CatalogCourse) -> None:
     assert python100.course_code == "Python100"  # course_code field was not modified by update_catalog_course()
     assert python100.language_short == "fr"
     assert python100.display_name == "New Name"
+
+
+# delete_catalog_course
+
+
+def test_delete_catalog_course(python100: CatalogCourse, python100_summer26: CourseRun) -> None:
+    """Test that we can delete a CatalogCourse but only if no runs exist"""
+    # At first, deletion will fail because of the Summer2026 run:
+    with pytest.raises(ProtectedError):
+        api.delete_catalog_course(python100)
+    python100.refresh_from_db()  # Make sure it's not deleted.
+    # Now delete the run, unblocking deletion of the catalog course:
+    python100_summer26.delete()  # FIXME: use an API method for this.
+    api.delete_catalog_course(python100)
+    with pytest.raises(CatalogCourse.DoesNotExist):
+        python100.refresh_from_db()  # Make sure it's gone
 
 
 # get_course_run
@@ -340,3 +357,20 @@ def test_create_course_run_for_modulestore_course_run_that_exists(caplog: pytest
     assert new_run.display_name == "Original Name"
     assert new_run.catalog_course.display_name == "Original Name"
     assert new_run.run == run_code
+
+
+# delete_course_run
+
+
+def test_delete_course_run(
+    python100: CatalogCourse,
+    python100_summer26: CourseRun,
+    python100_winter26: CourseRun,
+) -> None:
+    """Test that we can delete a CourseRun, passing in the object"""
+    api.delete_course_run(python100_summer26.course_id)
+    with pytest.raises(CourseRun.DoesNotExist):
+        python100_summer26.refresh_from_db()  # Make sure it's gone
+    # The catalog course and other run is unaffected:
+    python100.refresh_from_db()
+    python100_winter26.refresh_from_db()

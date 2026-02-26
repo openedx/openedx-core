@@ -17,9 +17,11 @@ log = logging.getLogger(__name__)
 __all__ = [
     "get_catalog_course",
     "update_catalog_course",
+    "delete_catalog_course",
     "get_course_run",
     "sync_course_run_details",
     "create_course_run_for_modulestore_course_with",
+    "delete_course_run",
 ]
 
 
@@ -84,6 +86,20 @@ def update_catalog_course(
         cc.save(update_fields=update_fields)
 
 
+def delete_catalog_course(catalog_course: CatalogCourse | int) -> None:
+    """
+    Delete a `CatalogCourse`. This will fail with a `ProtectedError` if any runs exist.
+
+    ⚠️ Does not check permissions.
+    ⚠️ Does not emit any course lifecycle events.
+    """
+    if isinstance(catalog_course, CatalogCourse):
+        cc = catalog_course
+    else:
+        cc = CatalogCourse.objects.get(pk=catalog_course)
+    cc.delete()
+
+
 def get_course_run(course_id: CourseKey) -> CourseRun:
     """
     Get a single course run.
@@ -117,6 +133,7 @@ def sync_course_run_details(
     `update_course_run` API that will become the main way to rename a course.
 
     ⚠️ Does not check permissions.
+    ⚠️ Does not emit any course lifecycle events.
     """
     run = CourseRun.objects.get(course_id=course_id)
     if display_name:
@@ -143,6 +160,7 @@ def create_course_run_for_modulestore_course_with(
     not meant for historical data (use a data migration).
 
     ⚠️ Does not check permissions.
+    ⚠️ Does not emit any course lifecycle events.
     """
     # Note: this code shares a lot with the code in
     # openedx-platform/openedx/core/djangoapps/content/course_overviews/migrations/0030_backfill_...
@@ -202,3 +220,16 @@ def create_course_run_for_modulestore_course_with(
         log.warning('Expected to create CourseRun for "%s" but it already existed.', str(course_id))
 
     return new_run
+
+
+def delete_course_run(course_id: CourseKey) -> None:
+    """
+    Delete a `CourseRun`.
+
+    This may fail with a `ProtectedError` or other `IntegrityError` subclass if
+    there are still active references to the course run.
+
+    ⚠️ Does not check permissions.
+    ⚠️ Does not emit any course lifecycle events.
+    """
+    CourseRun.objects.get(course_id=course_id).delete()
