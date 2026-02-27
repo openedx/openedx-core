@@ -67,7 +67,7 @@ class CatalogCourseAdmin(admin.ModelAdmin):
             return "-"
         url = reverse("admin:openedx_catalog_courserun_changelist") + f"?catalog_course={obj.pk}"
         first_few_runs = obj.runs.order_by("-run_code")[:3]
-        runs_summary = ", ".join(run.run for run in first_few_runs)
+        runs_summary = ", ".join(run.run_code for run in first_few_runs)
         if obj.run_count > 4:
             runs_summary += f", ... ({obj.run_count})"
         return format_html('<a href="{}">{}</a>', url, runs_summary)
