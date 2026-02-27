@@ -32,7 +32,7 @@ class CatalogCourseAdmin(admin.ModelAdmin):
         "org_display",
         "course_code",
         "runs_summary",
-        "url_slug",
+        "key_str",
         "created_date",
         "language",
     ]

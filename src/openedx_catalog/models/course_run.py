@@ -37,8 +37,8 @@ class CourseRun(models.Model):
     ("course-v1:...") and never expose the integer primary key of this model.
 
     Note: throughout the system, we often abbreviate "course run" as just
-    "course", so the two concepts are usually interchangeable. The _set_ of runs
-    of a given course should always be called a "catalog course" in the code to
+    "course", so the two terms are often interchangeable. The _set_ of runs of
+    a given course should always be called a "catalog course" in the code to
     avoid ambiguity. That is, a "catalog course" (e.g. "Math 100") is comprised
     of one or more "course runs" (e.g. "Math 100 2025Fall", "Math 100
     2026Spring"), and we generally refer to those course runs as "courses". Most

@@ -88,11 +88,11 @@ def test_course_code_required(org1) -> None:
         CatalogCourse.objects.filter(pk=cc.pk).update(course_code="")
 
 
-# url_slug field tests:
-def test_url_slug(org1) -> None:
-    """Test that url_slug is generated automatically"""
+# key_str field tests:
+def test_key_str(org1) -> None:
+    """Test that key_str is generated automatically"""
     cc = CatalogCourse.objects.create(org_code="Org1", course_code="Python100")
-    assert cc.url_slug == "Org1:Python100"
+    assert cc.key_str == "catalog-course:Org1:Python100"
 
 
 # display_name field tests:

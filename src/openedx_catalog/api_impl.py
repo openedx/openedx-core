@@ -28,14 +28,14 @@ __all__ = [
 @overload
 def get_catalog_course(*, org_code: str, course_code: str) -> CatalogCourse: ...
 @overload
-def get_catalog_course(*, url_slug: str) -> CatalogCourse: ...
+def get_catalog_course(*, key_str: str) -> CatalogCourse: ...
 @overload
 def get_catalog_course(*, pk: int) -> CatalogCourse: ...
 
 
 def get_catalog_course(
     pk: int | None = None,
-    url_slug: str = "",
+    key_str: str = "",
     org_code: str = "",
     course_code: str = "",
 ) -> CatalogCourse:
@@ -48,12 +48,13 @@ def get_catalog_course(
     """
     if pk:
         assert not org_code
-        assert not url_slug
+        assert not key_str
         return CatalogCourse.objects.get(pk=pk)
-    if url_slug:
+    if key_str:
+        assert key_str.startswith("catalog-course:")
         assert not org_code
         assert not course_code
-        org_code, course_code = url_slug.split(":", 1)
+        _, org_code, course_code = key_str.split(":", 2)
     # We might as well select_related org because we're joining to check the org__short_name field anyways.
     return CatalogCourse.objects.select_related("org").get(org__short_name=org_code, course_code=course_code)
 

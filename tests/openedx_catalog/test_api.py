@@ -28,7 +28,7 @@ def _python100():
     # Note: in the future, this could use an API to create the CatalogCourse,
     # but we haven't created the full CRUD API yet.
     cc = CatalogCourse.objects.create(org_code="Org1", course_code="Python100", display_name="Python 100")
-    assert cc.url_slug == "Org1:Python100"
+    assert cc.key_str == "catalog-course:Org1:Python100"
     return cc
 
 
@@ -37,7 +37,7 @@ def _csharp200():
     """Create a "CSharp200" catalog course for use in these tests"""
     ensure_organization("Org1")
     cc = CatalogCourse.objects.create(org_code="Org1", course_code="CSharp200", display_name="C# 200")
-    assert cc.url_slug == "Org1:CSharp200"
+    assert cc.key_str == "catalog-course:Org1:CSharp200"
     return cc
 
 
@@ -74,11 +74,11 @@ def test_get_catalog_course(python100: CatalogCourse, csharp200: CatalogCourse) 
     with pytest.raises(CatalogCourse.DoesNotExist):
         api.get_catalog_course(pk=8234758243)
 
-    # Retrieve by URL slug:
-    assert api.get_catalog_course(url_slug="Org1:Python100") == python100
-    assert api.get_catalog_course(url_slug="Org1:CSharp200") == csharp200
+    # Retrieve by key_str:
+    assert api.get_catalog_course(key_str="catalog-course:Org1:Python100") == python100
+    assert api.get_catalog_course(key_str="catalog-course:Org1:CSharp200") == csharp200
     with pytest.raises(CatalogCourse.DoesNotExist):
-        api.get_catalog_course(url_slug="foo:bar")
+        api.get_catalog_course(key_str="catalog-course:foo:bar")
 
     # Retrieve by (org_code, course_code)
     assert api.get_catalog_course(org_code="Org1", course_code="Python100") == python100
@@ -87,15 +87,15 @@ def test_get_catalog_course(python100: CatalogCourse, csharp200: CatalogCourse) 
         api.get_catalog_course(org_code="Org2", course_code="CSharp200")
 
 
-def test_get_catalog_course_url_slug_case(python100: CatalogCourse) -> None:
+def test_get_catalog_course_key_str_case(python100: CatalogCourse) -> None:
     """
-    Test that get_catalog_course(url_slug=...) is case-insensitive
+    Test that get_catalog_course(key_str=...) is case-insensitive
     """
     # FIXME: The Organization model's short_code is case sensitive on SQLite but case insensitive on MySQL :/
     # So for now, we only make assertions about the 'course_code' field case, which we can control.
-    assert api.get_catalog_course(url_slug="Org1:Python100") == python100  # Correct case
+    assert api.get_catalog_course(key_str="catalog-course:Org1:Python100") == python100  # Correct case
     with pytest.raises(CatalogCourse.DoesNotExist):
-        api.get_catalog_course(url_slug="Org1:python100")  # Wrong course code case
+        api.get_catalog_course(key_str="catalog-course:Org1:python100")  # Wrong course code case
 
 
 def get_get_all_runs(python100_summer26: CourseRun, python100_winter26: CourseRun) -> None:
