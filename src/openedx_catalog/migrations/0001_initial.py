@@ -88,18 +88,18 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 (
-                    "course_id",
+                    "course_key",
                     opaque_keys.edx.django.models.CourseKeyField(
                         case_sensitive=True,
                         db_index=True,
                         editable=False,
                         help_text="The main identifier for this course. Includes the org, course code, and run.",
                         max_length=255,
-                        verbose_name="Course ID",
+                        verbose_name="Course Key",
                     ),
                 ),
                 (
-                    "run",
+                    "run_code",
                     openedx_django_lib.fields.MultiCollationCharField(
                         db_collations={"mysql": "utf8mb4_bin", "sqlite": "BINARY"},
                         help_text='The code that identifies this particular run of the course, e.g. "2026", "2026Fall" or "2T2026"',
@@ -174,21 +174,21 @@ class Migration(migrations.Migration):
             model_name="courserun",
             constraint=models.UniqueConstraint(
                 models.F("catalog_course"),
-                models.F("run"),
-                condition=models.Q(("course_id__startswith", "ccx"), _negated=True),
-                name="oex_catalog_courserun_catalog_course_run_uniq",
+                models.F("run_code"),
+                condition=models.Q(("course_key__startswith", "ccx"), _negated=True),
+                name="oex_catalog_courserun_catalog_course_run_code_uniq",
             ),
         ),
         migrations.AddConstraint(
             model_name="courserun",
             constraint=models.UniqueConstraint(
-                django.db.models.functions.text.Lower("course_id"), name="oex_catalog_courserun_course_id_ci"
+                django.db.models.functions.text.Lower("course_key"), name="oex_catalog_courserun_course_key_ci"
             ),
         ),
         migrations.AddConstraint(
             model_name="courserun",
             constraint=models.CheckConstraint(
-                condition=models.Q(("run__length__gt", 0)), name="oex_catalog_courserun_run_not_blank"
+                condition=models.Q(("run_code__length__gt", 0)), name="oex_catalog_courserun_run_code_not_blank"
             ),
         ),
         migrations.AddConstraint(
@@ -201,10 +201,10 @@ class Migration(migrations.Migration):
             model_name="courserun",
             constraint=models.CheckConstraint(
                 condition=django.db.models.lookups.GreaterThan(
-                    django.db.models.functions.text.StrIndex("course_id", models.F("run")), 0
+                    django.db.models.functions.text.StrIndex("course_key", models.F("run_code")), 0
                 ),
-                name="oex_catalog_courserun_courseid_run_match_exactly",
-                violation_error_message="The CourseRun 'run' field should match the run in the course_id key.",
+                name="oex_catalog_courserun_course_key_run_code_match_exactly",
+                violation_error_message="The CourseRun 'run_code' field should match the run in the 'course_key'.",
             ),
         ),
     ]

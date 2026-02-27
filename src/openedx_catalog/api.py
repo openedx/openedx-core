@@ -8,7 +8,7 @@ app mainly exists to provide core models that represent "catalog courses" and
 If a course "exists" in the system, you can trust that it will exist as a
 CatalogCourse and CourseRun row in this openedx_catalog app, and use those as
 needed when creating foreign keys in various apps. This should be much more
-efficient than storing the full course ID as a string or creating a foreign key
+efficient than storing the full course key as a string or creating a foreign key
 to the (large) CourseOverview table.
 
 Note that the opposite does not hold. Admins can now create CourseRuns and/or

@@ -22,7 +22,7 @@ def verify_organization_change(sender, instance, **kwargs):
 
     Nothing stops users from changing Organization.short_name entries in the Django admin, but any changes other than
     capitalization fixes will result in totally invalid data, as CatalogCourse will be related to an Organization that
-    no longer matches the "org" part of the related CourseRun's course IDs.
+    no longer matches the "org" part of the related CourseRuns' course keys.
     """
     if not instance.pk:
         return  # It's a brand new Organization; we don't care
@@ -36,10 +36,10 @@ def verify_organization_change(sender, instance, **kwargs):
         # its foreign key ID, but that would also make it extremely difficult to ever "fix" an incorrect Organization's
         # short_name (e.g. change capitalization), because doing so would fail with a foreign key constraint error.
 
-        run_course_ids = CourseRun.objects.filter(catalog_course__org=instance).values_list("course_id", flat=True)
-        for course_id in run_course_ids:
-            if course_id.org.lower() != new_org_code.lower():
+        run_course_keys = CourseRun.objects.filter(catalog_course__org=instance).values_list("course_key", flat=True)
+        for course_key in run_course_keys:
+            if course_key.org.lower() != new_org_code.lower():
                 raise ValidationError(
-                    f'Changing the org short_name to "{new_org_code}" will result in CourseRun "{course_id}" having '
+                    f'Changing the org short_name to "{new_org_code}" will result in CourseRun "{course_key}" having '
                     "the incorrect organization code. "
                 )

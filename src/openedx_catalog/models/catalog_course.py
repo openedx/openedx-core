@@ -160,7 +160,7 @@ class CatalogCourse(models.Model):
         Get the org code (Organization short_name) of this course, e.g. "MITx"
 
         ⚠️ This is the org's canonical short_name and may differ in case from
-        the actual org code used in the course ID's of the runs of this course,
+        the actual org code used in the course keys of the runs of this course,
         especially with older catalog courses.
         """
         return self.org.short_name
@@ -220,7 +220,7 @@ class CatalogCourse(models.Model):
             models.Index(fields=["org", "course_code"]),
         ]
         constraints = [
-            # The course_course must be case-insensitively unique per org:
+            # The course_code must be case-insensitively unique per org:
             models.UniqueConstraint("org", Lower("course_code"), name="oex_catalog_catalogcourse_org_code_uniq_ci"),
             # Enforce at the DB level that these required fields are not blank:
             models.CheckConstraint(

@@ -23,8 +23,8 @@ def test_org_integrity() -> None:
     org = Organization.objects.get(pk=ensure_organization("Org1")["id"])
 
     catalog_course = CatalogCourse.objects.create(org=org, course_code="Math100")
-    course_run = CourseRun.objects.create(catalog_course=catalog_course, run="A")
-    assert str(course_run.course_id) == "course-v1:Org1+Math100+A"
+    course_run = CourseRun.objects.create(catalog_course=catalog_course, run_code="A")
+    assert str(course_run.course_key) == "course-v1:Org1+Math100+A"
 
     org.short_name = "foo"
     with pytest.raises(

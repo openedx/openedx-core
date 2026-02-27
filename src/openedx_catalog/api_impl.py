@@ -100,7 +100,7 @@ def delete_catalog_course(catalog_course: CatalogCourse | int) -> None:
     cc.delete()
 
 
-def get_course_run(course_id: CourseKey) -> CourseRun:
+def get_course_run(course_key: CourseKey) -> CourseRun:
     """
     Get a single course run.
 
@@ -111,11 +111,11 @@ def get_course_run(course_id: CourseKey) -> CourseRun:
     Tip: to get all runs associated with a CatalogCourse, use
     `get_catalog_course(...).runs`
     """
-    return CourseRun.objects.get(course_id__exact=course_id)
+    return CourseRun.objects.get(course_key__exact=course_key)
 
 
 def sync_course_run_details(
-    course_id: CourseKey,
+    course_key: CourseKey,
     *,
     display_name: str | None,  # Specify a string to change the display name.
 ) -> None:
@@ -135,14 +135,14 @@ def sync_course_run_details(
     ⚠️ Does not check permissions.
     ⚠️ Does not emit any course lifecycle events.
     """
-    run = CourseRun.objects.get(course_id=course_id)
+    run = CourseRun.objects.get(course_key=course_key)
     if display_name:
         run.display_name = display_name
         run.save(update_fields=["display_name"])
 
 
 def create_course_run_for_modulestore_course_with(
-    course_id: CourseKey,
+    course_key: CourseKey,
     *,
     display_name: str,
     # The short language code (in openedx-platform, this is one of settings.ALL_LANGUAGES), e.g. "en", "es", "zh_HANS"
@@ -167,8 +167,8 @@ def create_course_run_for_modulestore_course_with(
     # but migrations should generally represent a point-in-time transformation, not call an API method that may continue
     # to be developed. So even though it's not DRY, the code is repeated here.
 
-    org_code = course_id.org
-    course_code = course_id.course
+    org_code = course_key.org
+    course_code = course_key.course
     try:
         cc = CatalogCourse.objects.get(org__short_name=org_code, course_code=course_code)
     except CatalogCourse.DoesNotExist:
@@ -185,7 +185,7 @@ def create_course_run_for_modulestore_course_with(
             # and if auto-create is disabled (it's enabled by default), this will raise InvalidOrganizationException. It
             # would be up to the operator to decide how they want to resolve that.
             raise ValueError(
-                f'The organization short code "{org_code}" exists in modulestore ({str(course_id)}) but '
+                f'The organization short code "{org_code}" exists in modulestore ({str(course_key)}) but '
                 "not the Organizations table, and auto-creating organizations is disabled. You can resolve this by "
                 "creating the Organization manually (e.g. from the Django admin) or turning on auto-creation. "
                 "You can set active=False to prevent this Organization from being used other than for historical data. "
@@ -194,7 +194,7 @@ def create_course_run_for_modulestore_course_with(
             # On most installations, the 'short_name' database column is case insensitive (unfortunately)
             log.warning(
                 'The course with ID "%s" does not match its Organization.short_name "%s"',
-                str(course_id),
+                str(course_key),
                 org_data["short_name"],
             )
 
@@ -211,18 +211,18 @@ def create_course_run_for_modulestore_course_with(
 
     new_run, created = CourseRun.objects.get_or_create(
         catalog_course=cc,
-        run=course_id.run,
-        course_id=course_id,
+        run_code=course_key.run,
+        course_key=course_key,
         defaults={"display_name": display_name},
     )
 
     if not created:
-        log.warning('Expected to create CourseRun for "%s" but it already existed.', str(course_id))
+        log.warning('Expected to create CourseRun for "%s" but it already existed.', str(course_key))
 
     return new_run
 
 
-def delete_course_run(course_id: CourseKey) -> None:
+def delete_course_run(course_key: CourseKey) -> None:
     """
     Delete a `CourseRun`.
 
@@ -232,4 +232,4 @@ def delete_course_run(course_id: CourseKey) -> None:
     ⚠️ Does not check permissions.
     ⚠️ Does not emit any course lifecycle events.
     """
-    CourseRun.objects.get(course_id=course_id).delete()
+    CourseRun.objects.get(course_key=course_key).delete()

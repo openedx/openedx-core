@@ -66,7 +66,7 @@ class CatalogCourseAdmin(admin.ModelAdmin):
         if obj.run_count == 0:
             return "-"
         url = reverse("admin:openedx_catalog_courserun_changelist") + f"?catalog_course={obj.pk}"
-        first_few_runs = obj.runs.order_by("-run")[:3]
+        first_few_runs = obj.runs.order_by("-run_code")[:3]
         runs_summary = ", ".join(run.run for run in first_few_runs)
         if obj.run_count > 4:
             runs_summary += f", ... ({obj.run_count})"
@@ -81,14 +81,14 @@ class CourseRunAdmin(admin.ModelAdmin):
     The CourseRun model admin.
     """
 
-    list_display = ["display_name", "created_date", "catalog_course", "org_code", "course_code", "run", "warnings"]
-    readonly_fields = ("course_id",)
+    list_display = ["display_name", "created_date", "catalog_course", "org_code", "course_code", "run_code", "warnings"]
+    readonly_fields = ("course_key",)
     # There may be thousands of catalog courses, so don't use <select>
     raw_id_fields = ["catalog_course"]
 
     def get_readonly_fields(self, request, obj: CourseRun | None = None):
         if obj:  # editing an existing object
-            return self.readonly_fields + ("run",)
+            return self.readonly_fields + ("run_code",)
         return self.readonly_fields
 
     @admin.display(description=_("Created"), ordering="created")

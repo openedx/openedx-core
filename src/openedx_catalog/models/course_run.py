@@ -33,7 +33,7 @@ class CourseRun(models.Model):
     This is a NEW model (as of 2026). Going forward:
     Anytime you need to reference a course [run] in a django model, you should
     do so by creating a foreign key to this model. However, any APIs or events
-    should always identify courses by their full string course ID
+    should always identify courses by their full string course key
     ("course-v1:...") and never expose the integer primary key of this model.
 
     Note: throughout the system, we often abbreviate "course run" as just
@@ -86,24 +86,24 @@ class CourseRun(models.Model):
         help_text=_("The internal database ID for this course. Should not be exposed to users nor in APIs."),
         editable=False,
     )
-    course_id = CourseKeyField(
+    course_key = CourseKeyField(
         case_sensitive=True,
         db_index=True,
-        verbose_name=_("Course ID"),
+        verbose_name=_("Course Key"),
         help_text=_("The main identifier for this course. Includes the org, course code, and run."),
         editable=False,
         # This column must be unique, but we don't specify 'unique=True' here because we have an even stronger "case
         # insensitively unique" constraint applied to this field below in Meta.constraints.
     )
-    # The catalog course stores the 'org' and 'course_code' fields, which must match the ones in the course ID.
-    # Note: there is no need to load this relationship to get 'org' or 'course_code'; get them from `course_id` instead.
+    # The catalog course stores the 'org' and 'course_code' fields, which must match the ones in the course key.
+    # Note: there is no need to load this relationship to get 'org' or 'course_code'; get them from `course_key` instead.
     catalog_course = models.ForeignKey(
         CatalogCourse,
         on_delete=models.PROTECT,
         null=False,
         related_name="runs",
     )
-    run = case_sensitive_char_field(
+    run_code = case_sensitive_char_field(
         # This is case sensitive for simplicity and better validation/constraints, but we have constraints that will
         # prevent duplicate courses with similar runs that differ only in case.
         max_length=128,
@@ -144,15 +144,15 @@ class CourseRun(models.Model):
         before the Organization model was introduced.
         """
         # This is not just called 'org' to distinguish it from loading the whole Organization model.
-        # Note: 'self.catalog_course.org.short_name' may require a JOIN/query, but self.course_id.org does not.
-        return self.course_id.org
+        # Note: 'self.catalog_course.org.short_name' may require a JOIN/query, but self.course_key.org does not.
+        return self.course_key.org
 
     @property
     @admin.display(ordering="catalog_course__course_code")
     def course_code(self) -> str:
         """Get the course code/number of this course, e.g. "Math100" """
-        # Note: 'self.catalog_course.course_code' may require a JOIN/query, but self.course_id.course does not.
-        return self.course_id.course
+        # Note: 'self.catalog_course.course_code' may require a JOIN/query, but self.course_key.course does not.
+        return self.course_key.course
 
     # Do we want mix in SoftDeletableModel from django-model-utils to make courses soft deletable?
 
@@ -170,32 +170,34 @@ class CourseRun(models.Model):
         if self.catalog_course and not self.display_name:
             # For convenience, when creating a CourseRun, if the display_name is blank, copy it from the catalog course
             self.display_name = self.catalog_course.display_name
-        if not self.course_id:
-            # For now we can assume that the course ID is going to be a CourseLocator, so generate it if missing.
+        if not self.course_key:
+            # For now we can assume that the course key is going to be a CourseLocator, so generate it if missing.
             try:
-                self.course_id = CourseLocator(
+                self.course_key = CourseLocator(
                     org=self.catalog_course.org_code,
                     course=self.catalog_course.course_code,
-                    run=self.run,
+                    run=self.run_code,
                 )
             except InvalidKeyError as exc:
-                raise ValidationError("Could not generate a valid course_id.") from exc
+                raise ValidationError("Could not generate a valid course_key.") from exc
 
-        if self.catalog_course.org.short_name != self.course_id.org:
+        if self.catalog_course.org.short_name != self.course_key.org:
             correct_short_name = self.catalog_course.org.short_name
-            if correct_short_name.lower() == self.course_id.org.lower():
+            if correct_short_name.lower() == self.course_key.org.lower():
                 log.warning(
                     'Course run "%s" does not match case of its org short_name "%s"',
-                    self.course_id,
+                    self.course_key,
                     correct_short_name,
                 )
             else:
-                raise ValidationError("The CatalogCourse 'org' field should match the org in the course_id key.")
+                raise ValidationError("The CatalogCourse 'org' field should match the org in the 'course_key'.")
 
-        if self.catalog_course.course_code != self.course_id.course:
-            raise ValidationError("The CatalogCourse 'course_code' field should match the course in the course_id key.")
+        if self.catalog_course.course_code != self.course_key.course:
+            raise ValidationError("The CatalogCourse 'course_code' field should match the course in the 'course_key'.")
 
-        # We assert "self.run == self.course_id.run" using a database constraint - see below.
+        if self.run_code != self.course_key.run:
+            # We also have a database constraint that tries to enforce this, but is a bit simplistic.
+            raise ValidationError("The CourseRun 'run_code' field should match the run in the 'course_key'.")
 
         super().clean()
 
@@ -207,7 +209,7 @@ class CourseRun(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.display_name} ({self.org_code} {self.course_code} {self.run})"
+        return f"{self.display_name} ({self.org_code} {self.course_code} {self.run_code})"
 
     class Meta:
         verbose_name = _("Course Run")
@@ -217,25 +219,27 @@ class CourseRun(models.Model):
             # catalog_course (org+course_code) and run must be unique together:
             models.UniqueConstraint(
                 "catalog_course",
-                "run",
-                name="oex_catalog_courserun_catalog_course_run_uniq",
+                "run_code",
+                name="oex_catalog_courserun_catalog_course_run_code_uniq",
                 # With one unfortunate exception: CCX courses all have the same org, code, and run exactly:
-                condition=~models.Q(course_id__startswith="ccx"),
+                condition=~models.Q(course_key__startswith="ccx"),
             ),
-            # course_id is case-sensitively unique but we also want it to be case-insensitively unique:
-            models.UniqueConstraint(Lower("course_id"), name="oex_catalog_courserun_course_id_ci"),
+            # course_key is case-sensitively unique but we also want it to be case-insensitively unique:
+            models.UniqueConstraint(Lower("course_key"), name="oex_catalog_courserun_course_key_ci"),
             # Enforce at the DB level that these required fields are not blank:
-            models.CheckConstraint(condition=models.Q(run__length__gt=0), name="oex_catalog_courserun_run_not_blank"),
+            models.CheckConstraint(
+                condition=models.Q(run_code__length__gt=0), name="oex_catalog_courserun_run_code_not_blank"
+            ),
             models.CheckConstraint(
                 condition=models.Q(display_name__length__gt=0), name="oex_catalog_courserun_display_name_not_blank"
             ),
-            # Enforce at the DB level that the "run" field value appears in the course ID:
+            # Enforce at the DB level that the "run_code" field value appears in the course key:
             models.CheckConstraint(
-                condition=GreaterThan(StrIndex("course_id", F("run")), 0),
+                condition=GreaterThan(StrIndex("course_key", F("run_code")), 0),
                 # The following check condition (ends with "+run") is even stronger, but doesn't work with CCX keys
                 # like "ccx-v1:org+code+run+ccx@1" which we also need to support.
-                #     condition=Exact(Right("course_id", Length("run") + 1), Concat(models.Value("+"), "run")),
-                name="oex_catalog_courserun_courseid_run_match_exactly",
-                violation_error_message=_("The CourseRun 'run' field should match the run in the course_id key."),
+                #   condition=Exact(Right("course_key", Length("run_code") + 1), Concat(models.Value("+"), "run_code")),
+                name="oex_catalog_courserun_course_key_run_code_match_exactly",
+                violation_error_message=_("The CourseRun 'run_code' field should match the run in the 'course_key'."),
             ),
         ]
