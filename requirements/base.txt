@@ -42,13 +42,20 @@ django==5.2.11
     #   -c https://raw.githubusercontent.com/edx/edx-lint/master/edx_lint/files/common_constraints.txt
     #   -r requirements/base.in
     #   django-crum
+    #   django-model-utils
+    #   django-simple-history
     #   django-waffle
     #   djangorestframework
     #   drf-jwt
     #   edx-django-utils
     #   edx-drf-extensions
+    #   edx-organizations
 django-crum==0.7.9
     # via edx-django-utils
+django-model-utils==5.0.0
+    # via edx-organizations
+django-simple-history==3.11.0
+    # via edx-organizations
 django-waffle==5.0.0
     # via
     #   edx-django-utils
@@ -58,6 +65,7 @@ djangorestframework==3.16.1
     #   -r requirements/base.in
     #   drf-jwt
     #   edx-drf-extensions
+    #   edx-organizations
 dnspython==2.8.0
     # via pymongo
 drf-jwt==1.19.2
@@ -65,15 +73,23 @@ drf-jwt==1.19.2
 edx-django-utils==8.0.1
     # via edx-drf-extensions
 edx-drf-extensions==10.6.0
+    # via
+    #   -r requirements/base.in
+    #   edx-organizations
+edx-opaque-keys==3.1.0
+    # via
+    #   edx-drf-extensions
+    #   edx-organizations
+edx-organizations==7.3.0
     # via -r requirements/base.in
-edx-opaque-keys==3.0.0
-    # via edx-drf-extensions
 idna==3.11
     # via requests
 kombu==5.6.2
     # via celery
 packaging==26.0
     # via kombu
+pillow==12.1.0
+    # via edx-organizations
 prompt-toolkit==3.0.52
     # via click-repl
 psutil==7.2.2

@@ -50,11 +50,14 @@ INSTALLED_APPS = [
     'django.contrib.admindocs',
     # Debugging
     "debug_toolbar",
+    # Open edX Organizations (dependency for openedx_catalog)
+    "organizations",
     # django-rules based authorization
     'rules.apps.AutodiscoverRulesConfig',
     # Our own apps
     "openedx_tagging",
     "openedx_content",
+    "openedx_catalog",
     *openedx_content_backcompat_apps_to_install(),
 ]
 

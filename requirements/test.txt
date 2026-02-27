@@ -79,6 +79,8 @@ ddt==1.7.2
     #   -r requirements/base.txt
     #   django-crum
     #   django-debug-toolbar
+    #   django-model-utils
+    #   django-simple-history
     #   django-stubs
     #   django-stubs-ext
     #   django-waffle
@@ -86,12 +88,21 @@ ddt==1.7.2
     #   drf-jwt
     #   edx-django-utils
     #   edx-drf-extensions
+    #   edx-organizations
 django-crum==0.7.9
     # via
     #   -r requirements/base.txt
     #   edx-django-utils
 django-debug-toolbar==6.2.0
     # via -r requirements/test.in
+django-model-utils==5.0.0
+    # via
+    #   -r requirements/base.txt
+    #   edx-organizations
+django-simple-history==3.11.0
+    # via
+    #   -r requirements/base.txt
+    #   edx-organizations
 django-stubs==5.2.9
     # via
     #   -r requirements/test.in
@@ -108,6 +119,7 @@ djangorestframework==3.16.1
     #   -r requirements/base.txt
     #   drf-jwt
     #   edx-drf-extensions
+    #   edx-organizations
 djangorestframework-stubs==3.16.8
     # via -r requirements/test.in
 dnspython==2.8.0
@@ -123,11 +135,16 @@ edx-django-utils==8.0.1
     #   -r requirements/base.txt
     #   edx-drf-extensions
 edx-drf-extensions==10.6.0
-    # via -r requirements/base.txt
-edx-opaque-keys==3.0.0
+    # via
+    #   -r requirements/base.txt
+    #   edx-organizations
+edx-opaque-keys==3.1.0
     # via
     #   -r requirements/base.txt
     #   edx-drf-extensions
+    #   edx-organizations
+edx-organizations==7.3.0
+    # via -r requirements/base.txt
 fastapi==0.131.0
     # via import-linter
 freezegun==1.5.5
@@ -174,6 +191,10 @@ packaging==26.0
     #   pytest
 pathspec==1.0.4
     # via mypy
+pillow==12.1.0
+    # via
+    #   -r requirements/base.txt
+    #   edx-organizations
 pluggy==1.6.0
     # via
     #   pytest
