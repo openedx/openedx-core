@@ -96,7 +96,8 @@ class CourseRun(models.Model):
         # insensitively unique" constraint applied to this field below in Meta.constraints.
     )
     # The catalog course stores the 'org' and 'course_code' fields, which must match the ones in the course key.
-    # Note: there is no need to load this relationship to get 'org' or 'course_code'; get them from `course_key` instead.
+    # Note: there is no need to load this relationship to get 'org' or 'course_code'; get them from `course_key`
+    # instead.
     catalog_course = models.ForeignKey(
         CatalogCourse,
         on_delete=models.PROTECT,
