@@ -321,3 +321,8 @@ def test_run_exact(org1) -> None:
             CourseRun.objects.filter(pk=run.pk).update(
                 course_id=CourseLocator(org="Org1", course="Test302", run="mixedcase"),
             )
+
+
+# TODO: it would be good to test here that CourseRun objects work correctly with CCX keys like
+# "ccx-v1:org+code+run+ccx@1", but I don't want to introduce a dependency on edx-ccx-keys for now. Once we consolidate
+# all the key types into a single repo, we can add a test here.

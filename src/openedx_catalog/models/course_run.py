@@ -7,8 +7,9 @@ import logging
 from django.contrib import admin
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models.functions import Concat, Length, Lower, Right
-from django.db.models.lookups import Exact
+from django.db.models import F
+from django.db.models.functions import Length, Lower, StrIndex
+from django.db.models.lookups import GreaterThan
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.django.models import CourseKeyField
@@ -214,7 +215,13 @@ class CourseRun(models.Model):
         ordering = ("-created",)
         constraints = [
             # catalog_course (org+course_code) and run must be unique together:
-            models.UniqueConstraint("catalog_course", "run", name="oex_catalog_courserun_catalog_course_run_uniq"),
+            models.UniqueConstraint(
+                "catalog_course",
+                "run",
+                name="oex_catalog_courserun_catalog_course_run_uniq",
+                # With one unfortunate exception: CCX courses all have the same org, code, and run exactly:
+                condition=~models.Q(course_id__startswith="ccx"),
+            ),
             # course_id is case-sensitively unique but we also want it to be case-insensitively unique:
             models.UniqueConstraint(Lower("course_id"), name="oex_catalog_courserun_course_id_ci"),
             # Enforce at the DB level that these required fields are not blank:
@@ -222,11 +229,12 @@ class CourseRun(models.Model):
             models.CheckConstraint(
                 condition=models.Q(display_name__length__gt=0), name="oex_catalog_courserun_display_name_not_blank"
             ),
-            # Enforce that the course ID must end with "+run" where "run" is an exact match for the "run" field.
-            # This check may be removed or changed in the future if our course ID format ever changes
+            # Enforce at the DB level that the "run" field value appears in the course ID:
             models.CheckConstraint(
-                # Note: EndsWith() on SQLite is always case-insensitive, so we code the constraint like this:
-                condition=Exact(Right("course_id", Length("run") + 1), Concat(models.Value("+"), "run")),
+                condition=GreaterThan(StrIndex("course_id", F("run")), 0),
+                # The following check condition (ends with "+run") is even stronger, but doesn't work with CCX keys
+                # like "ccx-v1:org+code+run+ccx@1" which we also need to support.
+                #     condition=Exact(Right("course_id", Length("run") + 1), Concat(models.Value("+"), "run")),
                 name="oex_catalog_courserun_courseid_run_match_exactly",
                 violation_error_message=_("The CourseRun 'run' field should match the run in the course_id key."),
             ),
