@@ -8,17 +8,18 @@ tests assert on a specific failure rather than on message text.
 
 The hierarchy is grouped by the pipeline stage that detects the problem:
 
-* :class:`ArchiveNotReadableError` -- ``archive.py``, we can't open the thing at all.
-* :class:`ExtractionError` -- ``payload.py``, the archive's files are malformed in a
-  way that stops us assembling the input document (unparseable TOML, duplicate
-  entity definitions, missing mandatory files).
+* :class:`ArchiveNotReadableError` -- ``archive.py``, we can't open the thing at
+  all.
+* :class:`ExtractionError` -- ``payload.py``, the archive's files are malformed
+  in a way that stops us assembling the input document (unparseable TOML,
+  duplicate entity definitions, missing mandatory files).
 * :class:`SchemaError` -- ``validation.py``, a field failed pydantic validation.
 * :class:`ConsistencyError` -- ``validation.py``, a cross-reference check that
   pydantic can't express (e.g. a container pointing at a child that isn't in the
   archive).
 
-:class:`RestoreFailedError` is the aggregate that the public API raises. It holds
-all of the individual errors found during a single restore attempt.
+:class:`RestoreFailedError` is the aggregate that the public API raises. It
+holds all of the individual errors found during a single restore attempt.
 """
 from __future__ import annotations
 
@@ -40,12 +41,7 @@ class BackupRestoreError(Exception):
         self.path = path
 
     def __str__(self):
-        # Not every error is attributable to a file -- a duplicate key, for
-        # instance, is reported against the whole section rather than one path.
-        # Printing "None: ..." in a log file helps nobody.
-        if self.path:
-            return f"{self.path}: {self.message}"
-        return self.message
+        return f"{self.path}: {self.message}" if self.path else self.message
 
 
 class ArchiveNotReadableError(BackupRestoreError):
@@ -88,10 +84,6 @@ class FieldsNotInTable(ExtractionError):
 class MissingFileError(ExtractionError):
     """
     A file we require is not in the archive.
-
-    Note: this used to be called ``FileNotFoundError``, which shadowed the
-    builtin of the same name and made ``except FileNotFoundError`` ambiguous for
-    our callers.
     """
 
     def __init__(self, file_description, path):
@@ -148,15 +140,15 @@ class UnresolvedChildError(ConsistencyError):
     """A container version lists a child that isn't defined in the archive."""
 
 
-class MissingVersionError(ConsistencyError):
+class MissingEntityVersionError(ConsistencyError):
     """An entity's draft or published pointer names a version that isn't in the archive."""
 
 
-class DuplicateVersionError(ConsistencyError):
+class DuplicateEntityVersionError(ConsistencyError):
     """An entity declares the same ``version_num`` more than once."""
 
 
-class MalformedRefError(ConsistencyError):
+class MalformedEntityRefError(ConsistencyError):
     """An entity ref isn't in a shape we know how to load."""
 
 

@@ -23,11 +23,11 @@ from fsspec.implementations.dirfs import DirFileSystem
 
 from openedx_content.applets.backup_restore import validation
 from openedx_content.applets.backup_restore.errors import (
-    DuplicateVersionError,
+    DuplicateEntityVersionError,
     InvalidTOMLError,
-    MalformedRefError,
+    MalformedEntityRefError,
     MissingFileError,
-    MissingVersionError,
+    MissingEntityVersionError,
     RestoreFailedError,
     SchemaError,
     UnknownContainerTypeError,
@@ -225,7 +225,7 @@ class ConsistencyCheckTest(TestCase):
         ]))
 
         assert len(result.errors) == 1
-        assert isinstance(result.errors[0], MissingVersionError)
+        assert isinstance(result.errors[0], MissingEntityVersionError)
         assert "[entity.draft]" in result.errors[0].message
 
     def test_published_pointing_at_a_missing_version(self):
@@ -236,7 +236,7 @@ class ConsistencyCheckTest(TestCase):
         ]))
 
         assert len(result.errors) == 1
-        assert isinstance(result.errors[0], MissingVersionError)
+        assert isinstance(result.errors[0], MissingEntityVersionError)
         assert "[entity.published]" in result.errors[0].message
 
     def test_draft_and_published_may_be_absent(self):
@@ -252,7 +252,7 @@ class ConsistencyCheckTest(TestCase):
         ]))
 
         duplicate_errors = [
-            err for err in result.errors if isinstance(err, DuplicateVersionError)
+            err for err in result.errors if isinstance(err, DuplicateEntityVersionError)
         ]
         assert len(duplicate_errors) == 1
         assert "version 2" in duplicate_errors[0].message
@@ -267,7 +267,7 @@ class ConsistencyCheckTest(TestCase):
         ]))
 
         assert len(result.errors) == 1
-        assert isinstance(result.errors[0], MalformedRefError)
+        assert isinstance(result.errors[0], MalformedEntityRefError)
 
     def test_container_refs_are_not_required_to_have_colons(self):
         """Only Components derive meaning from the shape of their ref."""
@@ -312,8 +312,8 @@ class ConsistencyCheckTest(TestCase):
         error_types = {type(err) for err in result.errors}
         assert error_types == {
             UnresolvedChildError,
-            MissingVersionError,
-            MalformedRefError,
+            MissingEntityVersionError,
+            MalformedEntityRefError,
         }
 
 

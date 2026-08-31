@@ -25,9 +25,9 @@ from pydantic import ValidationError
 
 from .errors import (
     BackupRestoreError,
-    DuplicateVersionError,
-    MalformedRefError,
-    MissingVersionError,
+    DuplicateEntityVersionError,
+    MalformedEntityRefError,
+    MissingEntityVersionError,
     SchemaError,
     UnknownContainerTypeError,
     UnresolvedChildError,
@@ -173,7 +173,7 @@ def _consistency_errors_for(
             # type from the ref itself.
             if len(entity_ref.split(":")) != 3:
                 errors.append(
-                    MalformedRefError(
+                    MalformedEntityRefError(
                         f'Component ref "{entity_ref}" should be of the form '
                         '"{namespace}:{type}:{code}"',
                         path=path,
@@ -184,7 +184,7 @@ def _consistency_errors_for(
         version_nums = [version.version_num for version in entity.versions]
         for duplicated in sorted({v for v in version_nums if version_nums.count(v) > 1}):
             errors.append(
-                DuplicateVersionError(
+                DuplicateEntityVersionError(
                     f'Entity "{entity_ref}" declares version {duplicated} more than once',
                     path=path,
                 )
@@ -195,7 +195,7 @@ def _consistency_errors_for(
         for label, pointer in (("draft", entity.draft), ("published", entity.published)):
             if pointer.version_num is not None and pointer.version_num not in available:
                 errors.append(
-                    MissingVersionError(
+                    MissingEntityVersionError(
                         f'Entity "{entity_ref}" points [entity.{label}] at version '
                         f"{pointer.version_num}, which is not in the archive",
                         path=path,
