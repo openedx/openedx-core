@@ -21,6 +21,7 @@ class TagItem:
     value: str
     index: int | None = 0
     parent_id: str | None = None
+    previous_id: str | None = None
 
     def __str__(self):
         """
@@ -162,6 +163,8 @@ class TagImportPlan:
             for tag in tags:
                 if tag.id in tags_for_delete:
                     tags_for_delete.pop(tag.id)
+                if tag.previous_id:
+                    tags_for_delete.pop(tag.previous_id, None)
 
             # Delete all not readed tags
             self._build_delete_actions(tags_for_delete)

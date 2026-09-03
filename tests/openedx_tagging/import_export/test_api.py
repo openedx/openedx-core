@@ -324,6 +324,86 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         )
         assert result
 
+    def test_import_rename_external_id_preserves_pk(self) -> None:
+        """
+        Importing a row with a matching `previous_id` renames the tag's
+        external_id in place, preserving its primary key (see ADR 0010).
+        """
+        old_pk = self.taxonomy.tag_set.get(external_id="tag_1").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_50", "value": "Tag 1 Renamed", "previous_id": "tag_1"},
+        ]}).encode())
+        result, _task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        assert result
+
+        renamed_tag = Tag.objects.get(pk=old_pk)
+        assert renamed_tag.external_id == "tag_50"
+        assert renamed_tag.value == "Tag 1 Renamed"
+        assert not self.taxonomy.tag_set.filter(external_id="tag_1").exists()
+
+    def test_import_rename_external_id_then_export(self) -> None:
+        """
+        A follow-up export after a rename contains the new id, and neither
+        the old id nor a `previous_id` field, since `previous_id` is
+        import-only and never persisted (see ADR 0010).
+        """
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_50", "value": "Tag 1 Renamed", "previous_id": "tag_1"},
+        ]}).encode())
+        result, _task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        assert result
+
+        output = import_export_api.export_tags(self.taxonomy, self.parser_format)
+        exported_tags = json.loads(output).get("tags")
+        exported_ids = [tag.get("id") for tag in exported_tags]
+        assert "tag_50" in exported_ids
+        assert "tag_1" not in exported_ids
+        for tag in exported_tags:
+            assert "previous_id" not in tag
+
+    def test_import_rename_external_id_unmatched_previous_id_rejected(self) -> None:
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_50", "value": "Tag 50", "previous_id": "tag_999"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        assert not result
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Unknown previous_id" in log
+        assert not self.taxonomy.tag_set.filter(external_id="tag_50").exists()
+
+    def test_import_rename_external_id_colliding_new_id_rejected(self) -> None:
+        tag_before = self.taxonomy.tag_set.get(external_id="tag_1")
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_2", "value": "Tag 1", "previous_id": "tag_1"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        assert not result
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "already exists" in log
+
+        tag_after = self.taxonomy.tag_set.get(external_id="tag_1")
+        assert tag_after.pk == tag_before.pk
+        assert tag_after.value == tag_before.value
+
     def test_import_same_value_without_external_id(self) -> None:
         new_taxonomy = Taxonomy(name="New taxonomy")
         new_taxonomy.save()

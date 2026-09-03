@@ -103,10 +103,13 @@ class ImportAction:
             # Validates that the parent exists on the taxonomy
             self.taxonomy.tag_set.get(external_id=self.tag.parent_id)
         except Tag.DoesNotExist:
-            # Or if the parent is created on previous actions
-            if not self._search_action(
+            # Or if the parent is created or renamed-in on previous actions
+            found = self._search_action(
                 indexed_actions, CreateTag.name, "id", self.tag.parent_id
-            ):
+            ) or self._search_action(
+                indexed_actions, RenameTagExternalId.name, "id", self.tag.parent_id
+            )
+            if not found:
                 return ImportActionError(
                     action=self,
                     message=_(
@@ -157,6 +160,15 @@ class ImportAction:
                 self.tag.value,
             )
 
+        if not action:
+            # Validates value duplication on rename_external_id actions
+            action = self._search_action(
+                indexed_actions,
+                RenameTagExternalId.name,
+                "value",
+                self.tag.value,
+            )
+
         if action:
             return ImportActionConflict(
                 action=self,
@@ -197,6 +209,8 @@ class CreateTag(ImportAction):
         """
         This action applies whenever the tag does not exist
         """
+        if tag.previous_id and tag.id != tag.previous_id:
+            return False
         try:
             taxonomy.tag_set.get(external_id=tag.id)
             return False
@@ -371,6 +385,119 @@ class RenameTag(ImportAction):
         taxonomy_tag.save()
 
 
+class RenameTagExternalId(ImportAction):
+    """
+    Action to rename an existing tag's external_id in place.
+
+    Action created when a row's `previous_id` matches an existing tag's
+    external_id in the taxonomy, and the row's `id` differs from it. 
+    Preserves the tag's primary key and associations across the
+    rename, instead of deleting the old tag and creating a new one.
+
+    Validations:
+    - previous_id must match an existing tag's external_id.
+    - The new id must not collide with a different existing tag, or with a
+      prior create/rename action in the same import.
+    - Value duplicates with tags on the database, if the value is changing.
+    - Parent validation, if parent_id is set.
+    """
+
+    name = "rename_external_id"
+
+    def __str__(self) -> str:
+        return str(
+            _(
+                "Rename external_id of tag with previous_id={previous_id} to "
+                "'{id}' (value={value}, parent_id={parent_id})."
+            ).format(
+                previous_id=self.tag.previous_id,
+                id=self.tag.id,
+                value=self.tag.value,
+                parent_id=self.tag.parent_id,
+            )
+        )
+
+    @classmethod
+    def applies_for(cls, taxonomy: Taxonomy, tag) -> bool:
+        """
+        This action applies whenever previous_id is set and differs from id
+        """
+        return bool(tag.previous_id) and tag.id != tag.previous_id
+
+    def _validate_new_id(self, indexed_actions) -> ImportActionError | None:
+        """
+        Check that the new id doesn't collide with a different existing tag,
+        or with a prior create/rename action in the same import.
+        """
+        if self.taxonomy.tag_set.filter(external_id=self.tag.id).exists():
+            return ImportActionError(
+                action=self,
+                message=_("A tag with external_id ({id}) already exists.").format(id=self.tag.id),
+            )
+
+        action = self._search_action(indexed_actions, CreateTag.name, "id", self.tag.id)
+        if not action:
+            action = self._search_action(indexed_actions, self.name, "id", self.tag.id)
+
+        if action:
+            return ImportActionConflict(
+                action=self,
+                conflict_action_index=action.index,
+                message=_("Duplicated external_id tag."),
+            )
+
+        return None
+
+    def validate(self, indexed_actions) -> list[ImportActionError]:
+        """
+        Validates the rename_external_id action
+        """
+        errors = []
+
+        try:
+            matched_tag = self.taxonomy.tag_set.get(external_id=self.tag.previous_id)
+        except Tag.DoesNotExist:
+            matched_tag = None
+            errors.append(
+                ImportActionError(
+                    action=self,
+                    message=_(
+                        "Unknown previous_id ({previous_id}). No tag with that "
+                        "external_id exists in this taxonomy."
+                    ).format(previous_id=self.tag.previous_id),
+                )
+            )
+
+        error = self._validate_new_id(indexed_actions)
+        if error:
+            errors.append(error)
+
+        if matched_tag is not None and matched_tag.value != self.tag.value:
+            error = self._validate_value(indexed_actions)
+            if error:
+                errors.append(error)
+
+        if self.tag.parent_id:
+            error = self._validate_parent(indexed_actions)
+            if error:
+                errors.append(error)
+
+        return errors
+
+    def execute(self) -> None:
+        """
+        Renames a tag's external_id in place, and updates its value and parent
+        """
+        target = self.taxonomy.tag_set.get(external_id=self.tag.previous_id)
+        target.external_id = self.tag.id
+        target.value = self.tag.value
+        target.parent = (
+            self.taxonomy.tag_set.get(external_id=self.tag.parent_id)
+            if self.tag.parent_id else None
+        )
+        target.save()
+
+
 class DeleteTag(ImportAction):
     """
     Action for delete a Tag
@@ -445,6 +572,7 @@ class WithoutChanges(ImportAction):
 available_actions = [
     UpdateParentTag,
     RenameTag,
+    RenameTagExternalId,
     CreateTag,
     DeleteTag,
     WithoutChanges,

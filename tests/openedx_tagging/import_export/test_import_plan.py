@@ -407,6 +407,48 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             external_ids = list(self.taxonomy.tag_set.values_list("external_id", flat=True))
             assert tag_external_ids == external_ids
 
+    def test_generate_actions_rename_external_id(self) -> None:
+        tags = [
+            TagItem(id='tag_50', value='Tag 1', previous_id='tag_1'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(len(self.import_plan.errors), 0)
+        self.assertEqual(len(self.import_plan.actions), 1)
+        self.assertEqual(self.import_plan.actions[0].name, 'rename_external_id')
+        self.assertEqual(self.import_plan.actions[0].tag.id, 'tag_50')
+
+    def test_generate_actions_rename_external_id_replace_skips_delete(self) -> None:
+        # tag_1 is renamed to tag_50 (previous_id='tag_1'); under replace=True
+        # its old id must not be swept up in the delete pass, since it is the
+        # same underlying tag, not a removed one.
+        tags = [
+            TagItem(id='tag_50', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_2', value='Tag 2'),
+            TagItem(id='tag_3', value='Tag 3'),
+            TagItem(id='tag_4', value='Tag 4', parent_id='tag_3'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=True)
+        self.assertEqual(len(self.import_plan.errors), 0)
+        delete_targets = [
+            action.tag.id for action in self.import_plan.actions if action.name == 'delete'
+        ]
+        self.assertNotIn('tag_1', delete_targets)
+
+    def test_generate_actions_rename_external_id_value_collision_with_create(self) -> None:
+        """
+        Regression: a value collision between a `RenameTagExternalId` action
+        and a later `CreateTag` action in the same import must be caught at
+        validate time, not silently pass through to `execute()` and hit the
+        database's `unique_together(taxonomy, value)` constraint.
+        """
+        tags = [
+            TagItem(id='tag_50', value='Shared', previous_id='tag_1'),
+            TagItem(id='tag_60', value='Shared'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(len(self.import_plan.errors), 1)
+        self.assertIn("Duplicated tag value", str(self.import_plan.errors[0]))
+
     def test_error_in_execute(self):
         created_tag = 'tag_31'
         tags = [

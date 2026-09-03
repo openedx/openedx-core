@@ -12,6 +12,7 @@ from openedx_tagging.import_export.actions import (
     DeleteTag,
     ImportAction,
     RenameTag,
+    RenameTagExternalId,
     UpdateParentTag,
     WithoutChanges,
 )
@@ -52,7 +53,8 @@ class TestImportActionMixin(TestImportExportMixin):
                     ),
                     index=1,
                 )
-            ]
+            ],
+            'rename_external_id': [],
         }
 
 
@@ -133,6 +135,33 @@ class TestImportAction(TestImportActionMixin, TestCase):
                 )
             )
 
+    def test_validate_parent_with_rename_external_id_action(self) -> None:
+        """
+        Regression: a parent referenced by external_id that doesn't exist in
+        the DB yet, but is being renamed-in via a `RenameTagExternalId`
+        action earlier in the same import, must validate as a known parent.
+        """
+        indexed_actions = dict(self.indexed_actions)
+        indexed_actions['rename_external_id'] = [
+            RenameTagExternalId(
+                taxonomy=self.taxonomy,
+                tag=TagItem(id='tag_60', value='Tag 60', previous_id='tag_3', index=1),
+                index=1,
+            )
+        ]
+        action = ImportAction(
+            self.taxonomy,
+            TagItem(
+                id='tag_110',
+                value='_',
+                parent_id='tag_60',
+                index=100,
+            ),
+            index=100,
+        )
+        error = action._validate_parent(indexed_actions)  # pylint: disable=protected-access
+        self.assertIsNone(error)
+
     @ddt.data(
         (
             'Tag 1',
@@ -174,6 +203,35 @@ class TestImportAction(TestImportActionMixin, TestCase):
         else:
             self.assertEqual(str(error), expected)
 
+    def test_validate_value_with_rename_external_id_action(self) -> None:
+        """
+        Regression: a value collision with a `RenameTagExternalId` action
+        already queued in the same import must be caught, not only
+        collisions with `create`/`rename` actions.
+        """
+        indexed_actions = dict(self.indexed_actions)
+        indexed_actions['rename_external_id'] = [
+            RenameTagExternalId(
+                taxonomy=self.taxonomy,
+                tag=TagItem(id='tag_60', value='Shared', previous_id='tag_3', index=1),
+                index=1,
+            )
+        ]
+        action = ImportAction(
+            self.taxonomy,
+            TagItem(
+                id='tag_110',
+                value='Shared',
+                index=100,
+            ),
+            index=100,
+        )
+        error = action._validate_value(indexed_actions)  # pylint: disable=protected-access
+        self.assertEqual(
+            str(error),
+            "Conflict with 'import_action' (#100) and action #1: Duplicated tag value."
+        )
+
 
 @ddt.ddt
 class TestCreateTag(TestImportActionMixin, TestCase):
@@ -196,6 +254,23 @@ class TestCreateTag(TestImportActionMixin, TestCase):
             )
         )
         self.assertEqual(result, expected)
+
+    def test_applies_for_previous_id_guard(self) -> None:
+        """
+        A row with a `previous_id` that differs from `id` is a rename
+        candidate, not a create: `RenameTagExternalId` should handle it
+        even though no tag exists yet with the new id.
+        """
+        result = CreateTag.applies_for(
+            self.taxonomy,
+            TagItem(
+                id='tag_100',
+                value='_',
+                previous_id='tag_99',
+                index=100,
+            )
+        )
+        self.assertFalse(result)
 
     @ddt.data(
         ('tag_10', False),
@@ -494,6 +569,156 @@ class TestRenameTag(TestImportActionMixin, TestCase):
         action.execute()
         tag = self.taxonomy.tag_set.get(external_id=tag_id)
         assert tag.value == value
+
+
+@ddt.ddt
+class TestRenameTagExternalId(TestImportActionMixin, TestCase):
+    """
+    Test for 'rename_external_id' action
+    """
+
+    @ddt.data(
+        (None, 'tag_50', False),  # No previous_id
+        ('tag_1', 'tag_1', False),  # previous_id == id
+        ('tag_1', 'tag_50', True),  # Valid rename
+    )
+    @ddt.unpack
+    def test_applies_for(self, previous_id: str | None, tag_id: str, expected: bool):
+        result = RenameTagExternalId.applies_for(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id=tag_id,
+                value='_',
+                previous_id=previous_id,
+                index=100,
+            )
+        )
+        self.assertEqual(result, expected)
+
+    def test_validate_unmatched_previous_id(self) -> None:
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_50',
+                value='Tag 50',
+                previous_id='tag_100',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(self.indexed_actions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Unknown previous_id (tag_100)", str(errors[0]))
+
+    def test_validate_new_id_collides_with_db_tag(self) -> None:
+        # previous_id matches tag_1, but the new id (tag_2) already belongs
+        # to a different tag in the same taxonomy.
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_2',
+                value='Tag 1',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(self.indexed_actions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("already exists", str(errors[0]))
+
+    def test_validate_new_id_collides_with_create_action(self) -> None:
+        # The new id (tag_10) matches a pending 'create' action from
+        # self.indexed_actions (see TestImportActionMixin.setUp).
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_10',
+                value='Tag 1',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(self.indexed_actions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Duplicated external_id tag", str(errors[0]))
+
+    def test_validate_new_id_collides_with_prior_rename_external_id_action(self) -> None:
+        indexed_actions = dict(self.indexed_actions)
+        indexed_actions['rename_external_id'] = [
+            RenameTagExternalId(
+                taxonomy=self.taxonomy,
+                tag=TagItem(id='tag_60', value='Tag 60', previous_id='tag_3', index=1),
+                index=1,
+            )
+        ]
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_60',
+                value='Tag 1',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(indexed_actions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Duplicated external_id tag", str(errors[0]))
+
+    def test_validate_no_error_when_value_unchanged(self) -> None:
+        # The row's value matches tag_1's current value, so _validate_value's
+        # duplicate check is skipped, and nothing else is wrong.
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_50',
+                value='Tag 1',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(self.indexed_actions)
+        self.assertEqual(errors, [])
+
+    def test_validate_parent(self) -> None:
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_50',
+                value='Tag 1',
+                previous_id='tag_1',
+                parent_id='tag_100',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(self.indexed_actions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Unknown parent tag (tag_100)", str(errors[0]))
+
+    def test_execute(self) -> None:
+        tag = self.taxonomy.tag_set.get(external_id='tag_1')
+        pk = tag.pk
+        tag_item = TagItem(
+            id='tag_50',
+            value='Tag 50',
+            previous_id='tag_1',
+            parent_id='tag_3',
+        )
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=tag_item,
+            index=100,
+        )
+        action.execute()
+        tag.refresh_from_db()
+        self.assertEqual(tag.pk, pk)
+        self.assertEqual(tag.external_id, 'tag_50')
+        self.assertEqual(tag.value, 'Tag 50')
+        self.assertEqual(tag.parent.external_id, 'tag_3')
 
 
 class TestDeleteTag(TestImportActionMixin, TestCase):
