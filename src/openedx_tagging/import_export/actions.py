@@ -390,7 +390,7 @@ class RenameTagExternalId(ImportAction):
     Action to rename an existing tag's external_id in place.
 
     Action created when a row's `previous_id` matches an existing tag's
-    external_id in the taxonomy, and the row's `id` differs from it. 
+    external_id in the taxonomy, and the row's `id` differs from it.
     Preserves the tag's primary key and associations across the
     rename, instead of deleting the old tag and creating a new one.
 
