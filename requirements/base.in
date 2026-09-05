@@ -17,3 +17,5 @@ rules<4.0                 # Django extension for rules-based authorization check
 tomlkit                   # Parses and writes TOML configuration files
 
 edx-organizations         # Implemented the "Organization" model that CatalogCourse/CourseRun are keyed to
+
+django-simple-history     # History tracking for CBE criteria definitions, per ADR-0003

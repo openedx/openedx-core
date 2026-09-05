@@ -58,7 +58,9 @@ django-crum==0.7.9
 django-model-utils==5.0.0
     # via edx-organizations
 django-simple-history==3.13.0
-    # via edx-organizations
+    # via
+    #   -r requirements/base.in
+    #   edx-organizations
 django-waffle==5.0.0
     # via
     #   edx-django-utils

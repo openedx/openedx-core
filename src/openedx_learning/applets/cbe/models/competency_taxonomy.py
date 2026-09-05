@@ -1,6 +1,9 @@
 """
-Models for Competency-Based Education (CBE).
+The CompetencyTaxonomy model.
 """
+from django.db import models
+from django.utils.translation import gettext_lazy as _
+
 from openedx_tagging.models import Taxonomy
 
 __all__ = [
@@ -34,6 +37,17 @@ class CompetencyTaxonomy(Taxonomy):
 
     .. no_pii:
     """
+
+    taxonomy_overrides_org = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Resolves a tie when assigning a CompetencyRuleProfile to a CompetencyCriterion (ADR-0002 "
+            "Decision 4): if both an organization-scoped profile and a taxonomy-scoped profile from this "
+            "taxonomy apply to the same criterion, False (the default) assigns the organization-scoped "
+            "profile, and True assigns this taxonomy's own profile instead, so it cannot be locally "
+            "weakened by an organization."
+        ),
+    )
 
     class Meta:
         verbose_name = "Competency Taxonomy"

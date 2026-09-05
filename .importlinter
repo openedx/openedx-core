@@ -7,6 +7,7 @@
 root_packages =
     openedx_learning
     openedx_content
+    openedx_catalog
     openedx_tagging
     openedx_django_lib
     openedx_core
@@ -23,8 +24,16 @@ layers =
     # particular, openedx_tagging must never know that CBE exists.
     openedx_learning
 
-    # Content: authoring-side models and APIs.
+    # Content (authoring-side models and APIs) above Catalog (CatalogCourse/CourseRun):
+    # docs/openedx_learning/decisions/0007-pathway-catalog-content-split.rst ("Dependency
+    # direction: openedx_content knows about openedx_catalog, never the reverse") settles this
+    # direction, even though that ADR is still Draft rather than Accepted. A `layers` contract is
+    # a strict total order, and ranking them asserts only the half nobody disputes -- catalog
+    # never reaches up into content -- while still allowing the direction that ADR already
+    # depends on. CompetencyCriteriaGroup and CompetencyRuleProfile (openedx_learning) scope to a
+    # CourseRun, so both still need to sit below openedx_learning.
     openedx_content
+    openedx_catalog
 
     # Tagging is very simple & fundamental. Should probably not depend on any other Django apps.
     openedx_tagging
