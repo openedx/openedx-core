@@ -3,11 +3,61 @@ Tests for the CBE public API surface (openedx_learning.api).
 """
 import pytest
 
-from openedx_learning.api import is_competency_taxonomy, select_competency_taxonomies
+from openedx_learning.api import create_competency_taxonomy, is_competency_taxonomy, select_competency_taxonomies
 from openedx_learning.models import CompetencyTaxonomy
 from openedx_tagging.models import Taxonomy
 
 pytestmark = pytest.mark.django_db
+
+
+def test_create_competency_taxonomy_saves_both_rows() -> None:
+    """
+    create_competency_taxonomy() saves a CompetencyTaxonomy and Taxonomy row that both
+    carry the given field values.
+
+    Re-fetching from Taxonomy.objects (not just CompetencyTaxonomy.objects) is the
+    regression check for using save_base(raw=True): a plain save() on the child
+    instance would re-save the parent Taxonomy row with blank/default field values,
+    which this assertion would catch.
+    """
+    result = create_competency_taxonomy(
+        name="Nursing",
+        description="Nursing competencies",
+        enabled=False,
+        allow_multiple=False,
+        allow_free_text=True,
+        read_only=True,
+        export_id="nursing-v1",
+    )
+
+    assert isinstance(result, CompetencyTaxonomy)
+    assert is_competency_taxonomy(result) is True
+
+    for taxonomy in (
+        CompetencyTaxonomy.objects.get(pk=result.pk),
+        Taxonomy.objects.get(pk=result.pk),
+    ):
+        assert taxonomy.name == "Nursing"
+        assert taxonomy.description == "Nursing competencies"
+        assert taxonomy.enabled is False
+        assert taxonomy.allow_multiple is False
+        assert taxonomy.allow_free_text is True
+        assert taxonomy.read_only is True
+        assert taxonomy.export_id == "nursing-v1"
+
+
+def test_create_competency_taxonomy_defaults() -> None:
+    """
+    create_competency_taxonomy() applies the same defaults as create_taxonomy() when
+    only name is given, including an auto-generated export_id.
+    """
+    result = create_competency_taxonomy(name="Welding")
+
+    assert result.enabled is True
+    assert result.allow_multiple is True
+    assert result.allow_free_text is False
+    assert result.read_only is False
+    assert result.export_id
 
 
 def test_is_competency_taxonomy() -> None:

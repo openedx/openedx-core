@@ -397,6 +397,44 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
         assert response.data["read_only"] is True
 
     @ddt.data(
+        ("tags", status.HTTP_201_CREATED),
+        ("competency", status.HTTP_201_CREATED),
+        (None, status.HTTP_201_CREATED),
+    )
+    @ddt.unpack
+    def test_create_taxonomy_type_tags_or_omitted(self, taxonomy_type, expected_status):
+        """
+        Posting any accepted taxonomy_type (or omitting it) to this raw TaxonomyView
+        succeeds and creates a Taxonomy row.
+        """
+        url = TAXONOMY_LIST_URL
+        create_data = {"name": "Taxonomy Type Test", "export_id": "taxonomy-type-test"}
+        if taxonomy_type is not None:
+            create_data["taxonomy_type"] = taxonomy_type
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(url, create_data, format="json")
+        assert response.status_code == expected_status
+        assert Taxonomy.objects.filter(name="Taxonomy Type Test").exists()
+
+    @ddt.data("system", "bogus")
+    def test_create_taxonomy_type_invalid_value_rejected(self, taxonomy_type):
+        """
+        An unsupported taxonomy_type value still 400s via the ChoiceField itself.
+        """
+        url = TAXONOMY_LIST_URL
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(
+            url,
+            {"name": "Rejected Invalid", "export_id": "rejected-invalid", "taxonomy_type": taxonomy_type},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "taxonomy_type" in response.data
+        assert not Taxonomy.objects.filter(name="Rejected Invalid").exists()
+
+    @ddt.data(
         (None, status.HTTP_401_UNAUTHORIZED),
         ("user", status.HTTP_403_FORBIDDEN),
         ("staff", status.HTTP_200_OK),
@@ -3236,6 +3274,57 @@ class TestCreateImportView(ImportTaxonomyMixin, APITestCase):
         assert len(tags) == len(new_tags)
         for i, tag in enumerate(tags):
             assert tag["value"] == new_tags[i]["value"]
+
+    @ddt.data(
+        ("tags", status.HTTP_201_CREATED),
+        ("competency", status.HTTP_201_CREATED),
+        (None, status.HTTP_201_CREATED),
+    )
+    @ddt.unpack
+    def test_import_taxonomy_type_tags_or_omitted(self, taxonomy_type, expected_status) -> None:
+        """
+        Posting any accepted taxonomy_type (or omitting it) to this raw create/import
+        endpoint succeeds and creates a Taxonomy row.
+        """
+        url = TAXONOMY_CREATE_IMPORT_URL
+        new_tags = [{"id": "tag_1", "value": "Tag 1"}]
+        file = self._get_file(new_tags, "json")
+        data = {
+            "taxonomy_name": "Taxonomy Type Import Test",
+            "taxonomy_description": "Imported Taxonomy description",
+            "file": file,
+        }
+        if taxonomy_type is not None:
+            data["taxonomy_type"] = taxonomy_type
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(url, data, format="multipart")
+        assert response.status_code == expected_status
+        assert Taxonomy.objects.filter(name="Taxonomy Type Import Test").exists()
+
+    @ddt.data("system", "bogus")
+    def test_import_taxonomy_type_invalid_value_rejected(self, taxonomy_type) -> None:
+        """
+        An unsupported taxonomy_type value still 400s via the ChoiceField itself.
+        """
+        url = TAXONOMY_CREATE_IMPORT_URL
+        new_tags = [{"id": "tag_1", "value": "Tag 1"}]
+        file = self._get_file(new_tags, "json")
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.post(
+            url,
+            {
+                "taxonomy_name": "Rejected Invalid Import",
+                "taxonomy_description": "Imported Taxonomy description",
+                "taxonomy_type": taxonomy_type,
+                "file": file,
+            },
+            format="multipart",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "taxonomy_type" in response.data
+        assert not Taxonomy.objects.filter(name="Rejected Invalid Import").exists()
 
 
 @ddt.ddt

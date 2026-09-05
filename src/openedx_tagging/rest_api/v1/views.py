@@ -263,6 +263,7 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
         """
         Create a new taxonomy.
         """
+        serializer.validated_data.pop("taxonomy_type", None)
         try:
             serializer.instance = create_taxonomy(**serializer.validated_data)
         except exceptions.ValidationError as e:
@@ -298,6 +299,17 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
 
         return HttpResponse(tags, content_type=content_type)
 
+    def _create_taxonomy_for_import(self, validated_data: dict) -> Taxonomy:
+        """
+        Create the taxonomy for create_import(). Override to support other taxonomy_type values.
+        """
+        validated_data.pop("taxonomy_type", None)
+        return create_taxonomy(
+            validated_data["taxonomy_name"],
+            validated_data["taxonomy_description"],
+            export_id=validated_data.get("taxonomy_export_id"),
+        )
+
     @action(detail=False, url_path="import", methods=["post"])
     def create_import(self, request: Request, **_kwargs) -> Response:
         """
@@ -306,18 +318,9 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
         body = TaxonomyImportNewBodySerializer(data=request.data)
         body.is_valid(raise_exception=True)
 
-        taxonomy_name = body.validated_data["taxonomy_name"]
-        taxonomy_export_id = body.validated_data.get("taxonomy_export_id")
-        taxonomy_description = body.validated_data["taxonomy_description"]
         file = body.validated_data["file"].file
         parser_format = body.validated_data["parser_format"]
-
-        # If no taxonomy_export_id provided, a unique export id will be generated
-        taxonomy = create_taxonomy(
-            taxonomy_name,
-            taxonomy_description,
-            export_id=taxonomy_export_id,
-        )
+        taxonomy = self._create_taxonomy_for_import(body.validated_data)
 
         try:
             import_success, task, _plan = import_tags(taxonomy, file, parser_format)
