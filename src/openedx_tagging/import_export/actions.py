@@ -446,6 +446,14 @@ class RenameTagExternalId(ImportAction):
                 message=_("Duplicated external_id tag."),
             )
 
+        action = self._search_action(indexed_actions, self.name, "previous_id", self.tag.previous_id)
+        if action:
+            return ImportActionConflict(
+                action=self,
+                conflict_action_index=action.index,
+                message=_("Duplicated previous_id tag."),
+            )
+
         return None
 
     def validate(self, indexed_actions) -> list[ImportActionError]:

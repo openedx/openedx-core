@@ -404,6 +404,32 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert tag_after.pk == tag_before.pk
         assert tag_after.value == tag_before.value
 
+    def test_import_rename_external_id_duplicate_previous_id_rejected(self) -> None:
+        """
+        Two rows sharing the same previous_id both target the same old tag.
+        This must be rejected cleanly at the plan step, not crash at execute
+        time once the first rename has already renamed the old tag away.
+        """
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_50", "value": "Tag 50", "previous_id": "tag_1"},
+            {"id": "tag_60", "value": "Tag 60", "previous_id": "tag_1"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        assert not result
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Duplicated previous_id" in log
+        assert "Traceback" not in log
+
+        tag_after = self.taxonomy.tag_set.get(external_id="tag_1")
+        assert tag_after.external_id == "tag_1"
+        assert not self.taxonomy.tag_set.filter(external_id="tag_50").exists()
+        assert not self.taxonomy.tag_set.filter(external_id="tag_60").exists()
+
     def test_import_same_value_without_external_id(self) -> None:
         new_taxonomy = Taxonomy(name="New taxonomy")
         new_taxonomy.save()

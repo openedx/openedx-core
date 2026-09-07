@@ -667,6 +667,32 @@ class TestRenameTagExternalId(TestImportActionMixin, TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("Duplicated external_id tag", str(errors[0]))
 
+    def test_validate_new_id_collides_with_prior_previous_id_action(self) -> None:
+        # Two rows sharing the same previous_id both target the same old
+        # tag; the second must be rejected at validate time instead of
+        # crashing at execute time once the first rename has already run.
+        indexed_actions = dict(self.indexed_actions)
+        indexed_actions['rename_external_id'] = [
+            RenameTagExternalId(
+                taxonomy=self.taxonomy,
+                tag=TagItem(id='tag_60', value='Tag 1', previous_id='tag_1', index=1),
+                index=1,
+            )
+        ]
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_70',
+                value='Tag 1',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(indexed_actions)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("Duplicated previous_id tag", str(errors[0]))
+
     def test_validate_no_error_when_value_unchanged(self) -> None:
         # The row's value matches tag_1's current value, so _validate_value's
         # duplicate check is skipped, and nothing else is wrong.
