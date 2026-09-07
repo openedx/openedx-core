@@ -16,7 +16,7 @@ asgiref==3.12.1
     # via
     #   -r requirements/test.txt
     #   django
-ast-serialize==0.8.0
+ast-serialize==0.9.0
     # via
     #   -r requirements/test.txt
     #   mypy
@@ -105,7 +105,7 @@ django-crum==0.7.9
     # via
     #   -r requirements/test.txt
     #   edx-django-utils
-django-debug-toolbar==7.1.1
+django-debug-toolbar==8.0.0
     # via -r requirements/test.txt
 django-model-utils==5.0.0
     # via
@@ -162,7 +162,7 @@ edx-django-utils==8.0.2
     #   -r requirements/test.txt
     #   edx-drf-extensions
     #   openedx-events
-edx-drf-extensions==10.7.0
+edx-drf-extensions==10.8.0
     # via
     #   -r requirements/test.txt
     #   edx-organizations
@@ -181,7 +181,7 @@ fastavro==1.12.2
     #   openedx-events
 freezegun==1.5.5
     # via -r requirements/test.txt
-grimp==3.16
+grimp==3.17
     # via
     #   -r requirements/test.txt
     #   import-linter
@@ -191,7 +191,7 @@ idna==3.19
     #   requests
 imagesize==2.0.1
     # via sphinx
-import-linter==2.14
+import-linter==2.15
     # via -r requirements/test.txt
 iniconfig==2.3.0
     # via
@@ -287,7 +287,7 @@ pyjwt[crypto]==2.13.0
     #   -r requirements/test.txt
     #   drf-jwt
     #   edx-drf-extensions
-pymongo==4.17.0
+pymongo==4.18.0
     # via
     #   -r requirements/test.txt
     #   edx-opaque-keys
@@ -388,7 +388,7 @@ text-unidecode==1.3
     #   python-slugify
 tomlkit==0.15.1
     # via -r requirements/test.txt
-types-pyyaml==6.0.12.20260815
+types-pyyaml==6.0.12.20260906
     # via
     #   -r requirements/test.txt
     #   django-stubs
