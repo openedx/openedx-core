@@ -462,6 +462,31 @@ class TestUpdateParentTag(TestImportActionMixin, TestCase):
         )
         self.assertEqual(result, expected)
 
+    def test_applies_for_ignores_tag_queued_for_delete(self) -> None:
+        # Same as the ('tag_2', 'tag_3', True) case above (parent genuinely
+        # changes), but tag_2 is queued for deletion in this same import
+        # (e.g. its external_id is being reused by a RenameTagExternalId
+        # row via previous_id): this action must not also fire against the
+        # doomed tag.
+        indexed_actions = {'delete': [
+            DeleteTag(
+                taxonomy=self.taxonomy,
+                tag=TagItem(id='tag_2', value='Tag 2', index=1),
+                index=1,
+            )
+        ]}
+        result = UpdateParentTag.applies_for(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_2',
+                value='_',
+                parent_id='tag_3',
+                index=100,
+            ),
+            indexed_actions=indexed_actions,
+        )
+        self.assertFalse(result)
+
     @ddt.data(
         ('tag_2', 'tag_30', 1),  # Invalid parent
         ('tag_2', None, 0),  # Without parent
@@ -531,6 +556,30 @@ class TestRenameTag(TestImportActionMixin, TestCase):
             )
         )
         self.assertEqual(result, expected)
+
+    def test_applies_for_ignores_tag_queued_for_delete(self) -> None:
+        # Same as the ('tag_1', 'Tag 1 v2', True) case above (value
+        # genuinely changes), but tag_1 is queued for deletion in this same
+        # import (e.g. its external_id is being reused by a
+        # RenameTagExternalId row via previous_id): this action must not
+        # also fire against the doomed tag.
+        indexed_actions = {'delete': [
+            DeleteTag(
+                taxonomy=self.taxonomy,
+                tag=TagItem(id='tag_1', value='Tag 1', index=1),
+                index=1,
+            )
+        ]}
+        result = RenameTag.applies_for(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_1',
+                value='Tag 1 v2',
+                index=100,
+            ),
+            indexed_actions=indexed_actions,
+        )
+        self.assertFalse(result)
 
     @ddt.data(
         ('Tag 2', 1),  # There is a tag with the same value on database
