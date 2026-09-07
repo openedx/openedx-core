@@ -627,6 +627,32 @@ class TestRenameTagExternalId(TestImportActionMixin, TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("already exists", str(errors[0]))
 
+    def test_validate_new_id_freed_by_queued_delete_action(self) -> None:
+        # Same setup as test_validate_new_id_collides_with_db_tag (new id
+        # tag_2 still exists in the DB), but this time a replace-mode delete
+        # sweep has already queued tag_2 for deletion in this same import,
+        # so reusing its external_id is not a real collision.
+        indexed_actions = dict(self.indexed_actions)
+        indexed_actions['delete'] = [
+            DeleteTag(
+                taxonomy=self.taxonomy,
+                tag=TagItem(id='tag_2', value='Tag 2', index=1),
+                index=1,
+            )
+        ]
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_2',
+                value='Tag 1',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(indexed_actions)
+        self.assertEqual(errors, [])
+
     def test_validate_new_id_collides_with_create_action(self) -> None:
         # The new id (tag_10) matches a pending 'create' action from
         # self.indexed_actions (see TestImportActionMixin.setUp).

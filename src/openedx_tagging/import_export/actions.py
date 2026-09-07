@@ -427,9 +427,17 @@ class RenameTagExternalId(ImportAction):
     def _validate_new_id(self, indexed_actions) -> ImportActionError | None:
         """
         Check that the new id doesn't collide with a different existing tag,
-        or with a prior create/rename action in the same import.
+        or with a prior create/rename action in the same import. A tag that
+        a replace-mode delete sweep is removing in this same import doesn't
+        count as a collision, since the delete executes before this action
+        (see TagImportPlan._build_delete_actions).
         """
-        if self.taxonomy.tag_set.filter(external_id=self.tag.id).exists():
+        is_freed_by_delete = any(
+            self.tag.id == action.tag.id
+            for action in indexed_actions["delete"]
+        ) if "delete" in indexed_actions else False
+
+        if not is_freed_by_delete and self.taxonomy.tag_set.filter(external_id=self.tag.id).exists():
             return ImportActionError(
                 action=self,
                 message=_("A tag with external_id ({id}) already exists.").format(id=self.tag.id),

@@ -430,6 +430,39 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert not self.taxonomy.tag_set.filter(external_id="tag_50").exists()
         assert not self.taxonomy.tag_set.filter(external_id="tag_60").exists()
 
+    def test_import_rename_external_id_reuses_id_freed_by_replace_delete(self) -> None:
+        """
+        Replace-mode import that omits tag_1 (so the delete sweep queues it
+        for deletion) and, in the same file, renames tag_2 onto id="tag_1",
+        reusing the external_id that tag_1's deletion is about to free up.
+        This must succeed end-to-end: tag_1 being still physically present
+        (but already queued for deletion) at validate time must not be
+        treated as a real collision.
+        """
+        old_tag_1_pk = self.taxonomy.tag_set.get(external_id="tag_1").pk
+        old_tag_2_pk = self.taxonomy.tag_set.get(external_id="tag_2").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_1", "value": "Tag 1", "previous_id": "tag_2"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+            replace=True,
+        )
+        assert result
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+
+        # tag_1's old row was genuinely deleted, not merely renamed away.
+        assert not Tag.objects.filter(pk=old_tag_1_pk).exists()
+
+        # tag_2 is the same underlying row, now wearing tag_1's freed-up id.
+        renamed_tag = Tag.objects.get(pk=old_tag_2_pk)
+        assert renamed_tag.external_id == "tag_1"
+        assert renamed_tag.value == "Tag 1"
+
     def test_import_same_value_without_external_id(self) -> None:
         new_taxonomy = Taxonomy(name="New taxonomy")
         new_taxonomy.save()

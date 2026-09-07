@@ -161,7 +161,12 @@ class TagImportPlan:
             }
 
             for tag in tags:
-                if tag.id in tags_for_delete:
+                # A rename row's `id` is the new target, not confirmation
+                # that the tag currently holding that external_id should be
+                # kept: only `previous_id` protects an existing tag from
+                # this delete sweep in that case.
+                is_rename = bool(tag.previous_id) and tag.id != tag.previous_id
+                if not is_rename and tag.id in tags_for_delete:
                     tags_for_delete.pop(tag.id)
                 if tag.previous_id:
                     tags_for_delete.pop(tag.previous_id, None)
