@@ -438,12 +438,23 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         This must succeed end-to-end: tag_1 being still physically present
         (but already queued for deletion) at validate time must not be
         treated as a real collision.
+
+        The row's value ("Renamed From Tag 2") and parent_id ("tag_3") both
+        genuinely differ from the doomed tag_1's current value ("Tag 1") and
+        parent (None). This is deliberate: with matching values, RenameTag
+        and UpdateParentTag's DB-only lookups (unaware that tag_1 is queued
+        for deletion in this same import) would never fire in the first
+        place, so the test would pass even without the fix that makes them
+        skip a tag queued for deletion, and end up proving nothing about it.
+        tag_3 gets its own no-op row so it survives as a valid parent target,
+        instead of also being swept up by the same replace-mode delete.
         """
         old_tag_1_pk = self.taxonomy.tag_set.get(external_id="tag_1").pk
         old_tag_2_pk = self.taxonomy.tag_set.get(external_id="tag_2").pk
 
         importFile = BytesIO(json.dumps({"tags": [
-            {"id": "tag_1", "value": "Tag 1", "previous_id": "tag_2"},
+            {"id": "tag_1", "value": "Renamed From Tag 2", "previous_id": "tag_2", "parent_id": "tag_3"},
+            {"id": "tag_3", "value": "Tag 3"},
         ]}).encode())
         result, task, _plan = import_export_api.import_tags(
             self.taxonomy,
@@ -451,17 +462,24 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
             self.parser_format,
             replace=True,
         )
-        assert result
         log = import_export_api.get_last_import_log(self.taxonomy)
         assert log == task.log
+        assert "Traceback" not in log
+        assert "Duplicated tag value" not in log
+        assert result
 
         # tag_1's old row was genuinely deleted, not merely renamed away.
         assert not Tag.objects.filter(pk=old_tag_1_pk).exists()
 
-        # tag_2 is the same underlying row, now wearing tag_1's freed-up id.
+        # tag_2 is the same underlying row, now wearing tag_1's freed-up id,
+        # with the row's OWN new value and parent, not tag_1's old ones:
+        # proof that RenameTag/UpdateParentTag did not sneak in and mutate
+        # the doomed tag_1 before it got deleted.
         renamed_tag = Tag.objects.get(pk=old_tag_2_pk)
         assert renamed_tag.external_id == "tag_1"
-        assert renamed_tag.value == "Tag 1"
+        assert renamed_tag.value == "Renamed From Tag 2"
+        assert renamed_tag.parent is not None
+        assert renamed_tag.parent.external_id == "tag_3"
 
     def test_import_same_value_without_external_id(self) -> None:
         new_taxonomy = Taxonomy(name="New taxonomy")

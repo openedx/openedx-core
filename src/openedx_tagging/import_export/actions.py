@@ -47,7 +47,7 @@ class ImportAction:
         return self.__repr__()
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
         """
         Implement this to meet the conditions that a `TagItem` needs
         to have for this action. If this function returns `True` for `tag`
@@ -205,7 +205,7 @@ class CreateTag(ImportAction):
         )
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
         """
         This action applies whenever the tag does not exist
         """
@@ -291,12 +291,21 @@ class UpdateParentTag(ImportAction):
         return str(description_str)
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
         """
-        This action applies whenever there is a change on the parent
+        This action applies whenever there is a change on the parent.
+
+        Does not apply if the matched tag is queued for deletion in this
+        same import: a row reusing that tag's freed-up external_id via
+        `previous_id` is handled by RenameTagExternalId instead.
         """
         try:
             taxonomy_tag = taxonomy.tag_set.get(external_id=tag.id)
+            if indexed_actions and any(
+                taxonomy_tag.external_id == action.tag.id
+                for action in indexed_actions.get("delete", [])
+            ):
+                return False
             return (
                 taxonomy_tag.parent is not None
                 and taxonomy_tag.parent.external_id != tag.parent_id
@@ -353,12 +362,21 @@ class RenameTag(ImportAction):
         return str(description_str)
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
         """
-        This action applies whenever there is a change on the tag value
+        This action applies whenever there is a change on the tag value.
+
+        Does not apply if the matched tag is queued for deletion in this
+        same import: a row reusing that tag's freed-up external_id via
+        `previous_id` is handled by RenameTagExternalId instead.
         """
         try:
             taxonomy_tag = taxonomy.tag_set.get(external_id=tag.id)
+            if indexed_actions and any(
+                taxonomy_tag.external_id == action.tag.id
+                for action in indexed_actions.get("delete", [])
+            ):
+                return False
             return taxonomy_tag.value != tag.value
         except Tag.DoesNotExist:
             return False
@@ -418,7 +436,7 @@ class RenameTagExternalId(ImportAction):
         )
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
         """
         This action applies whenever previous_id is set and differs from id
         """
@@ -529,7 +547,7 @@ class DeleteTag(ImportAction):
     name = "delete"
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
         """
         This action is an exception.
         These actions are created in `TagImportPlan.generate_actions` if `replace=True`
@@ -566,7 +584,7 @@ class WithoutChanges(ImportAction):
         return str(_("No changes needed for {tag}").format(tag=self.tag))
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
         """
         No validations necessary
         """
