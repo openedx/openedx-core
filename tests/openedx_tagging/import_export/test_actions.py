@@ -175,7 +175,7 @@ class TestImportAction(TestImportActionMixin, TestCase):
         """
         parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
         landing_tag = TagItem(id='tag_1', value='_', previous_id='tag_2', index=2)
-        indexed_actions = dict(self.indexed_actions)
+        indexed_actions: dict[str, list[ImportAction] | set[int]] = dict(self.indexed_actions)
         indexed_actions['_vacated_pks'] = {parent_pk}
         indexed_actions['rename_external_id'] = [
             RenameTagExternalId(taxonomy=self.taxonomy, tag=landing_tag, index=2, target_pk=parent_pk)
@@ -205,7 +205,7 @@ class TestImportAction(TestImportActionMixin, TestCase):
         database under that external_id at validate time.
         """
         parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
-        indexed_actions = dict(self.indexed_actions)
+        indexed_actions: dict[str, list[ImportAction] | set[int]] = dict(self.indexed_actions)
         indexed_actions['_vacated_pks'] = {parent_pk}
         action = ImportAction(
             self.taxonomy,
@@ -240,7 +240,7 @@ class TestImportAction(TestImportActionMixin, TestCase):
         the same rename's *new* id (tag_60) is accepted.
         """
         tag_1_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
-        indexed_actions = dict(self.indexed_actions)
+        indexed_actions: dict[str, list[ImportAction] | set[int]] = dict(self.indexed_actions)
         indexed_actions['rename_external_id'] = [
             RenameTagExternalId(
                 taxonomy=self.taxonomy,
