@@ -528,6 +528,36 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         self.assertNotIn(tag_2_pk, staged_pks)
         self.assertEqual(len(self.import_plan.indexed_actions['rename_external_id']), 3)
 
+    def test_generate_actions_parent_id_stale_after_plain_rename_rejected(self) -> None:
+        """
+        Regression: tag_1 is renamed to tag_50 in this same import, and
+        nothing reuses "tag_1" (a plain, non-contended rename, so tag_1 is
+        never staged). A different row's parent_id references the now-stale
+        old id "tag_1" -- this must be rejected, since after the import no
+        tag will hold that external_id at all.
+        """
+        tags = [
+            TagItem(id='tag_50', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_60', value='Tag 60', parent_id='tag_1'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(len(self.import_plan.errors), 1)
+        self.assertIn("Unknown parent tag (tag_1)", str(self.import_plan.errors[0]))
+
+    def test_generate_actions_parent_id_new_id_after_earlier_rename_accepted(self) -> None:
+        """
+        Same rename as above (tag_1 -> tag_50), but the other row's
+        parent_id references the *new* id "tag_50" instead of the stale old
+        one, and the rename row comes first in the file: this must be
+        accepted, same convention as referencing a newly-created parent.
+        """
+        tags = [
+            TagItem(id='tag_50', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_60', value='Tag 60', parent_id='tag_50'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(self.import_plan.errors, [])
+
     def test_generate_actions_genuine_collision_not_staged(self) -> None:
         """
         A rename targeting an id held by an unrelated tag that is not

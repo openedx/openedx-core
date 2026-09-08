@@ -593,6 +593,35 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert tag_3.external_id == "tag_3"
         assert tag_3.value == "Tag 3"
 
+    def test_import_rename_referencing_stale_old_id_rejected(self) -> None:
+        """
+        Regression: a plain (non-contended) rename of tag_1 to tag_50, with
+        a different row's parent_id referencing tag_1's OLD id, must be
+        rejected cleanly at the plan step -- not crash at execute time. The
+        rename row comes first in the file, so if the stale reference were
+        accepted, the second row's own execute() would raise an uncaught
+        Tag.DoesNotExist once the rename runs before it, since no tag would
+        hold external_id="tag_1" any more.
+        """
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_50", "value": "Tag 1", "previous_id": "tag_1"},
+            {"id": "tag_60", "value": "Tag 60", "parent_id": "tag_1"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        assert not result
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Unknown parent tag (tag_1)" in log
+        assert "Traceback" not in log
+
+        assert self.taxonomy.tag_set.filter(external_id="tag_1").exists()
+        assert not self.taxonomy.tag_set.filter(external_id="tag_50").exists()
+        assert not self.taxonomy.tag_set.filter(external_id="tag_60").exists()
+
     def test_import_same_value_without_external_id(self) -> None:
         new_taxonomy = Taxonomy(name="New taxonomy")
         new_taxonomy.save()
