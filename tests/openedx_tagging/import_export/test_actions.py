@@ -163,22 +163,20 @@ class TestImportAction(TestImportActionMixin, TestCase):
         error = action._validate_parent(indexed_actions)  # pylint: disable=protected-access
         self.assertIsNone(error)
 
-    def test_validate_parent_staged_away_accepted_when_landing_row_queued(self) -> None:
+    def test_validate_parent_vacated_accepted_when_landing_row_queued(self) -> None:
         """
-        A parent referenced by external_id (tag_1) currently exists, but its
-        holder is queued to be staged away in this same import, because
-        another row (renaming tag_2) is landing on id=tag_1. This validates
-        as a known parent, since after the import a tag will hold tag_1
-        again (just a different underlying tag) -- same convention as
+        A parent referenced by external_id (tag_1) currently exists, but that
+        external_id is vacated in this same import (some row's rename target
+        pk resolves to it -- see TagImportPlan._build_staging_actions),
+        because another row (renaming tag_2) is landing on id=tag_1. This
+        validates as a known parent, since after the import a tag will hold
+        tag_1 again (just a different underlying tag) -- same convention as
         referencing a newly-created tag.
         """
         parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
-        staged_tag = TagItem(id='tag_90', value='_', previous_id='tag_1', index=1)
         landing_tag = TagItem(id='tag_1', value='_', previous_id='tag_2', index=2)
         indexed_actions = dict(self.indexed_actions)
-        indexed_actions['stage_external_id'] = [
-            StageTagExternalId(taxonomy=self.taxonomy, tag=staged_tag, index=1, target_pk=parent_pk)
-        ]
+        indexed_actions['_vacated_pks'] = {parent_pk}
         indexed_actions['rename_external_id'] = [
             RenameTagExternalId(taxonomy=self.taxonomy, tag=landing_tag, index=2, target_pk=parent_pk)
         ]
@@ -195,18 +193,62 @@ class TestImportAction(TestImportActionMixin, TestCase):
         error = action._validate_parent(indexed_actions)  # pylint: disable=protected-access
         self.assertIsNone(error)
 
-    def test_validate_parent_staged_away_rejected_when_landing_row_not_queued(self) -> None:
+    def test_validate_parent_vacated_rejected_when_landing_row_not_queued(self) -> None:
         """
         Same setup as above, but no RenameTagExternalId row lands on
         id=tag_1 (e.g. it would appear later in file order, or doesn't
         exist): the parent reference must be cleanly rejected, not crash.
+        This is also the core regression this fix closes for a plain,
+        non-contended rename: tag_1 is vacated by some rename elsewhere in
+        the import, and nothing reuses "tag_1", so a reference to it must
+        not be accepted just because the tag still physically exists in the
+        database under that external_id at validate time.
         """
         parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
-        staged_tag = TagItem(id='tag_90', value='_', previous_id='tag_1', index=1)
         indexed_actions = dict(self.indexed_actions)
-        indexed_actions['stage_external_id'] = [
-            StageTagExternalId(taxonomy=self.taxonomy, tag=staged_tag, index=1, target_pk=parent_pk)
+        indexed_actions['_vacated_pks'] = {parent_pk}
+        action = ImportAction(
+            self.taxonomy,
+            TagItem(
+                id='tag_110',
+                value='_',
+                parent_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        error = action._validate_parent(indexed_actions)  # pylint: disable=protected-access
+        self.assertEqual(
+            str(error),
+            (
+                "Action error in 'import_action' (#100): "
+                "Unknown parent tag (tag_1). "
+                "You need to add parent before the child in your file."
+            )
+        )
+
+    def test_validate_parent_rejected_for_vacated_old_id(self) -> None:
+        """
+        Regression: a parent_id referencing a tag's *old* external_id, when
+        that tag is being renamed away from it in this same import (a plain,
+        non-contended rename -- nothing reuses the old id), must be rejected
+        even though the tag still physically exists in the database under
+        that external_id at validate time: parent_id names the desired
+        end-state parent, not whichever tag currently resolves to that
+        external_id in the database. Paired with
+        test_validate_parent_with_rename_external_id_action, which confirms
+        the same rename's *new* id (tag_60) is accepted.
+        """
+        tag_1_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
+        indexed_actions = dict(self.indexed_actions)
+        indexed_actions['rename_external_id'] = [
+            RenameTagExternalId(
+                taxonomy=self.taxonomy,
+                tag=TagItem(id='tag_60', value='Tag 60', previous_id='tag_1', index=1),
+                index=1,
+            )
         ]
+        indexed_actions['_vacated_pks'] = {tag_1_pk}
         action = ImportAction(
             self.taxonomy,
             TagItem(

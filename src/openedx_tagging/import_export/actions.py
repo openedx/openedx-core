@@ -101,19 +101,21 @@ class ImportAction:
     def _validate_parent(self, indexed_actions) -> ImportActionError | None:
         """
         Helper method to validate that the parent tag has already been defined.
+
+        parent_id must reference a tag's desired end-state external_id, not
+        whatever external_id currently resolves to some tag in the database:
+        UpdateParentTag/RenameTagExternalId already let a tag's own identity
+        change mid-import, so a parent_id matching a tag that's being renamed
+        away from that exact external_id in this same import is stale and must
+        not be accepted at face value -- fall through to the same
+        "landed/created earlier in this import" check already used for a
+        brand-new or renamed-in parent, so a reference to the correct, new id
+        still works when that rename comes first in the file.
         """
         try:
             # Validates that the parent exists on the taxonomy
             parent_tag = self.taxonomy.tag_set.get(external_id=self.tag.parent_id)
-            # A parent that is staged away in this same import is about to
-            # lose this external_id, so it must not be accepted at face
-            # value: fall through to the same "created/renamed-in earlier
-            # in this import" check below.
-            is_staged_away = any(
-                parent_tag.pk == action.target_pk
-                for action in indexed_actions.get("stage_external_id", [])
-            )
-            if is_staged_away:
+            if parent_tag.pk in indexed_actions.get("_vacated_pks", set()):
                 raise Tag.DoesNotExist
         except Tag.DoesNotExist:
             # Or if the parent is created or renamed-in on previous actions

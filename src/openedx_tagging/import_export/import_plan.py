@@ -155,19 +155,28 @@ class TagImportPlan:
         Stage any tag whose current external_id is the target `id` of another
         rename row in this same import, so no two tags collide on external_id
         regardless of execution order (see StageTagExternalId).
+
+        Also records every rename row's resolved target pk in
+        indexed_actions["_vacated_pks"], whether staged or not: a tag being
+        renamed away from an external_id makes that external_id stale for
+        anyone else to reference (e.g. as a parent_id) via the live database,
+        even when nothing reuses it in this same import (see _validate_parent).
         """
         target_ids = {
             tag.id for tag in tags
             if RenameTagExternalId.applies_for(self.taxonomy, tag)
         }
+        vacated_pks = set()
         for tag in tags:
             if not RenameTagExternalId.applies_for(self.taxonomy, tag):
                 continue
-            if tag.previous_id not in target_ids:
-                continue
             target_pk = self._resolve_rename_target_pk(tag)
-            if target_pk is not None:
+            if target_pk is None:
+                continue
+            vacated_pks.add(target_pk)
+            if tag.previous_id in target_ids:
                 self._build_action(StageTagExternalId, tag, target_pk=target_pk)
+        self.indexed_actions["_vacated_pks"] = vacated_pks
 
     def generate_actions(
         self,
