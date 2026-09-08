@@ -481,6 +481,118 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert renamed_tag.parent is not None
         assert renamed_tag.parent.external_id == "tag_3"
 
+    def test_import_swap_external_ids(self) -> None:
+        """
+        A 2-tag swap (tag_1 <-> tag_3 external_ids, both root tags with no
+        parent, so parent handling doesn't complicate the assertions) has no
+        valid plain execution order: renaming either tag onto the other's
+        external_id first collides with a per-statement, non-deferred DB
+        unique constraint on (taxonomy, external_id). Each tag must be
+        staged through a placeholder id first (see ADR 0010 amendment).
+        """
+        old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
+        old_pk_3 = self.taxonomy.tag_set.get(external_id="tag_3").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_3", "value": "Tag 1", "previous_id": "tag_1"},
+            {"id": "tag_1", "value": "Tag 3", "previous_id": "tag_3"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert result
+
+        # Both tags keep their original pks: this was a rename, not a
+        # delete-and-recreate.
+        tag_1 = Tag.objects.get(pk=old_pk_1)
+        tag_3 = Tag.objects.get(pk=old_pk_3)
+        assert tag_1.external_id == "tag_3"
+        assert tag_1.value == "Tag 1"
+        assert tag_3.external_id == "tag_1"
+        assert tag_3.value == "Tag 3"
+
+        output = import_export_api.export_tags(self.taxonomy, self.parser_format)
+        exported_tags = json.loads(output).get("tags")
+        for tag in exported_tags:
+            assert not tag.get("id", "").startswith("oel-import-staging:")
+        exported_by_value = {tag["value"]: tag["id"] for tag in exported_tags}
+        assert exported_by_value["Tag 1"] == "tag_3"
+        assert exported_by_value["Tag 3"] == "tag_1"
+
+    def test_import_three_cycle_external_ids(self) -> None:
+        """
+        End-to-end 3-cycle: tag_1 -> tag_2 -> tag_3 -> tag_1. Same staging
+        mechanism as a 2-tag swap, generalized to any cycle length.
+        """
+        old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
+        old_pk_2 = self.taxonomy.tag_set.get(external_id="tag_2").pk
+        old_pk_3 = self.taxonomy.tag_set.get(external_id="tag_3").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_2", "value": "Tag 1", "previous_id": "tag_1"},
+            {"id": "tag_3", "value": "Tag 2", "previous_id": "tag_2"},
+            {"id": "tag_1", "value": "Tag 3", "previous_id": "tag_3"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert result
+
+        assert Tag.objects.get(pk=old_pk_1).external_id == "tag_2"
+        assert Tag.objects.get(pk=old_pk_2).external_id == "tag_3"
+        assert Tag.objects.get(pk=old_pk_3).external_id == "tag_1"
+
+        output = import_export_api.export_tags(self.taxonomy, self.parser_format)
+        exported_tags = json.loads(output).get("tags")
+        for tag in exported_tags:
+            assert not tag.get("id", "").startswith("oel-import-staging:")
+
+    def test_import_swap_external_ids_with_colliding_values_rejected(self) -> None:
+        """
+        A contended external_id swap where each row ALSO tries to take on
+        the other tag's current value: this must still cleanly reject, not
+        raise an IntegrityError or otherwise crash. Value swaps are an
+        explicit, documented limitation (see ADR 0010 amendment):
+        (taxonomy, value) has the identical unique-constraint shape as
+        (taxonomy, external_id), but staging is only implemented for
+        external_id.
+        """
+        old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
+        old_pk_3 = self.taxonomy.tag_set.get(external_id="tag_3").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_3", "value": "Tag 3", "previous_id": "tag_1"},
+            {"id": "tag_1", "value": "Tag 1", "previous_id": "tag_3"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert "Duplicated tag value" in log
+        assert not result
+
+        # Nothing changed: neither tag's external_id or value moved.
+        tag_1 = Tag.objects.get(pk=old_pk_1)
+        tag_3 = Tag.objects.get(pk=old_pk_3)
+        assert tag_1.external_id == "tag_1"
+        assert tag_1.value == "Tag 1"
+        assert tag_3.external_id == "tag_3"
+        assert tag_3.value == "Tag 3"
+
     def test_import_same_value_without_external_id(self) -> None:
         new_taxonomy = Taxonomy(name="New taxonomy")
         new_taxonomy.save()

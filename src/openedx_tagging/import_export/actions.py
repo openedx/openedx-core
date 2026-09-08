@@ -3,6 +3,8 @@ Actions for import tags
 """
 from __future__ import annotations
 
+from uuid import uuid4
+
 from django.utils.translation import gettext as _
 
 from ..models import Tag, Taxonomy
@@ -35,10 +37,11 @@ class ImportAction:
 
     name = "import_action"
 
-    def __init__(self, taxonomy: Taxonomy, tag, index: int):
+    def __init__(self, taxonomy: Taxonomy, tag, index: int, target_pk: int | None = None):
         self.taxonomy = taxonomy
         self.tag = tag
         self.index = index
+        self.target_pk = target_pk
 
     def __repr__(self) -> str:
         return str(_("Action {name} (index={index},id={id})").format(name=self.name, index=self.index, id=self.tag.id))
@@ -101,7 +104,17 @@ class ImportAction:
         """
         try:
             # Validates that the parent exists on the taxonomy
-            self.taxonomy.tag_set.get(external_id=self.tag.parent_id)
+            parent_tag = self.taxonomy.tag_set.get(external_id=self.tag.parent_id)
+            # A parent that is staged away in this same import is about to
+            # lose this external_id, so it must not be accepted at face
+            # value: fall through to the same "created/renamed-in earlier
+            # in this import" check below.
+            is_staged_away = any(
+                parent_tag.pk == action.target_pk
+                for action in indexed_actions.get("stage_external_id", [])
+            )
+            if is_staged_away:
+                raise Tag.DoesNotExist
         except Tag.DoesNotExist:
             # Or if the parent is created or renamed-in on previous actions
             found = self._search_action(
@@ -298,7 +311,14 @@ class UpdateParentTag(ImportAction):
         Does not apply if the matched tag is queued for deletion in this
         same import: a row reusing that tag's freed-up external_id via
         `previous_id` is handled by RenameTagExternalId instead.
+
+        Also does not apply if `previous_id` is set and differs from `id`:
+        that shape is a rename_external_id row, and looking it up by its new
+        `id` here would resolve to a *different* tag than the one actually
+        being renamed (e.g. the other tag in a swap).
         """
+        if tag.previous_id and tag.id != tag.previous_id:
+            return False
         try:
             taxonomy_tag = taxonomy.tag_set.get(external_id=tag.id)
             if indexed_actions and any(
@@ -369,7 +389,14 @@ class RenameTag(ImportAction):
         Does not apply if the matched tag is queued for deletion in this
         same import: a row reusing that tag's freed-up external_id via
         `previous_id` is handled by RenameTagExternalId instead.
+
+        Also does not apply if `previous_id` is set and differs from `id`:
+        that shape is a rename_external_id row, and looking it up by its new
+        `id` here would resolve to a *different* tag than the one actually
+        being renamed (e.g. the other tag in a swap).
         """
+        if tag.previous_id and tag.id != tag.previous_id:
+            return False
         try:
             taxonomy_tag = taxonomy.tag_set.get(external_id=tag.id)
             if indexed_actions and any(
@@ -448,14 +475,22 @@ class RenameTagExternalId(ImportAction):
         or with a prior create/rename action in the same import. A tag that
         a replace-mode delete sweep is removing in this same import doesn't
         count as a collision, since the delete executes before this action
-        (see TagImportPlan._build_delete_actions).
+        (see TagImportPlan._build_delete_actions). Neither does a tag that is
+        staged away to a placeholder external_id in this same import, since
+        it executes before this action too (see StageTagExternalId).
         """
         is_freed_by_delete = any(
             self.tag.id == action.tag.id
             for action in indexed_actions["delete"]
         ) if "delete" in indexed_actions else False
 
-        if not is_freed_by_delete and self.taxonomy.tag_set.filter(external_id=self.tag.id).exists():
+        existing = self.taxonomy.tag_set.filter(external_id=self.tag.id).first()
+        is_staged_away = existing is not None and any(
+            existing.pk == action.target_pk
+            for action in indexed_actions.get("stage_external_id", [])
+        )
+
+        if not is_freed_by_delete and not is_staged_away and existing is not None:
             return ImportActionError(
                 action=self,
                 message=_("A tag with external_id ({id}) already exists.").format(id=self.tag.id),
@@ -521,8 +556,17 @@ class RenameTagExternalId(ImportAction):
     def execute(self) -> None:
         """
         Renames a tag's external_id in place, and updates its value and parent
+
+        Resolves the target tag by primary key rather than by looking up
+        `previous_id` again, since by execution time a StageTagExternalId
+        action may have already moved it off that external_id onto a
+        placeholder (see TagImportPlan._build_staging_actions).
         """
-        target = self.taxonomy.tag_set.get(external_id=self.tag.previous_id)
+        # target_pk is only None for an unmatched previous_id, which
+        # validate() already turns into a plan error; TagImportPlan.execute()
+        # never calls execute() on any action when errors are present.
+        assert self.target_pk is not None
+        target = self.taxonomy.tag_set.get(pk=self.target_pk)
         target.external_id = self.tag.id
         target.value = self.tag.value
         target.parent = (
@@ -530,6 +574,51 @@ class RenameTagExternalId(ImportAction):
             if self.tag.parent_id else None
         )
         target.save()
+
+
+class StageTagExternalId(ImportAction):
+    """
+    Action to move a tag off a contended external_id before another action
+    in the same import lands on it.
+
+    Action created (not from a file row, but synthesized by
+    TagImportPlan._build_staging_actions) when a tag's current external_id
+    is the target of another RenameTagExternalId row in the same import.
+    Two or more tags renaming onto each other's ids (a swap or an N-cycle)
+    have no valid execution order without this: (taxonomy, external_id) is
+    a DB-level unique constraint enforced per-statement, not deferred, on
+    every backend this project runs on.
+    """
+
+    name = "stage_external_id"
+
+    def __str__(self) -> str:
+        return str(_("Stage tag (pk={target_pk}) off its current external_id.").format(target_pk=self.target_pk))
+
+    @classmethod
+    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
+        """
+        This action is an exception: synthesized in TagImportPlan.generate_actions.
+        """
+        return False
+
+    def validate(self, indexed_actions) -> list[ImportActionError]:
+        """
+        No validations necessary
+        """
+        return []
+
+    def execute(self) -> None:
+        """
+        Moves the tag to a placeholder external_id, freeing its old one for
+        another action in this same import to land on.
+        """
+        # Staging actions are only built (in _build_staging_actions) with a
+        # resolved target_pk; there is no code path that constructs one with
+        # target_pk=None.
+        assert self.target_pk is not None
+        placeholder = f"oel-import-staging:{uuid4().hex}"
+        self.taxonomy.tag_set.filter(pk=self.target_pk).update(external_id=placeholder)
 
 
 class DeleteTag(ImportAction):
@@ -608,6 +697,7 @@ available_actions = [
     RenameTag,
     RenameTagExternalId,
     CreateTag,
+    StageTagExternalId,
     DeleteTag,
     WithoutChanges,
 ]
