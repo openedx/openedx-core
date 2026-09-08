@@ -13,6 +13,7 @@ from openedx_tagging.import_export.actions import (
     ImportAction,
     RenameTag,
     RenameTagExternalId,
+    StageTagExternalId,
     UpdateParentTag,
     WithoutChanges,
 )
@@ -161,6 +162,70 @@ class TestImportAction(TestImportActionMixin, TestCase):
         )
         error = action._validate_parent(indexed_actions)  # pylint: disable=protected-access
         self.assertIsNone(error)
+
+    def test_validate_parent_staged_away_accepted_when_landing_row_queued(self) -> None:
+        """
+        A parent referenced by external_id (tag_1) currently exists, but its
+        holder is queued to be staged away in this same import, because
+        another row (renaming tag_2) is landing on id=tag_1. This validates
+        as a known parent, since after the import a tag will hold tag_1
+        again (just a different underlying tag) -- same convention as
+        referencing a newly-created tag.
+        """
+        parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
+        staged_tag = TagItem(id='tag_90', value='_', previous_id='tag_1', index=1)
+        landing_tag = TagItem(id='tag_1', value='_', previous_id='tag_2', index=2)
+        indexed_actions = dict(self.indexed_actions)
+        indexed_actions['stage_external_id'] = [
+            StageTagExternalId(taxonomy=self.taxonomy, tag=staged_tag, index=1, target_pk=parent_pk)
+        ]
+        indexed_actions['rename_external_id'] = [
+            RenameTagExternalId(taxonomy=self.taxonomy, tag=landing_tag, index=2, target_pk=parent_pk)
+        ]
+        action = ImportAction(
+            self.taxonomy,
+            TagItem(
+                id='tag_110',
+                value='_',
+                parent_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        error = action._validate_parent(indexed_actions)  # pylint: disable=protected-access
+        self.assertIsNone(error)
+
+    def test_validate_parent_staged_away_rejected_when_landing_row_not_queued(self) -> None:
+        """
+        Same setup as above, but no RenameTagExternalId row lands on
+        id=tag_1 (e.g. it would appear later in file order, or doesn't
+        exist): the parent reference must be cleanly rejected, not crash.
+        """
+        parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
+        staged_tag = TagItem(id='tag_90', value='_', previous_id='tag_1', index=1)
+        indexed_actions = dict(self.indexed_actions)
+        indexed_actions['stage_external_id'] = [
+            StageTagExternalId(taxonomy=self.taxonomy, tag=staged_tag, index=1, target_pk=parent_pk)
+        ]
+        action = ImportAction(
+            self.taxonomy,
+            TagItem(
+                id='tag_110',
+                value='_',
+                parent_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        error = action._validate_parent(indexed_actions)  # pylint: disable=protected-access
+        self.assertEqual(
+            str(error),
+            (
+                "Action error in 'import_action' (#100): "
+                "Unknown parent tag (tag_1). "
+                "You need to add parent before the child in your file."
+            )
+        )
 
     @ddt.data(
         (
@@ -487,6 +552,23 @@ class TestUpdateParentTag(TestImportActionMixin, TestCase):
         )
         self.assertFalse(result)
 
+    def test_applies_for_swap_previous_id_guard(self) -> None:
+        # In a swap (tag_1 <-> tag_2 external_ids), this row's new `id`
+        # (tag_1) resolves via external_id lookup to the *other* tag in the
+        # swap (still holding external_id=tag_1 at this point), not to the
+        # tag actually being renamed (tag_2, via previous_id). Must not fire.
+        result = UpdateParentTag.applies_for(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_1',
+                value='Tag 2',
+                previous_id='tag_2',
+                parent_id='tag_3',
+                index=100,
+            ),
+        )
+        self.assertFalse(result)
+
     @ddt.data(
         ('tag_2', 'tag_30', 1),  # Invalid parent
         ('tag_2', None, 0),  # Without parent
@@ -578,6 +660,22 @@ class TestRenameTag(TestImportActionMixin, TestCase):
                 index=100,
             ),
             indexed_actions=indexed_actions,
+        )
+        self.assertFalse(result)
+
+    def test_applies_for_swap_previous_id_guard(self) -> None:
+        # In a swap (tag_1 <-> tag_2 external_ids), this row's new `id`
+        # (tag_1) resolves via external_id lookup to the *other* tag in the
+        # swap (still holding external_id=tag_1 at this point), not to the
+        # tag actually being renamed (tag_2, via previous_id). Must not fire.
+        result = RenameTag.applies_for(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_1',
+                value='Tag 2',
+                previous_id='tag_2',
+                index=100,
+            ),
         )
         self.assertFalse(result)
 
@@ -687,6 +785,35 @@ class TestRenameTagExternalId(TestImportActionMixin, TestCase):
                 taxonomy=self.taxonomy,
                 tag=TagItem(id='tag_2', value='Tag 2', index=1),
                 index=1,
+            )
+        ]
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_2',
+                value='Tag 1',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(indexed_actions)
+        self.assertEqual(errors, [])
+
+    def test_validate_new_id_exempted_by_staging(self) -> None:
+        # Same setup as test_validate_new_id_collides_with_db_tag (new id
+        # tag_2 still exists in the DB), but this time tag_2 is queued to be
+        # staged away to a placeholder external_id in this same import (e.g.
+        # as the other half of a swap), so reusing its external_id is not a
+        # real collision: the staging action executes before this one.
+        tag_2_pk = self.taxonomy.tag_set.get(external_id='tag_2').pk
+        indexed_actions = dict(self.indexed_actions)
+        indexed_actions['stage_external_id'] = [
+            StageTagExternalId(
+                taxonomy=self.taxonomy,
+                tag=TagItem(id='tag_1', value='Tag 2', previous_id='tag_2', index=1),
+                index=1,
+                target_pk=tag_2_pk,
             )
         ]
         action = RenameTagExternalId(
@@ -813,6 +940,7 @@ class TestRenameTagExternalId(TestImportActionMixin, TestCase):
             taxonomy=self.taxonomy,
             tag=tag_item,
             index=100,
+            target_pk=pk,
         )
         action.execute()
         tag.refresh_from_db()
@@ -820,6 +948,57 @@ class TestRenameTagExternalId(TestImportActionMixin, TestCase):
         self.assertEqual(tag.external_id, 'tag_50')
         self.assertEqual(tag.value, 'Tag 50')
         self.assertEqual(tag.parent.external_id, 'tag_3')
+
+
+class TestStageTagExternalId(TestImportActionMixin, TestCase):
+    """
+    Test for 'stage_external_id' action
+    """
+
+    def test_applies_for(self) -> None:
+        result = StageTagExternalId.applies_for(
+            self.taxonomy,
+            tag=TagItem(
+                id='tag_2',
+                value='_',
+                previous_id='tag_1',
+                index=100,
+            ),
+        )
+        self.assertFalse(result)
+
+    def test_validate(self) -> None:
+        action = StageTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_2',
+                value='_',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+            target_pk=self.taxonomy.tag_set.get(external_id='tag_1').pk,
+        )
+        self.assertEqual(action.validate(self.indexed_actions), [])
+
+    def test_execute(self) -> None:
+        tag = self.taxonomy.tag_set.get(external_id='tag_1')
+        pk = tag.pk
+        action = StageTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_2',
+                value='_',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+            target_pk=pk,
+        )
+        action.execute()
+        tag.refresh_from_db()
+        self.assertEqual(tag.pk, pk)
+        self.assertTrue(tag.external_id.startswith("oel-import-staging:"))
 
 
 class TestDeleteTag(TestImportActionMixin, TestCase):

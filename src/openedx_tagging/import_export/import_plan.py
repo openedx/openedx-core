@@ -7,7 +7,15 @@ from attrs import define
 from django.db import transaction
 
 from ..models import Tag, TagImportTask, Taxonomy
-from .actions import DeleteTag, ImportAction, UpdateParentTag, WithoutChanges, available_actions
+from .actions import (
+    DeleteTag,
+    ImportAction,
+    RenameTagExternalId,
+    StageTagExternalId,
+    UpdateParentTag,
+    WithoutChanges,
+    available_actions,
+)
 from .exceptions import ImportActionError
 
 
@@ -58,14 +66,14 @@ class TagImportPlan:
         for action in available_actions:
             self.indexed_actions[action.name] = []
 
-    def _build_action(self, action_cls: type[ImportAction], tag: TagItem):
+    def _build_action(self, action_cls: type[ImportAction], tag: TagItem, target_pk: int | None = None):
         """
         Build an action with `tag`.
 
         Run action validation and adds the errors to the errors lists
         Add to the action list and the indexed actions
         """
-        action = action_cls(self.taxonomy, tag, len(self.actions) + 1)
+        action = action_cls(self.taxonomy, tag, len(self.actions) + 1, target_pk=target_pk)
 
         # We validate if there are no inconsistencies when executing this action
         self.errors.extend(action.validate(self.indexed_actions))
@@ -134,6 +142,33 @@ class TagImportPlan:
                 ),
             )
 
+    def _resolve_rename_target_pk(self, tag: TagItem) -> int | None:
+        """
+        Resolve the pk of the tag a RenameTagExternalId row targets, via its
+        previous_id. Returns None if no such tag exists (an unmatched
+        previous_id -- RenameTagExternalId.validate() already rejects this).
+        """
+        return self.taxonomy.tag_set.filter(external_id=tag.previous_id).values_list("pk", flat=True).first()
+
+    def _build_staging_actions(self, tags: list[TagItem]) -> None:
+        """
+        Stage any tag whose current external_id is the target `id` of another
+        rename row in this same import, so no two tags collide on external_id
+        regardless of execution order (see StageTagExternalId).
+        """
+        target_ids = {
+            tag.id for tag in tags
+            if RenameTagExternalId.applies_for(self.taxonomy, tag)
+        }
+        for tag in tags:
+            if not RenameTagExternalId.applies_for(self.taxonomy, tag):
+                continue
+            if tag.previous_id not in target_ids:
+                continue
+            target_pk = self._resolve_rename_target_pk(tag)
+            if target_pk is not None:
+                self._build_action(StageTagExternalId, tag, target_pk=target_pk)
+
     def generate_actions(
         self,
         tags: list[TagItem],
@@ -174,13 +209,22 @@ class TagImportPlan:
             # Delete all not readed tags
             self._build_delete_actions(tags_for_delete)
 
+        # Stage tags whose external_id is contended by another rename row in
+        # this same import, so a swap or an N-cycle of renames has a valid
+        # execution order regardless of how the rows are ordered in the file.
+        self._build_staging_actions(tags)
+
         for tag in tags:
             has_action = False
 
             # Check all available actions and add which ones should be executed
             for action_cls in available_actions:
                 if action_cls.applies_for(self.taxonomy, tag, self.indexed_actions):
-                    self._build_action(action_cls, tag)
+                    target_pk = (
+                        self._resolve_rename_target_pk(tag)
+                        if action_cls is RenameTagExternalId else None
+                    )
+                    self._build_action(action_cls, tag, target_pk=target_pk)
                     has_action = True
 
             if not has_action:

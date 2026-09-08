@@ -465,3 +465,80 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         assert not self.taxonomy.tag_set.filter(external_id=created_tag).exists()
         assert not self.import_plan.execute()
         assert not self.taxonomy.tag_set.filter(external_id=created_tag).exists()
+
+    def test_generate_actions_swap_stages_and_renames(self) -> None:
+        """
+        A 2-tag swap (tag_1 <-> tag_3 external_ids, both root tags with no
+        parent) has no valid plain execution order, since (taxonomy,
+        external_id) is unique and enforced per-statement: each tag must be
+        staged through a placeholder id before landing on the other's old
+        id.
+        """
+        tags = [
+            TagItem(id='tag_3', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_1', value='Tag 3', previous_id='tag_3'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(self.import_plan.errors, [])
+        self.assertEqual(len(self.import_plan.indexed_actions['stage_external_id']), 2)
+        self.assertEqual(len(self.import_plan.indexed_actions['rename_external_id']), 2)
+        self.assertEqual(self.import_plan.indexed_actions['rename'], [])
+        self.assertEqual(self.import_plan.indexed_actions['update_parent'], [])
+
+    def test_generate_actions_three_cycle_stages_all(self) -> None:
+        """
+        A 3-cycle (tag_1 -> tag_2 -> tag_3 -> tag_1) is staged the same way
+        as a 2-tag swap: every tag in the cycle is contended by another row
+        in the same import, so all three are staged first.
+        """
+        tags = [
+            TagItem(id='tag_2', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_3', value='Tag 2', previous_id='tag_2'),
+            TagItem(id='tag_1', value='Tag 3', previous_id='tag_3'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(self.import_plan.errors, [])
+        self.assertEqual(len(self.import_plan.indexed_actions['stage_external_id']), 3)
+        self.assertEqual(len(self.import_plan.indexed_actions['rename_external_id']), 3)
+
+    def test_generate_actions_chain_stages_only_contended_tags(self) -> None:
+        """
+        A chain where each row (except the last) renames onto an id
+        currently held by the *next* row's tag: tag_2 -> tag_3, tag_3 ->
+        tag_4, tag_4 -> tag_90 (a fresh, uncontended id). Only tag_3 and
+        tag_4 are contended (their current external_id is some other row's
+        target `id`); tag_2's current id (tag_2) is nobody's target, so it
+        is not staged.
+        """
+        tag_2_pk = self.taxonomy.tag_set.get(external_id='tag_2').pk
+        tag_3_pk = self.taxonomy.tag_set.get(external_id='tag_3').pk
+        tag_4_pk = self.taxonomy.tag_set.get(external_id='tag_4').pk
+
+        tags = [
+            TagItem(id='tag_3', value='Tag 2', previous_id='tag_2'),
+            TagItem(id='tag_4', value='Tag 3', previous_id='tag_3'),
+            TagItem(id='tag_90', value='Tag 4', previous_id='tag_4'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(self.import_plan.errors, [])
+        staged_pks = {
+            action.target_pk for action in self.import_plan.indexed_actions['stage_external_id']
+        }
+        self.assertEqual(staged_pks, {tag_3_pk, tag_4_pk})
+        self.assertNotIn(tag_2_pk, staged_pks)
+        self.assertEqual(len(self.import_plan.indexed_actions['rename_external_id']), 3)
+
+    def test_generate_actions_genuine_collision_not_staged(self) -> None:
+        """
+        A rename targeting an id held by an unrelated tag that is not
+        itself being renamed or deleted in this import is a real collision,
+        not a staging candidate: the tag holding tag_2 is not a party to
+        any rename row in this file.
+        """
+        tags = [
+            TagItem(id='tag_2', value='Tag 1', previous_id='tag_1'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(self.import_plan.indexed_actions['stage_external_id'], [])
+        self.assertEqual(len(self.import_plan.errors), 1)
+        self.assertIn("already exists", str(self.import_plan.errors[0]))
