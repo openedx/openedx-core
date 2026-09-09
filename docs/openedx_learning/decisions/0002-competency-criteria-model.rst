@@ -56,7 +56,7 @@ Decision
    - has no competency-specific constraints on associated content objects.
 
    This new database table will have the following columns:
-   
+
    1. ``taxonomy_ptr_id``: Primary key and one-to-one foreign key to ``oel_tagging_taxonomy.id``.
    2. ``taxonomy_overrides_org``: Boolean, defaults to ``false``. Used only while computing which single ``CompetencyRuleProfile`` to assign to a ``CompetencyCriterion`` (Decision 4). If, for a criterion's context, both an organization-scoped profile row and a taxonomy-scoped profile row exist as candidates, this field decides which one gets assigned: ``false`` (default) assigns the organization-scoped row; ``true`` assigns this taxonomy's own row instead, so it cannot be overridden by an organization. Once assigned, the criterion stores that one profile's id and this field plays no further part. This field is created now but read by no code path in this phase, since organization-scoped profiles don't exist yet and the conflict it resolves can't occur; see the MVP note in Decision 4.
 

@@ -17,7 +17,7 @@ Competency-Based Education (CBE) tags. That ADR left ``external_id`` nullable, s
 competency taxonomies.
 
 Building the CBE competency workflow surfaced a stronger requirement: every tag needs a
-value for ``external_id`` in order to be able to associate it with objects as part of 
+value for ``external_id`` in order to be able to associate it with objects as part of
 competency criteria. It's also anticipated that non-CBE taxonomies will want a mandatory,
 institution-assigned identifier in the future, particularly when there becomes a desire to
 convert regular taxonomies into Competency Taxonomies.

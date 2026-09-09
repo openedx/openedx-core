@@ -1,0 +1,164 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openedx-core"
+dynamic = ["version"]
+description = "Open edX Core: Foundational Packages for a Teaching & Learning Platform"
+readme = "README.rst"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE.txt"]
+authors = [
+    {name = "David Ormsbee", email = "dave@axim.org"},
+]
+requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: Django",
+    "Framework :: Django :: 5.2",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "attrs",
+    "celery",
+    "Django>=5.2,<6.0",
+    "djangorestframework<4.0",
+    "edx-drf-extensions>=10.7.0",
+    "openedx-events",
+    "rules<4.0",
+    "tomlkit",
+    "edx-organizations>=9.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/openedx/openedx-core"
+
+[tool.isort]
+include_trailing_comma = true
+indent = "    "
+line_length = 120
+multi_line_output = 3
+
+[tool.setuptools_scm]
+version_scheme = "only-version"
+local_scheme = "no-local-version"
+fallback_version = "0.0.0"
+
+[tool.setuptools]
+include-package-data = true
+# Packages live in src/ but are installed without the src prefix,
+# e.g. src/openedx_core/ is installed as openedx_core.
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["tests*", "*.tests*", "spec*", "*.spec*"]
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+omit = [
+    "*/test_settings.py",
+    "**/migrations/*",
+    "*admin.py",
+    "*static*",
+    "*templates*",
+    "**/tests/**",
+]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[dependency-groups]
+# Base test packages, no Django version pinned yet.
+test-base = [
+    "code-annotations",
+    "coverage",
+    "ddt",
+    "django-debug-toolbar",
+    "django-stubs",
+    "djangorestframework-stubs",
+    "freezegun",
+    "import-linter",
+    "mock",
+    "mypy",
+    "mysqlclient",
+    "pytest",
+    "pytest-cov",
+    "pytest-django",
+]
+# The currently supported/default Django version.
+test = [
+    {include-group = "test-base"},
+    "Django>=5.2,<6.0",
+]
+quality = [
+    {include-group = "test"},
+    "build",
+    "edx-lint",
+    "isort",
+    "pycodestyle",
+    "pydocstyle",
+    "twine",
+]
+doc = [
+    {include-group = "test"},
+    "doc8",
+    "readme_renderer",
+    "Sphinx",
+    "sphinx-book-theme",
+    "sphinxcontrib-django",
+]
+# Minimal CI group: just what's needed to invoke tox.
+ci = [
+    "tox",
+    "tox-uv",
+]
+dev = [
+    {include-group = "quality"},
+    {include-group = "ci"},
+    {include-group = "doc"},
+    "diff-cover",
+    "edx-i18n-tools",
+]
+
+[tool.uv]
+package = true
+default-groups = [] # explicit, not omitted -- uv's own default-groups fallback is ["dev"]
+
+#  DO NOT EDIT constraint-dependencies DIRECTLY.
+#  This list is managed by `edx_lint write_uv_constraints`
+#  and will be overwritten the next time `make upgrade` is run.
+#  - GLOBAL constraints: edit edx_lint/files/common_constraints.txt
+#  - REPO-SPECIFIC constraints: edit [tool.edx_lint].uv_constraints in this file
+constraint-dependencies = [
+    "Django<6.0",
+    "elasticsearch<7.14.0",
+]
+
+[tool.edx_lint]
+uv_constraints = []
+
+[tool.semantic_release]
+build_command = "python -m pip install --upgrade build && SETUPTOOLS_SCM_PRETEND_VERSION=$NEW_VERSION python -m build"
+major_on_zero = false
+allow_zero_version = true
+tag_format = "v{version}"
+
