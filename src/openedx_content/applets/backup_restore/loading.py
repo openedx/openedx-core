@@ -271,7 +271,6 @@ class Loader:
                     container_cls=container_type,
                 )
 
-                # TODO: Validate missing children
                 sorted_version_inputs = sorted(
                     entity_input.versions, key=lambda v: v.version_num
                 )

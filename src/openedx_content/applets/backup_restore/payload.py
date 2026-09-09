@@ -38,11 +38,22 @@ class UnvalidatedLearningPackageInput:
     raw_data: dict
     errors: list[ExtractionError]
 
-    # Always the re-rooted filesystem, never the one we were handed. ``fs.path``
-    # is the folder inside the archive that we treated as the root, or "" if the
-    # contents were already at the top level -- so anyone who wants to tell a
-    # human what we decided can read it from here. Every path in ``raw_data``
-    # and ``errors`` is relative to this root.
+    # Every path in raw_data and errors is relative to this fs, but the fs
+    # itself might be mounted from a subdirectory of the archive. For example,
+    # say we have library.zip with a directory tree like:
+    #
+    #   my-great-library/package.toml
+    #   my-great-library/entities
+    #   my-great-library/collections
+    #
+    # In this case:
+    #   - Nothing in raw_data or errors has "my-great-library" in it.
+    #   - fs operations never use the prefix, e.g. fs.exists("package.toml")
+    #   - fs.path == "my-great-library", so we can use this value if needed to
+    #     know exactly where the file really came from.
+    #
+    # In the normal case where package.toml is at the root of the archive,
+    # fs.path == "".
     fs: DirFileSystem
 
 

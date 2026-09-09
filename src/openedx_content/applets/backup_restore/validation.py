@@ -46,14 +46,13 @@ class ValidatedLearningPackageInput:
     ``data`` is populated -- a consistency error can be found on a document that
     is otherwise structurally valid.
     """
-
     data: CompletePackageInputData | None
+    errors: list[BackupRestoreError]
 
     # The re-rooted filesystem from extraction. ``fs.path`` is the folder inside
-    # the archive that was treated as its root, or "" if there wasn't one.
+    # the archive that was treated as its root, or "" if there wasn't one. See
+    # UnvalidatedLearningPackageInput.fs comments for more details.
     fs: DirFileSystem
-
-    errors: list[BackupRestoreError]
 
 
 def validate(
