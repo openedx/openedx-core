@@ -96,7 +96,7 @@ Because a run owns its learning package outright, all of the existing package-le
 7. Course structure and static assets are specified separately
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This ADR provides only the infrastructure needed to begin moving course content and assets from MongoDB into ``openedx_content``. How a course's files and uploads are represented within the run's learning package is the subject of :ref:`openedx-content-adr-0013`. How the course outline (sections, subsections, units) maps onto containers, e.g. via an ``OutlineRoot`` and/or "selectors", will be described in a future ADR.
+This ADR provides only the infrastructure needed to begin moving course content and assets from MongoDB into ``openedx_content``. How a course's files and uploads are represented within the run's learning package will be the subject of a future ADR. How the course outline (sections, subsections, units) maps onto containers, e.g. via an ``OutlineRoot`` and/or "selectors", will be described in a future ADR.
 
 Consequences
 ------------
