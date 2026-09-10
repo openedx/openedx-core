@@ -194,14 +194,13 @@ class Media(models.Model):
     ----------------------------------
 
     :class:`Media` is associated with a specific :class:`LearningPackage`.
-    Doing so allows us to more easily query for how much storge space a
-    specific :class:`LearningPackage` (likely a library) is using, and to
-    clean up unused data.
+    Doing so allows us to more easily query for how much storage space a
+    specific :class:`LearningPackage` is using, and to clean up unused data.
 
-    When we get to borrowing :class:`Media` across :class:`LearningPackage`
-    objects, it's likely that we will want to copy them. That way, even if
-    the originating :class:`LearningPackage` is deleted, it won't break
-    other :class:`LearningPackage` objects that are making use if it.
+    When we use :class:`Media` across :class:`LearningPackage` objects, we need
+    to copy them. That way, even if the originating :class:`LearningPackage` is
+    deleted, it won't break other :class:`LearningPackage` objects that are
+    making use if it.
 
     Media Types, and file duplication
     ---------------------------------
