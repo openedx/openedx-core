@@ -169,9 +169,9 @@ The simplest way to deduplicate blobs is to drop the namespace entirely and stor
 
 We rejected it for several reasons:
 
-- First, grouping blobs by catalog course provides somewhat better isolation and traceability. If blobs were in a single global namespace, it would be harder to determine what/who each blob belongs to, an unlikely errors like hash collisions and data corruption could have wider impact on unrelated courses and organizations.
+- First, grouping blobs by catalog course provides somewhat better isolation and traceability. If blobs were in a single global namespace, it would be harder to determine what/who each blob belongs to, and unlikely errors like hash collisions and data corruption could have wider impact on unrelated courses and organizations.
 - Second, namespacing provides better tenant isolation. Open edX instances frequently host multiple organizations, and global deduplication makes one organization's bytes physically the same object as another's, which complicates per-tenant deletion, isolation, privacy, and retention guarantees.
-- Third, garbage collection is also worse: a global reference count ranges over every learning package on the site. A namespace shared across reruns captures most of the available saving while keeping the tenant boundary intact.
+- Third, garbage collection is also worse: a global reference count ranges over every learning package on the site. A namespace shared across reruns captures most of the available storage savings while keeping the tenant boundary intact.
 
 A reasonable alternative could be to deduplicate content at the **org** level, rather than using the ``blob_namespace`` approach. This has the benefits of both simplicity and more comprehensive deduplication; it also makes identifying blobs with organizations much simpler, while identifying blobs with particular courses somewhat more difficult. The main downside is simply the lack of backwards compatibility, as this change would require renaming (moving) all existing asset blobs currently in ``openedx_content`` media storage. (One interesting alternative would be to use ``blob_namespace``, setting it to match the org for new learning contexts/packages, and leaving it as the package UUID for existing ones.)
 
