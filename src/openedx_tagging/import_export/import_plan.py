@@ -11,12 +11,12 @@ from .actions import (
     DeleteTag,
     ImportAction,
     RenameTagExternalId,
-    StageTagExternalId,
+    StageTagExternalIdForSwap,
     UpdateParentTag,
     WithoutChanges,
     available_actions,
 )
-from .exceptions import ImportActionError
+from .exceptions import DuplicateFinalIdError, TagImportError
 
 
 @define
@@ -46,7 +46,7 @@ class TagImportPlan:
     """
 
     actions: list[ImportAction]
-    errors: list[ImportActionError]
+    errors: list[TagImportError]
     indexed_actions: dict
     actions_dict: dict
     taxonomy: Taxonomy
@@ -150,11 +150,39 @@ class TagImportPlan:
         """
         return self.taxonomy.tag_set.filter(external_id=tag.previous_id).values_list("pk", flat=True).first()
 
+    def _validate_no_duplicate_final_ids(self, tags: list[TagItem]) -> None:
+        """
+        Reject two or more rows in the same import that claim the same
+        final `id`.
+
+        A tag is only ever staged by StageTagExternalIdForSwap (see
+        _build_staging_actions) because its current external_id is already
+        another row's explicit target id, so any row that collides with a
+        staged tag's target is, by construction, also duplicating that
+        other row's id. Catching the collision here, before staging or
+        per-row action-building run, rejects the whole import outright
+        instead of leaving the outcome to depend on row order (previously
+        either a silent overwrite of the row that landed first, or an
+        uncaught crash at execute time).
+
+        Rows are identified by their 1-based position in `tags`, not
+        `TagItem.index` (a separate, parser-assigned file row number): the
+        position is always defined, while `index` is optional and may be
+        left at its default for hand-built rows (e.g. in tests).
+        """
+        positions_by_id: dict[str, list[int]] = {}
+        for position, tag in enumerate(tags, start=1):
+            positions_by_id.setdefault(tag.id, []).append(position)
+
+        for tag_id, positions in positions_by_id.items():
+            if len(positions) > 1:
+                self.errors.append(DuplicateFinalIdError(tag_id, positions))
+
     def _build_staging_actions(self, tags: list[TagItem]) -> None:
         """
         Stage any tag whose current external_id is the target `id` of another
         rename row in this same import, so no two tags collide on external_id
-        regardless of execution order (see StageTagExternalId).
+        regardless of execution order (see StageTagExternalIdForSwap).
 
         Also records every rename row's resolved target pk in
         indexed_actions["_vacated_pks"], whether staged or not: a tag being
@@ -175,7 +203,7 @@ class TagImportPlan:
                 continue
             vacated_pks.add(target_pk)
             if tag.previous_id in target_ids:
-                self._build_action(StageTagExternalId, tag, target_pk=target_pk)
+                self._build_action(StageTagExternalIdForSwap, tag, target_pk=target_pk)
         self.indexed_actions["_vacated_pks"] = vacated_pks
 
     def generate_actions(
@@ -197,6 +225,12 @@ class TagImportPlan:
         self.actions.clear()
         self.errors.clear()
         self._init_indexed_actions()
+
+        # Reject two or more rows claiming the same final id outright,
+        # before staging or per-row action-building runs (see
+        # _validate_no_duplicate_final_ids).
+        self._validate_no_duplicate_final_ids(tags)
+
         tags_for_delete = {}
 
         if replace:
