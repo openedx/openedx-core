@@ -694,6 +694,77 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert tag_3.external_id == "tag_3"
         assert tag_3.value == "Tag 3"
 
+    def test_import_duplicate_final_id_rejected(self) -> None:
+        """
+        Two rows in the same import cannot claim the same final id: a
+        tag_1<->tag_3 swap plus an unrelated third row that also targets
+        id=tag_1 is ambiguous, since the second row and the third row both
+        claim tag_1 as their final id. This must be rejected outright at
+        the plan step, not resolved by row order (previously: a silent
+        overwrite of the row that landed second, or an uncaught crash,
+        depending on which row came first in the file).
+        """
+        old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
+        old_pk_3 = self.taxonomy.tag_set.get(external_id="tag_3").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_3", "value": "Tag 1", "previous_id": "tag_1"},
+            {"id": "tag_1", "value": "Tag 3", "previous_id": "tag_3"},
+            {"id": "tag_1", "value": "Something Else Entirely"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert "Duplicate id" in log
+        assert not result
+
+        # Nothing changed: neither tag's external_id or value moved.
+        tag_1 = Tag.objects.get(pk=old_pk_1)
+        tag_3 = Tag.objects.get(pk=old_pk_3)
+        assert tag_1.external_id == "tag_1"
+        assert tag_1.value == "Tag 1"
+        assert tag_3.external_id == "tag_3"
+        assert tag_3.value == "Tag 3"
+
+    def test_import_duplicate_final_id_rejected_regardless_of_order(self) -> None:
+        """
+        Same collision as test_import_duplicate_final_id_rejected, but with
+        the unrelated row moved to the front of the file: the rejection
+        doesn't depend on row order. Previously, this exact ordering hit an
+        uncaught Tag.DoesNotExist crash at execute time instead of a clean
+        plan-time rejection.
+        """
+        old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
+        old_pk_3 = self.taxonomy.tag_set.get(external_id="tag_3").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_1", "value": "Something Else Entirely"},
+            {"id": "tag_3", "value": "Tag 1", "previous_id": "tag_1"},
+            {"id": "tag_1", "value": "Tag 3", "previous_id": "tag_3"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert "Duplicate id" in log
+        assert not result
+
+        tag_1 = Tag.objects.get(pk=old_pk_1)
+        tag_3 = Tag.objects.get(pk=old_pk_3)
+        assert tag_1.external_id == "tag_1"
+        assert tag_1.value == "Tag 1"
+        assert tag_3.external_id == "tag_3"
+        assert tag_3.value == "Tag 3"
+
     def test_import_rename_referencing_stale_old_id_rejected(self) -> None:
         """
         Regression: a plain (non-contended) rename of tag_1 to tag_50, with

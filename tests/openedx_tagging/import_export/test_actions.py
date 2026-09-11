@@ -13,7 +13,7 @@ from openedx_tagging.import_export.actions import (
     ImportAction,
     RenameTag,
     RenameTagExternalId,
-    StageTagExternalId,
+    StageTagExternalIdForSwap,
     UpdateParentTag,
     WithoutChanges,
 )
@@ -851,7 +851,7 @@ class TestRenameTagExternalId(TestImportActionMixin, TestCase):
         tag_2_pk = self.taxonomy.tag_set.get(external_id='tag_2').pk
         indexed_actions = dict(self.indexed_actions)
         indexed_actions['stage_external_id'] = [
-            StageTagExternalId(
+            StageTagExternalIdForSwap(
                 taxonomy=self.taxonomy,
                 tag=TagItem(id='tag_1', value='Tag 2', previous_id='tag_2', index=1),
                 index=1,
@@ -992,13 +992,13 @@ class TestRenameTagExternalId(TestImportActionMixin, TestCase):
         self.assertEqual(tag.parent.external_id, 'tag_3')
 
 
-class TestStageTagExternalId(TestImportActionMixin, TestCase):
+class TestStageTagExternalIdForSwap(TestImportActionMixin, TestCase):
     """
     Test for 'stage_external_id' action
     """
 
     def test_applies_for(self) -> None:
-        result = StageTagExternalId.applies_for(
+        result = StageTagExternalIdForSwap.applies_for(
             self.taxonomy,
             tag=TagItem(
                 id='tag_2',
@@ -1010,7 +1010,7 @@ class TestStageTagExternalId(TestImportActionMixin, TestCase):
         self.assertFalse(result)
 
     def test_validate(self) -> None:
-        action = StageTagExternalId(
+        action = StageTagExternalIdForSwap(
             taxonomy=self.taxonomy,
             tag=TagItem(
                 id='tag_2',
@@ -1026,7 +1026,7 @@ class TestStageTagExternalId(TestImportActionMixin, TestCase):
     def test_execute(self) -> None:
         tag = self.taxonomy.tag_set.get(external_id='tag_1')
         pk = tag.pk
-        action = StageTagExternalId(
+        action = StageTagExternalIdForSwap(
             taxonomy=self.taxonomy,
             tag=TagItem(
                 id='tag_2',

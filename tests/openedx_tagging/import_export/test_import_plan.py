@@ -149,7 +149,7 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
                 },
             ],
             False,
-            3,
+            4,
             [
                 {
                     'name': 'create',
@@ -260,6 +260,8 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             "#7: Rename tag value of <Tag> (tag_2 / Tag 2) to 'Tag 31'\n"
             "\nOutput errors\n"
             "--------------------------------\n"
+            "Duplicate id (tag_31): rows #1, #2 all claim it as their final id. "
+            "Each row's id must be unique within a single import.\n"
             "Conflict with 'create' (#2) and action #1: Duplicated external_id tag.\n"
             "Action error in 'rename' (#3): Duplicated tag value with tag in database (external_id=tag_2).\n"
             "Action error in 'update_parent' (#4): Unknown parent tag (tag_100). "
@@ -572,3 +574,43 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         self.assertEqual(self.import_plan.indexed_actions['stage_external_id'], [])
         self.assertEqual(len(self.import_plan.errors), 1)
         self.assertIn("already exists", str(self.import_plan.errors[0]))
+
+    def test_generate_actions_rejects_duplicate_final_id(self) -> None:
+        """
+        Two rows in the same import cannot claim the same final id: a
+        tag_1<->tag_3 swap plus an unrelated third row that also targets
+        id=tag_1 is ambiguous, since the second row and the third row both
+        claim tag_1 as their final id. Reject the whole import outright,
+        identifying both offending rows by their position in the file,
+        instead of letting the swap-staging logic silently treat the third
+        row's collision as valid (see DuplicateFinalIdError).
+        """
+        tags = [
+            TagItem(id='tag_3', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_1', value='Tag 3', previous_id='tag_3'),
+            TagItem(id='tag_1', value='Something Else Entirely'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(len(self.import_plan.errors), 1)
+        error = str(self.import_plan.errors[0])
+        self.assertIn("tag_1", error)
+        self.assertIn("#2", error)
+        self.assertIn("#3", error)
+
+    def test_generate_actions_rejects_duplicate_final_id_regardless_of_order(self) -> None:
+        """
+        Same collision as test_generate_actions_rejects_duplicate_final_id,
+        but with the unrelated row moved to the front of the file: the
+        rejection doesn't depend on row order.
+        """
+        tags = [
+            TagItem(id='tag_1', value='Something Else Entirely'),
+            TagItem(id='tag_3', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_1', value='Tag 3', previous_id='tag_3'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(len(self.import_plan.errors), 1)
+        error = str(self.import_plan.errors[0])
+        self.assertIn("tag_1", error)
+        self.assertIn("#1", error)
+        self.assertIn("#3", error)
