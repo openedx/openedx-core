@@ -8,6 +8,7 @@ root_packages =
     openedx_learning
     openedx_content
     openedx_tagging
+    openedx_catalog
     openedx_django_lib
     openedx_core
 
@@ -18,12 +19,19 @@ root_packages =
 name = "top-level source folders are layered correctly"
 type = layers
 layers =
-    # Learning-domain features (currently CBE; Learning Pathways to follow).
-    # May build on content and tagging. Nothing below may import it: in
-    # particular, openedx_tagging must never know that CBE exists.
+    # Learning-domain features (CBE and Pathways). May build on catalog, content and
+    # tagging. Nothing below may import it: in particular, openedx_tagging must never
+    # know that CBE exists.
     openedx_learning
 
-    # Content: authoring-side models and APIs.
+    # Catalog holds the models learners browse and enroll against (CatalogCourse, CourseRun,
+    # CatalogPathway). A catalog entry points at its content, never the reverse, so catalog
+    # sits above content: it may hold (nullable) foreign keys to content, while content stays
+    # ignorant of what a learning package represents. See the openedx_catalog ADR 0001.
+    openedx_catalog
+
+    # Content: authoring-side models and APIs. Generic infrastructure for courses, libraries,
+    # pathways and future context types alike.
     openedx_content
 
     # Tagging is very simple & fundamental. Should probably not depend on any other Django apps.
