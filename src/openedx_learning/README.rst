@@ -7,5 +7,5 @@ and how they get there. Its sibling ``openedx_content`` holds the material itsel
 Like ``openedx_content``, it is one Django app split into applets. Its first applet is
 ``cbe``, for Competency-Based Education; Learning Pathways are expected to follow.
 
-In the layering that ``.importlinter`` enforces, this app sits above ``openedx_content``
-and ``openedx_tagging``. It may build on either of them; neither may import it.
+In the layering that ``.importlinter`` enforces, this app sits above ``openedx_catalog``,
+``openedx_content`` and ``openedx_tagging``. It may build on any of them; none may import it.

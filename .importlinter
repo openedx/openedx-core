@@ -5,6 +5,7 @@
 
 [importlinter]
 root_packages =
+    openedx_catalog
     openedx_learning
     openedx_content
     openedx_tagging
@@ -19,9 +20,13 @@ name = "top-level source folders are layered correctly"
 type = layers
 layers =
     # Learning-domain features (currently CBE; Learning Pathways to follow).
-    # May build on content and tagging. Nothing below may import it: in
-    # particular, openedx_tagging must never know that CBE exists.
+    # May build on catalog, content and tagging. Nothing below may import it:
+    # in particular, openedx_tagging must never know that CBE exists.
     openedx_learning
+
+    # Catalog: defines how content is organized into enrollable courses and
+    # pathways. May point at content; content must never import it.
+    openedx_catalog
 
     # Content: authoring-side models and APIs.
     openedx_content
@@ -29,7 +34,7 @@ layers =
     # Tagging is very simple & fundamental. Should probably not depend on any other Django apps.
     openedx_tagging
 
-    # Django utilities. Should not dependend on any of the real apps (above).
+    # Django utilities. Should not depend on any of the real apps (above).
     openedx_django_lib
 
     # This just an empty shell package, to expose the __version__ number.
