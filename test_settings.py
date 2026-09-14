@@ -54,6 +54,9 @@ INSTALLED_APPS = [
     "organizations",
     # django-rules based authorization
     'rules.apps.AutodiscoverRulesConfig',
+    # Required for django-simple-history's admin integration and management commands;
+    # HistoricalRecords() alone does not need it.
+    "simple_history",
     # Our own apps
     "openedx_tagging",
     "openedx_content",

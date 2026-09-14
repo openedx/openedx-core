@@ -37,6 +37,10 @@ INSTALLED_APPS = [
     # Open edX Organizations (dependency for openedx_catalog)
     "organizations",
 
+    # Required for django-simple-history's admin integration and management commands;
+    # HistoricalRecords() alone does not need it.
+    "simple_history",
+
     # Our Apps
     "openedx_catalog",
     "openedx_learning",

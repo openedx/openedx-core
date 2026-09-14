@@ -44,6 +44,14 @@ def test_plain_taxonomy_has_no_competencytaxonomy() -> None:
         _ = plain.competencytaxonomy
 
 
+def test_taxonomy_overrides_org_defaults_false(competency_taxonomy: CompetencyTaxonomy) -> None:
+    """
+    taxonomy_overrides_org defaults to False, so an organization-scoped profile wins the
+    contested case by default until an author opts a taxonomy out. See ADR-0002 Decision 1.
+    """
+    assert competency_taxonomy.taxonomy_overrides_org is False
+
+
 def test_delete_cascades_both_directions() -> None:
     """
     Deleting the parent Taxonomy removes the CompetencyTaxonomy row, and deleting

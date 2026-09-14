@@ -120,8 +120,8 @@ Decision
    Relationship to other concepts:
 
    - Each row is scoped by at most one of taxonomy, course, or organization (or by none, for the system default). A check constraint enforces that at most one of ``organization_id``, ``course_id``, and ``competency_taxonomy_id`` is non-null per row. See Decision 4 for how a criterion is assigned a profile when rows in more than one of these scopes could apply to it.
-   - At most one profile row may exist per distinct scope value. This is enforced by a unique constraint on the generated ``scope_code`` column (Decision 5), not a plain unique constraint on the three raw scope columns; see the ``scope_code`` column definition below for why.
-   - The system default is the single profile row where all three scope fields are null. ``scope_code`` is never null, including for this row (see below), so its singularity is enforced by the same unique constraint as every other profile rather than a separate procedural guarantee; it is seeded once via migration and never created or deleted through the profile API. If/when a REST API or application-layer/service code exists for editing a profile's ``rule_type``/``rule_payload``, the system default row would be editable through it like any other profile. Until then, only an operator can edit it directly (for example via Django admin or SQL).
+   - At most one profile row may exist per distinct scope value. This is enforced by a unique constraint on the derived ``scope_code`` column (Decision 5), not a plain unique constraint on the three raw scope columns; see the ``scope_code`` column definition below for why.
+   - The system default is the single profile row where all three scope fields are null. ``scope_code`` is non-null for this row to not collide with archived rule profiles.
    - Is referenced by ``CompetencyCriterion``, which may override its type/payload.
    - Never hard-deleted; retirement is archive-only (Decision 7).
 
@@ -131,7 +131,7 @@ Decision
    2. ``organization_id``: The ``organization_id`` of the organization that this competency rule profile is scoped to. Null if it is not scoped to a specific organization.
    3. ``course_id``: The ``course_id`` of the course that this competency rule profile is scoped to. Null if it is not scoped to a specific course.
    4. ``competency_taxonomy_id``: The ``CompetencyTaxonomy.taxonomy_ptr_id`` of the competency taxonomy that this competency rule profile is scoped to. Null if it is not scoped to a specific taxonomy.
-   5. ``scope_code``: A database-generated column that is always in the fixed, trivially-parseable format ``"org:X,course:Y,taxonomy:Z"``, with each segment left blank when the corresponding scope column is null: for example ``"org:5,course:,taxonomy:"``, ``"org:,course:12,taxonomy:"``, ``"org:,course:,taxonomy:7"``, or ``"org:,course:,taxonomy:"`` for the system default. ``scope_code`` is therefore never null, including for the system default row. This exists because SQL never treats two ``NULL`` values as equal for uniqueness purposes, so a plain unique constraint across the three nullable scope columns would not stop two rows from sharing the same scope (for example two rows both with ``organization_id=5`` and the other two columns null). Collapsing the scope into one generated, always-non-null column sidesteps that, and does so identically on every database backend this project supports, including MySQL, which does not support the conditional/partial unique indexes that would otherwise be the usual fix. ``scope_code`` embeds internal ID references and exists solely to enforce uniqueness; it is not intended to be exported or exposed outside this system.
+   5. ``scope_code``: A plain column in the format ``"org:X,course:Y,taxonomy:Z"``, with each segment left blank when the corresponding scope column is null: for example ``"org:5,course:,taxonomy:"``, or ``"org:,course:,taxonomy:"`` for the system default row. It is non-null when it is live, and null while archived. This frees an archived profile's scope for a replacement.
    6. ``rule_type``: “View”, “Grade”, “MasteryLevel” (Only “Grade” will be supported for now)
    7. ``rule_payload``: JSON payload keyed by ``rule_type`` to avoid freeform strings. It is structured JSON (not arbitrary freeform data): each ``rule_type`` defines the allowed payload shape and required keys, and validation enforces this contract. JSON is used instead of fixed columns like ``op``, ``value``, and ``scale`` so that future rule types (for example, ``MasteryLevel`` thresholds or plugin-defined evaluators such as CEL-based rules) can add their own fields without repeated schema migrations or many nullable columns. Examples:
 
@@ -309,6 +309,8 @@ Decision
    - Once a related row exists in ``StudentCompetencyCriteriaStatus``, deletion of the associated competency definition row still succeeds, but as an archive (soft delete) instead of a hard delete: the row is hidden from authoring and new associations but remains queryable, so existing learner status rows stay resolvable. This archive-vs-hard-delete rule applies to ``oel_tagging_tag``, ``oel_tagging_taxonomy``, ``CompetencyTaxonomy``, ``oel_tagging_objecttag``, ``CompetencyCriteriaGroup``, and ``CompetencyCriteria``; see :ref:`openedx-learning-adr-0003` Decision 3 for ``oel_tagging_objecttag``'s own archive rule and traceability exception.
    - ``StudentCompetencyCriteriaStatus`` is what determines whether a record is protected. ``StudentCompetencyCriteriaGroupStatus`` and ``StudentCompetencyStatus`` are roll-up tables derived from it (Decision 6) and are not independently checked for this purpose: :ref:`openedx-learning-adr-0004` writes the leaf table synchronously with the grade but rolls the two roll-up tables up later via an asynchronous task, which can lag behind the leaf or, per that ADR's Decision 5, need manual recovery. Checking only the roll-up tables could therefore miss real learner progress that has not rolled up yet.
    - Direct deletion of a ``CompetencyRuleProfile`` is never a hard delete; retirement is always archive-only, via a normal update to its ``archived`` column (Decision 3). However, if a taxonomy or course that is associated with a taxonomy- or course-scoped profile is deleted, then this profile will be deleted along with it.
+   - ``on_delete`` on the criteria tables expresses containment, not protection: a row whose referent is gone is meaningless, so ``CompetencyCriteriaGroup.parent``, ``.tag`` and ``.course``, ``CompetencyCriterion.group`` and ``.object_tag``, and ``CompetencyRuleProfile.course`` and ``.competency_taxonomy`` all cascade. ``CompetencyCriterion.rule_profile`` stays ``PROTECT``, which is what makes "a profile is never hard-deleted by a direct delete" hold at the ORM layer. ``CompetencyRuleProfile.organization`` stays ``PROTECT`` because an ``Organization`` is not a competency definition record and ``edx-organizations`` deactivates organizations rather than deleting them. The tree links additionally have to cascade for a mechanical reason: Django's collector looks up referencing rows in the database rather than in the set it has already decided to delete, so a parent and child reached in the same batch would still trip ``PROTECT`` and abort the walk partway down. Those cascading edges are what carries a delete down to the ``PROTECT`` on the learner status tables, which is where this decision is actually enforced.
+   - Known limitation: deleting a ``CompetencyTaxonomy`` whose taxonomy-scoped profile is assigned to a ``CompetencyCriterion`` raises ``ProtectedError`` naming that criterion, even though the criterion would also be cascade-deleted in the same operation through the tag chain, for the same collector reason above. This is unreachable until scoped profiles can be authored. The fix at that point is a fifth reassignment event on Decision 4: when a profile's scope owner is being deleted, reassign every criterion off that profile before the cascade proceeds.
 
 .. image:: images/CompetencyCriteriaModel.png
    :alt: Competency Criteria Model
@@ -417,7 +419,7 @@ Rejected Alternatives
       2. Requires reconciling profiles whenever an organization is added to or removed from a taxonomy.
       3. Organization and taxonomy are not naturally nested (a taxonomy can belong to many organizations and vice versa), so forcing one to always contain the other does not reflect the actual relationship between them.
 
-6. Enforce ``CompetencyRuleProfile`` scope uniqueness with per-scope conditional/partial unique constraints (Django ``UniqueConstraint(condition=Q(...))``) directly on the three nullable scope columns, instead of a generated ``scope_code`` column (Decision 3).
+6. Enforce ``CompetencyRuleProfile`` scope uniqueness with per-scope conditional/partial unique constraints (Django ``UniqueConstraint(condition=Q(...))``) directly on the three nullable scope columns, instead of the derived ``scope_code`` column (Decision 3).
 
    1. Pros
 
@@ -452,3 +454,9 @@ Changelog
   course-scoped subtree, not just the top one, and can't change after creation.
   Simplified retrieval scope and dropped the pagination note, since both assumed
   course-date windowing, which #676's new read path doesn't use.
+
+2026-09-09:
+
+* ``scope_code`` on ``CompetencyRuleProfile`` is now computed by
+  application code instead of being database-generated, and is set to null while a
+  profile is archived, freeing its scope for a replacement.
