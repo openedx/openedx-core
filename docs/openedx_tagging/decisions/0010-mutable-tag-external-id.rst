@@ -62,10 +62,18 @@ enable a pathway for its value to change, rather than adding a new field.
   identifiers for now; keeping that history within Open edX itself could be a future
   phase of work.
 - The existing per-taxonomy uniqueness constraint on ``external_id``
-  (``unique_together`` on ``(taxonomy, external_id)``) is unchanged and still applies
-  to a rename: if the new ``id`` collides with a different existing tag in the same
-  taxonomy, the import rejects the row, the same way a duplicate ``external_id`` on
-  tag creation already does today.
+  (``unique_together`` on ``(taxonomy, external_id)``) is unchanged: if the new ``id``
+  collides with a tag that isn't itself part of a rename in the same import, the
+  import rejects the row, the same way a duplicate ``external_id`` on tag creation
+  already does today.
+- Renames within a single import are order-independent: two or more tags can rename
+  onto each other's current ``external_id`` values in the same file (a swap, or a
+  longer cycle), regardless of row order. Any tag whose current ``external_id`` is
+  another row's target is moved through a temporary, internal identifier first, then
+  landed on its final value, so no two tags ever collide mid-import. This applies to
+  ``external_id`` only: a row that also tries to take on the other tag's current
+  ``value`` in the same swap is still rejected, since ``value`` carries the same
+  per-taxonomy uniqueness constraint without the same staging treatment.
 - No schema change and no migration: ``external_id`` already permits writes at the
   model layer, and ``previous_id`` is read per-row from the import file and consumed
   only while generating the import plan.
@@ -115,6 +123,11 @@ institutions hit when they rename an identifier.
 
 Changelog
 ---------
+
+2026-09-05:
+
+* Revised: renames within one import are now order-independent, so two or more tags
+  can swap or cycle through each other's ``external_id`` values in a single file.
 
 2026-07-07:
 
