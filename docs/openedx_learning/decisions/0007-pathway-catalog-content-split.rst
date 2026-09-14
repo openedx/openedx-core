@@ -34,7 +34,8 @@ Decisions
 1. A Pathway is split into two parts:
 
    - **Catalog Pathway** - the learner-browsable, enrollable thing. It includes the display name, the description
-     shown in the catalog, SEO metadata, and a **Category**. It is **not versioned**.
+     shown in the catalog, SEO metadata, and a **Category**. It is **not versioned**. Its definition lives in the
+     ``openedx_catalog`` app.
 
    - **Pathway content** - the definition of the Pathway: its Items and its completion criteria. The content is
      **versioned**, so that we can always tell what the definition was at any given moment. A version of the Pathway
@@ -48,13 +49,18 @@ Decisions
 3. In authoring contexts (Studio, Django admin, code, docs), the terminology is always "Pathway", with the Category
    shown explicitly. Relabelling is a learner-facing concern of the catalog side only.
 
-4. **Dependency direction**: ``openedx_content`` knows about ``openedx_catalog``, never the reverse. This has the
-   following consequences:
+4. **Content implementation**: The models that define pathway content are part of the ``openedx_learning`` package,
+   which lives above both ``openedx_content`` and ``openedx_catalog``. This has the following consequences:
 
+   - The implementation of the Pathway feature is mostly contained within ``openedx_learning`` rather than spread
+     among ``openedx_catalog``, ``openedx_learning``, and ``openedx_content``.
+   - Pathway Items/Criteria are treated as part of the Pathways feature, and are not generic content primitives
+     available for use in non-pathway features.
+   - Pathway Items can be implemented using ``PublishableEntity``, to get versioning and draft/publish.
    - Pathway Items may reference ``CourseRun`` entities directly.
-   - The link from a Catalog Pathway to the Pathway content that implements it lives on the content side.
-   - Anything that has to tie the two sides together belongs in ``openedx_content``, or in something downstream of
-     it, but never in ``openedx_catalog``.
+   - Pathway Items, completion criteria, etc. cannot be used nor referenced in core ``openedx_content`` models such as
+     ``Component`` (but could be referenced by a generic ``Container`` that allows any ``PublishableEntity`` as its
+     child, or a specialized ``Container`` subclass defined in ``openedx_learning``, if either were useful).
 
 5. **Enrollment** ties a learner to a Catalog Pathway. Progress is evaluated against the currently published
    content version, not against a version frozen at enrollment time, so that authoring changes reach learners who
@@ -68,8 +74,9 @@ Catalog Pathway               Pathway content
 Display name                  Pathway Items
 Category                      Completion criteria
 Description                   References to CourseRuns
-SEO metadata                  Link to the related Catalog Pathway
+SEO metadata
 Enrollment
+Link to the Pathway content
 ============================  ===================================
 
 .. Run `dot -Tsvg images/pathway-catalog-content.dot > images/pathway-catalog-content.svg` to regenerate the diagram
@@ -86,5 +93,14 @@ Consequences
 - Because evaluation follows the published version rather than the enrollment-time version, edits to a Pathway apply
   to learners who are already enrolled, which is what we want, but it means edits need care and re-evaluation.
 - The unversioned Catalog Pathway can be long-lived even if its content definition is changed significantly over time.
-- The dependency direction means a Catalog Pathway cannot, on its own, tell which content implements it. Queries in
-  that direction start from the content side.
+
+Changelog
+---------
+
+2026-09-14:
+
+* Changed layering so that ``openedx_catalog`` depends on ``openedx_content``, not vice versa.
+
+2026-09-01:
+
+* Initial version
