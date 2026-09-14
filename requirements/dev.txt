@@ -12,7 +12,7 @@ asgiref==3.12.1
     # via
     #   -r requirements/quality.txt
     #   django
-ast-serialize==0.9.0
+ast-serialize==0.11.2
     # via
     #   -r requirements/quality.txt
     #   mypy
@@ -29,7 +29,7 @@ billiard==4.2.4
     # via
     #   -r requirements/quality.txt
     #   celery
-build==1.6.0
+build==1.6.1
     # via
     #   -r requirements/pip-tools.txt
     #   pip-tools
@@ -92,7 +92,7 @@ colorama==0.4.6
     # via
     #   -r requirements/ci.txt
     #   tox
-coverage[toml]==7.16.0
+coverage[toml]==7.16.1
     # via
     #   -r requirements/quality.txt
     #   pytest-cov
@@ -160,7 +160,7 @@ django-waffle==5.0.0
     #   -r requirements/quality.txt
     #   edx-django-utils
     #   edx-drf-extensions
-djangorestframework==3.18.0
+djangorestframework==3.18.1
     # via
     #   -r requirements/quality.txt
     #   drf-jwt
@@ -210,7 +210,7 @@ fastavro==1.12.2
     # via
     #   -r requirements/quality.txt
     #   openedx-events
-filelock==3.32.5
+filelock==3.32.6
     # via
     #   -r requirements/ci.txt
     #   python-discovery
@@ -342,7 +342,7 @@ pillow==12.3.0
     #   edx-organizations
 pip-tools==7.6.1
     # via -r requirements/pip-tools.txt
-platformdirs==4.11.7
+platformdirs==4.11.8
     # via
     #   -r requirements/ci.txt
     #   -r requirements/quality.txt
@@ -382,7 +382,7 @@ pygments==2.21.0
     #   pytest
     #   readme-renderer
     #   rich
-pyjwt[crypto]==2.13.0
+pyjwt[crypto]==2.14.0
     # via
     #   -r requirements/quality.txt
     #   drf-jwt
@@ -407,7 +407,7 @@ pylint-plugin-utils==0.9.0
     #   -r requirements/quality.txt
     #   pylint-celery
     #   pylint-django
-pymongo==4.18.0
+pymongo==4.18.1
     # via
     #   -r requirements/quality.txt
     #   edx-opaque-keys
@@ -443,7 +443,7 @@ python-discovery==1.6.0
     #   -r requirements/ci.txt
     #   tox
     #   virtualenv
-python-slugify==8.0.4
+python-slugify==9.0.0
     # via
     #   -r requirements/quality.txt
     #   code-annotations
@@ -519,7 +519,7 @@ tomlkit==0.15.1
     #   -r requirements/quality.txt
     #   edx-lint
     #   pylint
-tox==4.61.2
+tox==4.61.4
     # via -r requirements/ci.txt
 twine==7.0.0
     # via -r requirements/quality.txt
@@ -539,7 +539,7 @@ typing-extensions==4.16.0
     #   import-linter
     #   mypy
     #   tox
-tzdata==2026.3
+tzdata==2026.4
     # via
     #   -r requirements/quality.txt
     #   kombu
@@ -559,7 +559,7 @@ vine==5.1.0
     #   amqp
     #   celery
     #   kombu
-virtualenv==21.7.8
+virtualenv==21.7.9
     # via
     #   -r requirements/ci.txt
     #   tox
