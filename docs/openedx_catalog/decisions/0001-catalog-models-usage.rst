@@ -71,6 +71,11 @@ Consequences
 - A :class:`LearningPackage` can be created and populated without yet being associated with a course/library/etc.
 - Import Linter will fail any change that makes ``openedx_content`` import ``openedx_catalog``, including a Pathways applet that references :class:`CourseRun` if it is placed inside ``openedx_content``. Such models belong in ``openedx_learning``.
 
+Sharing a LearningPackage
+-------------------------
+
+This ADR deliberately does not specify exactly how a catalog :class:`CourseRun` maps to a :class:`LearningPackage`. The simplest option is a foreign key from one to the other, which is the tentative plan specified in the proposed `Course Learning Packages ADR`_. However, in the future it may evolve to become e.g. a foreign key from :class:`CourseRun` to a ``CourseRoot`` or ``OutlineRoot`` object *within* a :class:`LearningPackage`; this would allow multiple course runs and even pathways to store their content in a large, combined :class:`LearningPackage`.
+
 Rejected Alternatives
 ---------------------
 
