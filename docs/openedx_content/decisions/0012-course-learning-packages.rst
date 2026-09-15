@@ -158,18 +158,18 @@ We are trying to leave this open as a future option, but we are rejecting it for
 One LearningPackage per CatalogCourse, with run-scoped entities
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In this alternative, all runs of a catalog course share one learning package; a new ``scope`` column on :class:`PublishableEntity` records which run each entity belongs to, with a null scope meaning "shared across runs". A rerun creates only the container spine, pointing at the previous run's components pinned to their published versions, and forks a component into its own scope on first edit.
+In this alternative, all runs of a catalog course share one learning package; a new ``scope`` column on :class:`PublishableEntity` records which run each entity belongs to.
 
-This addresses row duplication as well as byte duplication, but the cost is spread across the whole system:
-
+This approach is rejected because:
 - It adds a column to :class:`PublishableEntity`, the most heavily used table in the schema, and changes its uniqueness constraints.
-- Cross-run references must be *pinned*, or one run's edits would silently alter another. That is a new invariant to enforce in entity list construction, and a subtle and damaging bug class if it is ever violated.
-- Fork-on-write machinery is needed in the components and containers APIs.
-- Publishing, pruning and deletion all become scope-aware.
-- A catalog course with many reruns produces a single very large package.
+- All APIs require a breaking change anywhere they previously assumed that (``learning_package``, ``entity_ref``) was sufficient as a unique identifier.
+- Publishing, pruning and deletion all need to become scope-aware, and care must be taken throughout all content-related APIs to avoid cross-scope bugs (where editing one run affects another).
+- A catalog course with many reruns produces a very large package in terms of rows.
 - CCX courses, which share an org, code and run, do not fit the scoping model cleanly.
 
 The row savings are valuable, but the complexity and potential for cross-run data problems (reduced isolation) don't seem worth the cost.
+
+In a variant of this idea, a rerun creates only the container spine, pointing at the previous run's components pinned to their published versions. When any component is first edited within the new run, the component must be forked into its own scope. This is a somewhat different mechanism than those rejected in :ref:`openedx-content-adr-0011`, but has similar issues and is of limited value; it saves rows but increases complexity significantly. It is an interesting use of "pinned containers", however, which are otherwise not really used at all.
 
 One LearningPackage per CatalogCourse, with run-prefixed codes and full copies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -181,7 +181,7 @@ Compared to decision 1 this requires no ``media_file_namespace`` field, because 
 We rejected it because it pays most of the costs of the run-scoped alternative for a smaller benefit than ``media_file_namespace`` delivers on its own:
 
 - Every package-level operation that decision 6 gets for free becomes run-aware by prefix filtering: publishing one run, listing its drafts, reading its change logs, pruning it, exporting it, and deleting it. Deleting a run is a filtered bulk delete rather than a cascade, and ``backup_restore`` cannot export a single run without new filtering support.
-- Codes stop being opaque. Every lookup, URL (see :ref:`openedx-content-adr-0005`), import, export and upstream link must compose and parse the prefix, which is contrary to the identifier conventions in :ref:`openedx-content-adr-0003` and leaks the run into every entity reference.
+- Codes stop being opaque. Every lookup, URL (see :ref:`openedx-content-adr-0005`), import, export and upstream link must compose and parse the prefix, which is contrary to the existing assumption that these identifiers are opaque.
 - A catalog course with many reruns produces a single very large package, and anything keyed on a package (collections, selectors, package-wide queries, admin tooling) spans all of its runs.
 - The chance of changes to one run impacting another run due to isolation bugs in the code are significantly increased when all runs share a LearningPackage.
 
