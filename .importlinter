@@ -77,3 +77,18 @@ layers=
     # to create Learning Packages and manage the draft and publish states for
     # various types of content.
     openedx_content.applets.publishing
+
+# This is "applet" layering, within our Learning djangoapp.
+# Every new applet should be added to this list when it is created.
+[importlinter:contract:learning_applet_layering]
+name = "openedx_learning's internal applets are layered correctly"
+type = layers
+layers =
+    # The public API is at the top. None of the internal applets should call to it.
+    openedx_learning.api
+
+    # The "pathways" applet holds the versioned definition of what a learner must complete
+    # to earn a larger achievement. The "cbe" applet models learner mastery of competencies.
+    # These are independent of each other today; if a future fulfillment type lets a
+    # competency attainment fulfill a Pathway Item, pathways would move above cbe.
+    openedx_learning.applets.pathways | openedx_learning.applets.cbe
