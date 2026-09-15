@@ -28,7 +28,7 @@ The reasons:
 - **Containers cannot be shared anyway.** A :class:`ContainerVersion` points at an :class:`EntityList` whose rows reference specific child entities. A copy needs its own container versions regardless, so only leaf component versions would ever be shared.
 - **The blast radius is large.** Both rejected designs below change public models exposed through ``models_api``, require a DEPR of parts of the ``versioning`` helper, touch every applet, and need coordinated changes in ``openedx-platform`` (the XBlock runtime's version lookups, library history, restore, upstream sync and the clipboard).
 
-A future ADR will address reducing storage space by consolidating media across the learning packages that hold different versions of the same course, which captures most of the storage benefit without changing the publishing model.
+:ref:`openedx-content-adr-0012` will address reducing storage space by consolidating media across the learning packages that hold different versions of the same course, which captures most of the storage benefit without changing the publishing model.
 
 Rejected Alternatives
 ---------------------
