@@ -5,7 +5,6 @@
 
 [importlinter]
 root_packages =
-    openedx_catalog
     openedx_learning
     openedx_content
     openedx_tagging
@@ -24,16 +23,13 @@ layers =
     # particular, openedx_tagging must never know that CBE exists.
     openedx_learning
 
-    # Catalog: defines how content is organized into enrollable courses
-    openedx_catalog
-
     # Content: authoring-side models and APIs.
     openedx_content
 
     # Tagging is very simple & fundamental. Should probably not depend on any other Django apps.
     openedx_tagging
 
-    # Django utilities. Should not depend on any of the real apps (above).
+    # Django utilities. Should not dependend on any of the real apps (above).
     openedx_django_lib
 
     # This just an empty shell package, to expose the __version__ number.
