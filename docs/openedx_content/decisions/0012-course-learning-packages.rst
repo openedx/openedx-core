@@ -131,6 +131,30 @@ Conceptually, parts of :class:`LearningPackage` align with the ``LearningContext
 
 This is a compelling option with arguably more clarity, but it is a bigger change and likely not backwards-compatible in terms of API. It also slightly increases cognitive load. If we need to hang metadata off of the ``media_file_namespace`` in the future, it could make sense to implement :class:`LearningPackageFamily`.
 
+Separate LearningPackage per run, with flexibility to combine them
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In this alternative approach, we would still normally have one LearningPackage per run as defined in this ADR. But the system would be designed to meet two goals:
+
+- First, **related courses (catalog courses or runs of the same course, or both), pathways, and other things can be grouped into one LearningPackage**. This would be optional, but possible. For example, when a small team is working on a small set of courses and corresponding pathway(s), or when a developer wants to provide a single package to import onto a devstack that will unpack a set of courses, pathways, etc.
+
+Secondly, either one of the following goals:
+
+- **Multiple Content Libraries can also be backed by the same LearningPackage**, potentially alongside courses and pathways. Or:
+- **Any LearningPackage can be treated as a content library**, allowing advanced users to inspect the course outline, components, pathway items, static assets, and any other content within the package using the content library UI. This is a cool option and much more compatible with the existing content libraries implementation but it is not compatible with the alternative goal of allowing multiple libraries in a shared learning package (alongside courses etc.).
+
+Regardless of which approach to libraries is taken, the implementation details required for this include:
+
+- Some sort of ``Course`` / ``OutlineRoot`` entity which exists in the :class:`LearningPackage` for each course run.
+- The catalog's :class:`CourseRun` no longer has a ForeignKey to :class:`LearningPackage`, but instead to the ``OutlineRoot`` object, which can be used to determine the :class:`LearningPackage`. Runs and learning packages are no longer necessarily 1:1.
+- The ``component_code`` and ``container_code`` for each course run's entities would not directly match the code in the user-visible usage key. Some kind of "usage table" or prefixing scheme would be required. If it's a usage table, it would have to be considered part of the content and exported along with the learning package content, to avoid breakage via import/export cycles.
+
+We are trying to leave this open as a future option, but we are rejecting it for now because:
+
+- The representation of each course run's outline, settings, grading policy, pages, etc. within the LearningPackage has yet to be defined (that will be the subject of future ADRs). We cannot properly plan namespacing and isolation without knowing what the entities involved are, or introducing a new ``scope`` concept (see next rejected alternative).
+- Isolation of each LearningPackage is very strong at the moment, but changing to this system requires all content-related APIs to be modified to prevent bugs where edits in one course run inadvertently affect another, or users with permission to edit one course run can deliberately edit another in the same LearningPackage. (Since permissions are defined at the Learning Context level, not the Learning Package level.)
+- There are a lot of open questions around this idea.
+
 One LearningPackage per CatalogCourse, with run-scoped entities
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
