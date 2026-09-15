@@ -13,12 +13,15 @@ from django.urls import reverse
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 
-from .models import CatalogCourse, CourseRun
+from .models import CatalogCourse, CatalogPathway, CourseRun, PathwayCategory, PathwayEnrollment
 
 if TYPE_CHECKING:
 
     class CatalogCourseWithRunCount(CatalogCourse):
         run_count: int
+
+    class PathwayCategoryWithPathwayCount(PathwayCategory):
+        pathway_count: int
 
 
 class CatalogCourseAdmin(admin.ModelAdmin):
@@ -110,3 +113,101 @@ class CourseRunAdmin(admin.ModelAdmin):
 
 
 admin.site.register(CourseRun, CourseRunAdmin)
+
+
+class PathwayCategoryAdmin(admin.ModelAdmin):
+    """
+    The PathwayCategory model admin.
+
+    Renaming a category changes what learners see. It does not change the authoring-side terminology, which is always
+    "Pathway".
+    """
+
+    list_display = ["name", "category_code", "pathways_summary"]
+    search_fields = ["name", "category_code"]
+
+    def get_readonly_fields(self, request, obj: PathwayCategory | None = None) -> tuple[str, ...]:
+        if obj:  # editing an existing object; the code is what other systems key off
+            return ("category_code",)
+        return tuple()
+
+    def get_queryset(self, request) -> QuerySet[PathwayCategoryWithPathwayCount]:
+        """Add the 'pathway_count' to the list_display queryset"""
+        qs = super().get_queryset(request)
+        qs = qs.annotate(pathway_count=Count("pathways"))
+        return qs
+
+    @admin.display(description=_("Pathways"), ordering="pathway_count")
+    def pathways_summary(self, obj: PathwayCategoryWithPathwayCount) -> str:
+        """Link to the catalog pathways using this category"""
+        if obj.pathway_count == 0:
+            return "-"
+        url = reverse("admin:openedx_catalog_catalogpathway_changelist") + f"?category={obj.pk}"
+        return format_html('<a href="{}">{}</a>', url, obj.pathway_count)
+
+
+admin.site.register(PathwayCategory, PathwayCategoryAdmin)
+
+
+class CatalogPathwayAdmin(admin.ModelAdmin):
+    """
+    The CatalogPathway model admin.
+
+    This edits only the catalog half of a Pathway. The Items a learner must complete live on the content side, in the
+    openedx_learning app, and are versioned there.
+    """
+
+    list_filter = ["org__short_name", "category"]
+    list_display = [
+        "title",
+        "category",
+        "org_display",
+        "pathway_code",
+        "key_str",
+        "content_entity",
+        "created_date",
+        "modified",
+    ]
+    list_select_related = ["org", "category", "content_entity"]
+    search_fields = ["title", "pathway_code"]
+
+    def get_readonly_fields(self, request, obj: CatalogPathway | None = None) -> tuple[str, ...]:
+        # The definition is linked through openedx_learning.api, which is the only place that can check that the entity
+        # really is a Pathway. Show it, but don't offer a <select> over every PublishableEntity in the system.
+        if obj:  # editing an existing object
+            return ("content_entity", "org", "pathway_code")
+        return ("content_entity",)
+
+    @admin.display(description="Organization", ordering="org__short_name")
+    def org_display(self, obj: CatalogPathway) -> str:
+        """Display the organization, only showing the short_name if different from full name"""
+        if obj.org.name == obj.org.short_name:
+            return obj.org.short_name
+        return str(obj.org)
+
+    @admin.display(description=_("Created"), ordering="created")
+    def created_date(self, obj: CatalogPathway) -> datetime.date:
+        """Display the created date without the timestamp"""
+        return obj.created.date()
+
+
+admin.site.register(CatalogPathway, CatalogPathwayAdmin)
+
+
+class PathwayEnrollmentAdmin(admin.ModelAdmin):
+    """
+    The PathwayEnrollment model admin.
+    """
+
+    list_display = ["user", "catalog_pathway", "is_active", "created_date", "modified"]
+    list_filter = ["is_active", "catalog_pathway__category"]
+    # There may be very many users and a fair number of pathways, so don't use <select>
+    raw_id_fields = ["user", "catalog_pathway"]
+
+    @admin.display(description=_("Enrolled"), ordering="created")
+    def created_date(self, obj: PathwayEnrollment) -> datetime.date:
+        """Display the enrollment date without the timestamp"""
+        return obj.created.date()
+
+
+admin.site.register(PathwayEnrollment, PathwayEnrollmentAdmin)
