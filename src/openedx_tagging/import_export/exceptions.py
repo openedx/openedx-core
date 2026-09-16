@@ -49,6 +49,24 @@ class ImportActionError(TagImportError):
         ).format(name=action.name, index=action.index, message=message)
 
 
+class DuplicateFinalIdError(TagImportError):
+    """
+    Exception raised when two or more rows in the same import claim the
+    same final id, so it's ambiguous which row's changes should land on
+    that tag.
+    """
+
+    def __init__(self, tag_id: str, row_indexes: list[int], **kargs):
+        super().__init__(**kargs)
+        self.message = _(
+            "Duplicate id ({tag_id}): rows {row_indexes} all claim it as "
+            "their final id. Each row's id must be unique within a single import."
+        ).format(
+            tag_id=tag_id,
+            row_indexes=", ".join(f"#{index}" for index in row_indexes),
+        )
+
+
 class ImportActionConflict(ImportActionError):
     """
     Exception used when exists a conflict between actions
