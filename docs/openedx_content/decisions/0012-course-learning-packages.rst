@@ -148,6 +148,7 @@ Regardless of which approach to libraries is taken, the implementation details r
 - Some sort of ``Course`` / ``OutlineRoot`` entity which exists in the :class:`LearningPackage` for each course run.
 - The catalog's :class:`CourseRun` no longer has a ForeignKey to :class:`LearningPackage`, but instead to the ``OutlineRoot`` object, which can be used to determine the :class:`LearningPackage`. Runs and learning packages are no longer necessarily 1:1.
 - The ``component_code`` and ``container_code`` for each course run's entities would not directly match the code in the user-visible usage key. Some kind of "usage table" or prefixing scheme would be required. If it's a usage table, it would have to be considered part of the content and exported along with the learning package content, to avoid breakage via import/export cycles.
+- We would likely also leverage **Collections**, such that each course run within a learning packages has all of its content within a collection. This would work especially well with the ability to view the whole package as a library, as it would keep each course run's content separate in the library UI. The run-specific usage codes could be stored in a new field on ``CollectionPublishableEntity``, although a prefixing scheme or usage table could also be used.
 
 We are trying to leave this open as a future option, but we are rejecting it for now because:
 
