@@ -153,22 +153,19 @@ class TagImportPlan:
     def _validate_no_duplicate_final_ids(self, tags: list[TagItem]) -> None:
         """
         Reject two or more rows in the same import that claim the same
-        final `id`.
+        final `id`, before staging or per-row action-building runs. This
+        also catches a row colliding with a staged tag's target, since a
+        tag is only ever staged because its external_id is already another
+        row's target id.
 
-        A tag is only ever staged by StageTagExternalIdForSwap (see
-        _build_staging_actions) because its current external_id is already
-        another row's explicit target id, so any row that collides with a
-        staged tag's target is, by construction, also duplicating that
-        other row's id. Catching the collision here, before staging or
-        per-row action-building run, rejects the whole import outright
-        instead of leaving the outcome to depend on row order (previously
-        either a silent overwrite of the row that landed first, or an
-        uncaught crash at execute time).
+        Without this, the outcome depended on row order: a silent
+        overwrite of whichever row landed first, or an uncaught crash at
+        execute time.
 
         Rows are identified by their 1-based position in `tags`, not
-        `TagItem.index` (a separate, parser-assigned file row number): the
-        position is always defined, while `index` is optional and may be
-        left at its default for hand-built rows (e.g. in tests).
+        `TagItem.index`: index is parser-assigned and optional, and left
+        at its default for hand-built rows (e.g. in tests), while position
+        is always defined.
         """
         positions_by_id: dict[str, list[int]] = {}
         for position, tag in enumerate(tags, start=1):
@@ -180,15 +177,15 @@ class TagImportPlan:
 
     def _build_staging_actions(self, tags: list[TagItem]) -> None:
         """
-        Stage any tag whose current external_id is the target `id` of another
-        rename row in this same import, so no two tags collide on external_id
-        regardless of execution order (see StageTagExternalIdForSwap).
+        Stage any tag whose current external_id is another rename row's
+        target in this import, so renames never collide on external_id
+        regardless of file order (see StageTagExternalIdForSwap).
 
-        Also records every rename row's resolved target pk in
-        indexed_actions["_vacated_pks"], whether staged or not: a tag being
-        renamed away from an external_id makes that external_id stale for
-        anyone else to reference (e.g. as a parent_id) via the live database,
-        even when nothing reuses it in this same import (see _validate_parent).
+        Also records every rename's resolved target pk in
+        indexed_actions["_vacated_pks"], staged or not: once a tag is being
+        renamed away from an external_id, that id is stale for anyone still
+        referencing it via the live database (see _validate_parent), even
+        if nothing in this import reuses it.
         """
         target_ids = {
             tag.id for tag in tags

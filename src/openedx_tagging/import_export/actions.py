@@ -3,12 +3,16 @@ Actions for import tags
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from django.utils.translation import gettext as _
 
 from ..models import Tag, Taxonomy
 from .exceptions import ImportActionConflict, ImportActionError
+
+if TYPE_CHECKING:
+    from .import_plan import TagItem
 
 
 class ImportAction:
@@ -37,7 +41,7 @@ class ImportAction:
 
     name = "import_action"
 
-    def __init__(self, taxonomy: Taxonomy, tag, index: int, target_pk: int | None = None):
+    def __init__(self, taxonomy: Taxonomy, tag: TagItem, index: int, target_pk: int | None = None):
         self.taxonomy = taxonomy
         self.tag = tag
         self.index = index
@@ -50,7 +54,7 @@ class ImportAction:
         return self.__repr__()
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
         """
         Implement this to meet the conditions that a `TagItem` needs
         to have for this action. If this function returns `True` for `tag`
@@ -87,7 +91,7 @@ class ImportAction:
         indexed_actions: dict,
         action_name: str,
         attr: str,
-        search_value: str,
+        search_value: str | None,
     ):
         """
         Use this function to find and action using an `attr` of `TagItem`
@@ -102,15 +106,10 @@ class ImportAction:
         """
         Helper method to validate that the parent tag has already been defined.
 
-        parent_id must reference a tag's desired end-state external_id, not
-        whatever external_id currently resolves to some tag in the database:
-        UpdateParentTag/RenameTagExternalId already let a tag's own identity
-        change mid-import, so a parent_id matching a tag that's being renamed
-        away from that exact external_id in this same import is stale and must
-        not be accepted at face value -- fall through to the same
-        "landed/created earlier in this import" check already used for a
-        brand-new or renamed-in parent, so a reference to the correct, new id
-        still works when that rename comes first in the file.
+        `parent_id` must match a tag's *end-state* external_id, not one
+        that's being renamed away in this same import (see `_vacated_pks`):
+        a stale match falls through to the same "created or renamed-in
+        earlier in this import" check used for a brand-new parent.
         """
         try:
             # Validates that the parent exists on the taxonomy
@@ -194,19 +193,13 @@ class ImportAction:
         return None
 
     @classmethod
-    def _resolve_update_target(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> Tag | None:
+    def _resolve_update_target(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> Tag | None:
         """
-        Resolve the existing tag that a plain value- or parent-change action
-        (see RenameTag, UpdateParentTag) would update, or None if neither
-        should apply for this row.
-
-        Returns None if `previous_id` is set and differs from `id`: that
-        shape is a rename_external_id row, and looking it up by its new `id`
-        here would resolve to a *different* tag than the one actually being
-        renamed (e.g. the other tag in a swap). Also returns None if no tag
-        matches `id`, or if the matched tag is queued for deletion in this
-        same import: a row reusing that tag's freed-up external_id via
-        `previous_id` is handled by RenameTagExternalId instead.
+        Resolve the tag that RenameTag/UpdateParentTag would update by `id`,
+        or None if this row isn't theirs to handle: a rename_external_id row
+        (previous_id set and different from id, where `id` may belong to a
+        different tag entirely), no match, or a tag already queued for
+        deletion in this same import.
         """
         if tag.previous_id and tag.id != tag.previous_id:
             return None
@@ -248,7 +241,7 @@ class CreateTag(ImportAction):
         )
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
         """
         This action applies whenever the tag does not exist
         """
@@ -334,7 +327,7 @@ class UpdateParentTag(ImportAction):
         return str(description_str)
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
         """
         This action applies whenever there is a change on the parent.
 
@@ -399,7 +392,7 @@ class RenameTag(ImportAction):
         return str(description_str)
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
         """
         This action applies whenever there is a change on the tag value.
 
@@ -438,16 +431,14 @@ class RenameTagExternalId(ImportAction):
     """
     Action to rename an existing tag's external_id in place.
 
-    Action created when a row's `previous_id` matches an existing tag's
-    external_id in the taxonomy, and the row's `id` differs from it.
-    Preserves the tag's primary key and associations across the
-    rename, instead of deleting the old tag and creating a new one.
+    Applies when a row's `previous_id` matches an existing tag and `id`
+    differs from it. Preserves the tag's primary key and associations,
+    instead of deleting the old tag and creating a new one.
 
     Validations:
     - previous_id must match an existing tag's external_id.
-    - The new id must not collide with a different existing tag, or with a
-      prior create/rename action in the same import.
-    - Value duplicates with tags on the database, if the value is changing.
+    - The new id must not collide with another existing tag or action.
+    - Value duplicates, only if the value is changing.
     - Parent validation, if parent_id is set.
     """
 
@@ -467,7 +458,7 @@ class RenameTagExternalId(ImportAction):
         )
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
         """
         This action applies whenever previous_id is set and differs from id
         """
@@ -475,13 +466,11 @@ class RenameTagExternalId(ImportAction):
 
     def _validate_new_id(self, indexed_actions) -> ImportActionError | None:
         """
-        Check that the new id doesn't collide with a different existing tag,
-        or with a prior create/rename action in the same import. A tag that
-        a replace-mode delete sweep is removing in this same import doesn't
-        count as a collision, since the delete executes before this action
-        (see TagImportPlan._build_delete_actions). Neither does a tag that is
-        staged away to a placeholder external_id in this same import, since
-        it executes before this action too (see StageTagExternalIdForSwap).
+        Check that the new id doesn't collide with another existing tag or a
+        prior create/rename action in this import. A tag already slated for
+        delete or staged onto a placeholder id doesn't count as a collision,
+        since both execute before this action (see _build_delete_actions,
+        StageTagExternalIdForSwap).
         """
         is_freed_by_delete = any(
             self.tag.id == action.tag.id
@@ -559,16 +548,14 @@ class RenameTagExternalId(ImportAction):
 
     def execute(self) -> None:
         """
-        Renames a tag's external_id in place, and updates its value and parent
+        Renames the tag's external_id in place, and updates its value and parent.
 
-        Resolves the target tag by primary key rather than by looking up
-        `previous_id` again, since by execution time a StageTagExternalIdForSwap
-        action may have already moved it off that external_id onto a
-        placeholder (see TagImportPlan._build_staging_actions).
+        Looks up the target by pk, not by `previous_id`: a
+        StageTagExternalIdForSwap action may have already moved it onto a
+        placeholder id by execution time (see _build_staging_actions).
         """
-        # target_pk is only None for an unmatched previous_id, which
-        # validate() already turns into a plan error; TagImportPlan.execute()
-        # never calls execute() on any action when errors are present.
+        # validate() rejects an unmatched previous_id, and execute() never
+        # runs when errors are present, so target_pk is always set here.
         assert self.target_pk is not None
         target = self.taxonomy.tag_set.get(pk=self.target_pk)
         target.external_id = self.tag.id
@@ -582,16 +569,15 @@ class RenameTagExternalId(ImportAction):
 
 class StageTagExternalIdForSwap(ImportAction):
     """
-    Action to move a tag off a contended external_id before another action
-    in the same import lands on it.
+    Action to move a tag off a contended external_id before another row in
+    this import claims it.
 
-    Action created (not from a file row, but synthesized by
-    TagImportPlan._build_staging_actions) when a tag's current external_id
-    is the target of another RenameTagExternalId row in the same import.
-    Two or more tags renaming onto each other's ids (a swap or an N-cycle)
-    have no valid execution order without this: (taxonomy, external_id) is
-    a DB-level unique constraint enforced per-statement, not deferred, on
-    every backend this project runs on.
+    Synthesized by TagImportPlan._build_staging_actions, not read from a
+    file row, when a tag's current external_id is another row's rename
+    target. Needed for a swap or N-cycle of renames: (taxonomy,
+    external_id) is a DB-level unique constraint enforced per-statement on
+    every backend this project runs on, so nothing else gives such renames
+    a valid execution order.
     """
 
     name = "stage_external_id"
@@ -600,7 +586,7 @@ class StageTagExternalIdForSwap(ImportAction):
         return str(_("Stage tag (pk={target_pk}) off its current external_id.").format(target_pk=self.target_pk))
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
         """
         This action is an exception: synthesized in TagImportPlan.generate_actions.
         """
@@ -617,9 +603,8 @@ class StageTagExternalIdForSwap(ImportAction):
         Moves the tag to a placeholder external_id, freeing its old one for
         another action in this same import to land on.
         """
-        # Staging actions are only built (in _build_staging_actions) with a
-        # resolved target_pk; there is no code path that constructs one with
-        # target_pk=None.
+        # _build_staging_actions only builds this action with a resolved
+        # target_pk, so it's never None here.
         assert self.target_pk is not None
         placeholder = f"oel-import-staging:{uuid4().hex}"
         self.taxonomy.tag_set.filter(pk=self.target_pk).update(external_id=placeholder)
@@ -640,7 +625,7 @@ class DeleteTag(ImportAction):
     name = "delete"
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
         """
         This action is an exception.
         These actions are created in `TagImportPlan.generate_actions` if `replace=True`
@@ -677,7 +662,7 @@ class WithoutChanges(ImportAction):
         return str(_("No changes needed for {tag}").format(tag=self.tag))
 
     @classmethod
-    def applies_for(cls, taxonomy: Taxonomy, tag, indexed_actions=None) -> bool:
+    def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
         """
         No validations necessary
         """

@@ -392,11 +392,10 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_rename_external_id_then_export_csv(self) -> None:
         """
-        Same as `test_import_rename_external_id_then_export`, but through
-        the .csv format: the follow-up export contains the new id, not the
-        old id, and its header row has no `previous_id` column at all,
-        since `previous_id` is import-only and never persisted (see ADR
-        0010).
+        Same as `test_import_rename_external_id_then_export`, but via .csv:
+        the export contains the new id, not the old one, and its header
+        has no `previous_id` column, since it's import-only and never
+        persisted (see ADR 0010).
         """
         importFile = BytesIO("id,value,previous_id\ntag_50,Tag 1 Renamed,tag_1\n".encode())
         result, _task, _plan = import_export_api.import_tags(
@@ -416,12 +415,12 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_rename_external_id_survives_replace_mode(self) -> None:
         """
-        The Studio taxonomy import wizard always runs with replace=True (a
-        full replace), so a rename must be verified through that exact
-        end-to-end path, not just at generate_actions() level (see
+        Studio's taxonomy import wizard always runs with replace=True, so
+        this must be verified end-to-end, not just at generate_actions()
+        level (see
         test_import_plan.TestTagImportPlan.test_generate_actions_rename_external_id_replace_skips_delete
-        for the plan-level check that the old id is excluded from the delete
-        sweep).
+        for the plan-level check that the old id is excluded from the
+        delete sweep).
         """
         old_pk = self.taxonomy.tag_set.get(external_id="tag_1").pk
 
@@ -445,13 +444,11 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_rename_external_id_previous_id_equals_id_is_noop(self) -> None:
         """
-        previous_id equal to id supports idempotent re-import.
-        RenameTagExternalId.applies_for declines to fire in that case (see its
-        unit-level coverage in test_actions.py), and normal update/no-op
-        handling applies instead. This confirms the actual end-to-end
-        scenario: re-importing a tag with previous_id set to its own current
-        external_id succeeds with no error, and a follow-up export still shows
-        the same id.
+        previous_id equal to id is a no-op: RenameTagExternalId.applies_for
+        declines to fire (see test_actions.py), and normal update handling
+        applies instead. End-to-end: re-importing a tag with previous_id
+        set to its own external_id succeeds, and export still shows the
+        same id.
         """
         importFile = BytesIO(json.dumps({"tags": [
             {"id": "tag_1", "value": "Tag 1", "previous_id": "tag_1"},
@@ -533,22 +530,17 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_rename_external_id_reuses_id_freed_by_replace_delete(self) -> None:
         """
-        Replace-mode import that omits tag_1 (so the delete sweep queues it
-        for deletion) and, in the same file, renames tag_2 onto id="tag_1",
-        reusing the external_id that tag_1's deletion is about to free up.
-        This must succeed end-to-end: tag_1 being still physically present
-        (but already queued for deletion) at validate time must not be
-        treated as a real collision.
+        Replace-mode import that omits tag_1 (queuing it for deletion) and
+        renames tag_2 onto id="tag_1" in the same file, reusing the id
+        tag_1's deletion is about to free. Must succeed end-to-end: tag_1
+        still being physically present (though queued for deletion) at
+        validate time must not count as a collision.
 
-        The row's value ("Renamed From Tag 2") and parent_id ("tag_3") both
-        genuinely differ from the doomed tag_1's current value ("Tag 1") and
-        parent (None). This is deliberate: with matching values, RenameTag
-        and UpdateParentTag's DB-only lookups (unaware that tag_1 is queued
-        for deletion in this same import) would never fire in the first
-        place, so the test would pass even without the fix that makes them
-        skip a tag queued for deletion, and end up proving nothing about it.
-        tag_3 gets its own no-op row so it survives as a valid parent target,
-        instead of also being swept up by the same replace-mode delete.
+        The new value and parent_id deliberately differ from tag_1's
+        current ones: with matching values, RenameTag/UpdateParentTag's
+        DB-only lookups would fire instead and pass even without this fix,
+        proving nothing. tag_3 gets its own no-op row so it survives as a
+        valid parent target, rather than being swept up by the same delete.
         """
         old_tag_1_pk = self.taxonomy.tag_set.get(external_id="tag_1").pk
         old_tag_2_pk = self.taxonomy.tag_set.get(external_id="tag_2").pk
@@ -584,12 +576,11 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_swap_external_ids(self) -> None:
         """
-        A 2-tag swap (tag_1 <-> tag_3 external_ids, both root tags with no
-        parent, so parent handling doesn't complicate the assertions) has no
-        valid plain execution order: renaming either tag onto the other's
-        external_id first collides with a per-statement, non-deferred DB
-        unique constraint on (taxonomy, external_id). Each tag must be
-        staged through a placeholder id first (see ADR 0010 amendment).
+        A 2-tag swap (tag_1 <-> tag_3, both root tags so parent handling
+        doesn't complicate the assertions) has no valid plain execution
+        order: either rename collides with the DB's per-statement unique
+        constraint on (taxonomy, external_id). Each tag must be staged
+        through a placeholder id first (see ADR 0010 amendment).
         """
         old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
         old_pk_3 = self.taxonomy.tag_set.get(external_id="tag_3").pk
@@ -660,12 +651,11 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_swap_external_ids_with_colliding_values_rejected(self) -> None:
         """
-        A contended external_id swap where each row ALSO tries to take on
-        the other tag's current value: this must still cleanly reject, not
-        raise an IntegrityError or otherwise crash. Value swaps are an
-        explicit, documented limitation (see ADR 0010 amendment):
-        (taxonomy, value) has the identical unique-constraint shape as
-        (taxonomy, external_id), but staging is only implemented for
+        A contended external_id swap where each row also takes the other
+        tag's value: must cleanly reject, not raise an IntegrityError.
+        Value swaps are an explicit, documented limitation (see ADR 0010
+        amendment): (taxonomy, value) has the same unique-constraint shape
+        as (taxonomy, external_id), but staging is only implemented for
         external_id.
         """
         old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
@@ -696,13 +686,11 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_duplicate_final_id_rejected(self) -> None:
         """
-        Two rows in the same import cannot claim the same final id: a
-        tag_1<->tag_3 swap plus an unrelated third row that also targets
-        id=tag_1 is ambiguous, since the second row and the third row both
-        claim tag_1 as their final id. This must be rejected outright at
-        the plan step, not resolved by row order (previously: a silent
-        overwrite of the row that landed second, or an uncaught crash,
-        depending on which row came first in the file).
+        Two rows can't claim the same final id: a tag_1<->tag_3 swap plus
+        an unrelated third row also targeting id=tag_1 is ambiguous. Must
+        reject outright at the plan step, not resolve by row order
+        (previously: a silent overwrite or an uncaught crash, depending on
+        which row came first).
         """
         old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
         old_pk_3 = self.taxonomy.tag_set.get(external_id="tag_3").pk
@@ -733,10 +721,10 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_duplicate_final_id_rejected_regardless_of_order(self) -> None:
         """
-        Same collision as test_import_duplicate_final_id_rejected, but with
-        the unrelated row moved to the front of the file: the rejection
-        doesn't depend on row order. Previously, this exact ordering hit an
-        uncaught Tag.DoesNotExist crash at execute time instead of a clean
+        Same collision as test_import_duplicate_final_id_rejected, with
+        the unrelated row moved to the front: rejection must not depend on
+        row order. Previously this ordering hit an uncaught
+        Tag.DoesNotExist crash at execute time instead of a clean
         plan-time rejection.
         """
         old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
@@ -767,13 +755,11 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_rename_referencing_stale_old_id_rejected(self) -> None:
         """
-        Regression: a plain (non-contended) rename of tag_1 to tag_50, with
-        a different row's parent_id referencing tag_1's OLD id, must be
-        rejected cleanly at the plan step -- not crash at execute time. The
-        rename row comes first in the file, so if the stale reference were
-        accepted, the second row's own execute() would raise an uncaught
-        Tag.DoesNotExist once the rename runs before it, since no tag would
-        hold external_id="tag_1" any more.
+        Regression: a plain rename of tag_1 to tag_50, with a different
+        row's parent_id referencing tag_1's OLD id, must be rejected at
+        the plan step, not crash at execute time. The rename comes first
+        in the file, so an accepted stale reference would hit an uncaught
+        Tag.DoesNotExist once no tag holds "tag_1" any more.
         """
         importFile = BytesIO(json.dumps({"tags": [
             {"id": "tag_50", "value": "Tag 1", "previous_id": "tag_1"},

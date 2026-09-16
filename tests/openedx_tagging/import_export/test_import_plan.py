@@ -470,11 +470,10 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
 
     def test_generate_actions_swap_stages_and_renames(self) -> None:
         """
-        A 2-tag swap (tag_1 <-> tag_3 external_ids, both root tags with no
-        parent) has no valid plain execution order, since (taxonomy,
-        external_id) is unique and enforced per-statement: each tag must be
-        staged through a placeholder id before landing on the other's old
-        id.
+        A 2-tag swap (tag_1 <-> tag_3, both root tags) has no valid plain
+        execution order, since (taxonomy, external_id) is unique and
+        enforced per-statement: each tag must be staged through a
+        placeholder id first.
         """
         tags = [
             TagItem(id='tag_3', value='Tag 1', previous_id='tag_1'),
@@ -505,12 +504,10 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
 
     def test_generate_actions_chain_stages_only_contended_tags(self) -> None:
         """
-        A chain where each row (except the last) renames onto an id
-        currently held by the *next* row's tag: tag_2 -> tag_3, tag_3 ->
-        tag_4, tag_4 -> tag_90 (a fresh, uncontended id). Only tag_3 and
-        tag_4 are contended (their current external_id is some other row's
-        target `id`); tag_2's current id (tag_2) is nobody's target, so it
-        is not staged.
+        A chain tag_2 -> tag_3 -> tag_4 -> tag_90 (fresh, uncontended).
+        Only tag_3 and tag_4 are contended (their current id is another
+        row's target); tag_2's current id is nobody's target, so it isn't
+        staged.
         """
         tag_2_pk = self.taxonomy.tag_set.get(external_id='tag_2').pk
         tag_3_pk = self.taxonomy.tag_set.get(external_id='tag_3').pk
@@ -532,11 +529,10 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
 
     def test_generate_actions_parent_id_stale_after_plain_rename_rejected(self) -> None:
         """
-        Regression: tag_1 is renamed to tag_50 in this same import, and
-        nothing reuses "tag_1" (a plain, non-contended rename, so tag_1 is
-        never staged). A different row's parent_id references the now-stale
-        old id "tag_1" -- this must be rejected, since after the import no
-        tag will hold that external_id at all.
+        Regression: tag_1 is renamed to tag_50 and nothing reuses "tag_1"
+        (a plain, non-contended rename, never staged). A different row's
+        parent_id references the now-stale "tag_1" -- must be rejected,
+        since no tag will hold that external_id after the import.
         """
         tags = [
             TagItem(id='tag_50', value='Tag 1', previous_id='tag_1'),
@@ -577,13 +573,11 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
 
     def test_generate_actions_rejects_duplicate_final_id(self) -> None:
         """
-        Two rows in the same import cannot claim the same final id: a
-        tag_1<->tag_3 swap plus an unrelated third row that also targets
-        id=tag_1 is ambiguous, since the second row and the third row both
-        claim tag_1 as their final id. Reject the whole import outright,
-        identifying both offending rows by their position in the file,
-        instead of letting the swap-staging logic silently treat the third
-        row's collision as valid (see DuplicateFinalIdError).
+        Two rows can't claim the same final id: a tag_1<->tag_3 swap plus
+        an unrelated third row also targeting id=tag_1 is ambiguous.
+        Reject the whole import outright, naming both offending rows by
+        position, instead of letting swap-staging silently treat the
+        collision as valid (see DuplicateFinalIdError).
         """
         tags = [
             TagItem(id='tag_3', value='Tag 1', previous_id='tag_1'),

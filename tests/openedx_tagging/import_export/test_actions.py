@@ -165,13 +165,11 @@ class TestImportAction(TestImportActionMixin, TestCase):
 
     def test_validate_parent_vacated_accepted_when_landing_row_queued(self) -> None:
         """
-        A parent referenced by external_id (tag_1) currently exists, but that
-        external_id is vacated in this same import (some row's rename target
-        pk resolves to it -- see TagImportPlan._build_staging_actions),
-        because another row (renaming tag_2) is landing on id=tag_1. This
-        validates as a known parent, since after the import a tag will hold
-        tag_1 again (just a different underlying tag) -- same convention as
-        referencing a newly-created tag.
+        tag_1 is vacated (another row's rename target resolves to it) but
+        also landed on by a different row in this same import. A parent_id
+        referencing tag_1 must validate, since a tag will hold that id
+        again after the import -- same convention as referencing a
+        newly-created tag.
         """
         parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
         landing_tag = TagItem(id='tag_1', value='_', previous_id='tag_2', index=2)
@@ -195,14 +193,11 @@ class TestImportAction(TestImportActionMixin, TestCase):
 
     def test_validate_parent_vacated_rejected_when_landing_row_not_queued(self) -> None:
         """
-        Same setup as above, but no RenameTagExternalId row lands on
-        id=tag_1 (e.g. it would appear later in file order, or doesn't
-        exist): the parent reference must be cleanly rejected, not crash.
-        This is also the core regression this fix closes for a plain,
-        non-contended rename: tag_1 is vacated by some rename elsewhere in
-        the import, and nothing reuses "tag_1", so a reference to it must
-        not be accepted just because the tag still physically exists in the
-        database under that external_id at validate time.
+        Same setup as above, but nothing lands on id=tag_1 in this import:
+        the core regression this fix closes. tag_1 is vacated by a rename
+        elsewhere and nothing reuses it, so a parent_id referencing it must
+        be rejected cleanly, not accepted just because the tag still
+        physically exists in the database at validate time.
         """
         parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
         indexed_actions: dict[str, list[ImportAction] | set[int]] = dict(self.indexed_actions)
@@ -229,15 +224,13 @@ class TestImportAction(TestImportActionMixin, TestCase):
 
     def test_validate_parent_rejected_for_vacated_old_id(self) -> None:
         """
-        Regression: a parent_id referencing a tag's *old* external_id, when
-        that tag is being renamed away from it in this same import (a plain,
-        non-contended rename -- nothing reuses the old id), must be rejected
-        even though the tag still physically exists in the database under
-        that external_id at validate time: parent_id names the desired
-        end-state parent, not whichever tag currently resolves to that
-        external_id in the database. Paired with
-        test_validate_parent_with_rename_external_id_action, which confirms
-        the same rename's *new* id (tag_60) is accepted.
+        Regression: a parent_id referencing a tag's *old* external_id,
+        while that tag is being renamed away from it (plain, non-contended
+        -- nothing reuses the old id), must be rejected: parent_id names
+        the desired end-state parent, not whatever currently resolves to
+        that external_id. Paired with
+        test_validate_parent_with_rename_external_id_action, which
+        confirms the same rename's *new* id (tag_60) is accepted.
         """
         tag_1_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
         indexed_actions: dict[str, list[ImportAction] | set[int]] = dict(self.indexed_actions)
@@ -1049,7 +1042,7 @@ class TestDeleteTag(TestImportActionMixin, TestCase):
     """
 
     def test_applies_for(self) -> None:
-        assert not DeleteTag.applies_for(self.taxonomy, None)
+        assert not DeleteTag.applies_for(self.taxonomy, TagItem(id='_', value='_'))
 
     def test_validate(self) -> None:
         action = DeleteTag(
