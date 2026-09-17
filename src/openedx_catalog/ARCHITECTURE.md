@@ -15,7 +15,7 @@ flowchart TB
     Organizations["**edx-organizations** (Organization)"]
     Enrollments["**platform: enrollments** (CourseEnrollment, CourseEnrollmentAllowed)"]
     Modes["**platform: course_modes** (CourseMode)"]
-    Catalog -- "References (nullable; see ADR 0001)" --> Content
+    Content -- "References (see ADR 0001)" --> Catalog
     Catalog -- References --> Organizations
     Enrollments -- References --> Modes
     Enrollments -- References --> Catalog

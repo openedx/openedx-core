@@ -33,7 +33,7 @@ digraph pathway_catalog_content {
     enrollment -> catalog [label="enrolled in"];
     enrollment -> v2 [label="progress evaluated\nagainst the currently\npublished version", style=dashed, color="#808080", fontcolor="#4d4d4d"];
 
-    v2 -> catalog [label="content", dir=back];  // arrowhead at v2: the Catalog Pathway points at its content
+    v2 -> catalog [label="implements"];
     v2 -> courserun [label="Items reference"];
 
     direction [label="dependency direction:\nopenedx_learning knows about\nopenedx_catalog, never the reverse", shape=plaintext, fontsize=10, fontcolor="#4d4d4d"];

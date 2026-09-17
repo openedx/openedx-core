@@ -1,7 +1,7 @@
 .. _openedx-catalog-adr-0001:
 
-1. Role of Catalog's CourseRun and CatalogCourse Models
-=======================================================
+1. Role of Catalog
+==================
 
 Status
 ------
@@ -11,41 +11,44 @@ Draft
 Context
 -------
 
-``openedx_catalog`` holds the core models that say which courses exist in an instance: :class:`CatalogCourse` (a set of runs, e.g. "Math 100") and :class:`CourseRun` (one run, e.g. "Math 100 2026Fall"). ``openedx_content`` holds the authored, versioned material itself, grouped into :class:`LearningPackage` instances. This ADR clarifies how the catalog models are meant to be used.
+``openedx_catalog`` holds the core models for tracking enrollable things (and eventually, enrollments as well).
 
-Until now the direction of the relationship between the two apps has been left open ("TBD" in the catalog architecture diagram), and two proposals have pulled in opposite directions:
+Specifically, its main models are:
 
-- The proposed `Course Learning Packages ADR`_ gives :class:`CourseRun` a foreign key to :class:`LearningPackage`, which requires the catalog to import content.
-- :ref:`openedx-learning-adr-0007` stated that ``openedx_content`` knows about ``openedx_catalog`` and never the reverse, so that Pathway Items can reference course runs directly.
+- :class:`CourseRun` (one course run, e.g. "Math 100 2026Fall").
+- :class:`CatalogCourse` (a set of course runs, e.g. "Math 100")
+- :class:`CatalogPathway` (a pathway that learners can enroll in)
+- :class:`PathwayCategory` (learner-facing label for pathway types, e.g. "Masters Degree")
+- :class:`PathwayEnrollment` (tracks enrollment into pathways)
 
-Meanwhile, ``ContentLibrary`` in ``openedx-platform`` already points at :class:`LearningPackage` from the outside, and ``openedx_learning`` is already layered above ``openedx_content`` in ``.importlinter``.
+This ADR clarifies how the catalog models are meant to be used.
 
-Separately, admins can now create catalog courses and course runs before any content exists, and the rest of the system needs a clear rule about what that implies.
+``openedx_content`` holds the authored, versioned material itself, grouped into :class:`LearningPackage` instances. Until now the direction of the relationship between the two apps has been left open.
 
 Decisions
 ---------
 
-1. The catalog layers above content
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-``openedx_catalog`` may import and hold foreign keys to ``openedx_content``. But ``openedx_content`` must never import ``openedx_catalog``.
-
-``openedx_learning`` (Pathways, Competency-Based Education, and more) sits above both.
-
-The resulting order, enforced by the ``src_layering`` contract in ``.importlinter``, is::
-
-    openedx_learning > openedx_catalog > openedx_content > openedx_tagging
-
-The general rule behind this ordering is: **a context model points at its content; content never points at contexts.** ``openedx_content`` is generic infrastructure used by courses, libraries, pathways and future context types, and its applets are deliberately ignorant of what a learning package represents. A course run, a library, or a pathway is the thing that knows which package (or which container within a package) holds its content, in exactly the way ``ContentLibrary`` already does.
-
-This does not contradict the intent of :ref:`openedx-learning-adr-0007`, whose real requirements are that the versioned Pathway definition holds the references to the unversioned catalog objects. Those definition models live in ``openedx_learning``, above the catalog, so they can reference :class:`CourseRun` and content freely. Decision 4 of that ADR has been amended to name ``openedx_learning`` rather than ``openedx_content`` as the side that knows about the catalog.
-
-2. Catalog entries may be placeholders with no content
+1. Catalog entries may be placeholders with no content
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A :class:`CatalogCourse` or :class:`CourseRun` may exist with no content behind it: as a marketing or enrollment placeholder, as a planned future run, or because its content still lives in modulestore.
 
 The converse guarantee does hold: if a course exists anywhere in the system, it exists as a :class:`CatalogCourse` and :class:`CourseRun` row.
+
+2. The catalog app is not aware of content
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``openedx_content`` will have a table(s) for tracking the relationship between a :class:`CourseRun` and its content. But the catalog app itself is not aware of content, and does not maintain any relationship between enrollable things (course runs, pathways) and their content.
+
+``openedx_content`` may import and hold foreign keys to ``openedx_catalog``. But ``openedx_catalog`` must never import ``openedx_content``.
+
+``openedx_learning`` (Pathways, Competency-Based Education, and more) and other parts of the platform sit above both.
+
+The resulting order, enforced by the ``src_layering`` contract in ``.importlinter``, is::
+
+    openedx_learning > openedx_content > openedx_catalog > openedx_tagging
+
+The general principle behind this is that changes in how content is represented should not require changes to the catalog app. For example, if we were to change from associating each course run with a :class:`LearningPackage` to associating each course run with an ``OutlineRoot`` in a :class:`LearningPackage` that contains multiple runs, that should not require changes to the catalog app, which would be the case if we used foreign keys from :class:`CourseRun` to :class:`LearningPackage` within the catalog app.
 
 3. Catalog models are the canonical target for course foreign keys
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -57,30 +60,20 @@ On the other hand, public APIs and events should continue to identify courses by
 4. Catalog models stay minimal, unversioned, and extended by related models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:class:`CatalogCourse` and :class:`CourseRun` carry only identity and a title. They are not versioned, unlike content. Additional course metadata (schedules, grading policy, enrollment options, pricing) will live in dedicated models with a ``ForeignKey`` or ``OneToOneField`` to :class:`CourseRun`, in this app or in others, following the same progressive-enhancement pattern as :ref:`openedx-content-adr-0002`. Whether a given metadata model is versioned, and how, is decided per model and is out of scope here.
+Catalog's models like :class:`CatalogCourse` and :class:`CourseRun` carry only identity and a title. They are not versioned, unlike content. Additional course metadata (schedules, grading policy, enrollment options, pricing) will live in dedicated models with a ``ForeignKey`` or ``OneToOneField`` to :class:`CourseRun`, in this app or in others, following the same progressive-enhancement pattern as :ref:`openedx-content-adr-0002`. Whether a given metadata model is versioned, and how, is decided per model and is out of scope here.
 
 Consequences
 ------------
 
-- Models related to pathway contents will not be added to ``openedx_content`` but rather will live in ``openedx_learning``. This makes sense, as Pathway details are only useful for implementing Pathways, and are not a generic primitive like ``Component`` that is used in multiple contexts.
-- Every relationship from the catalog to content is nullable.
+- ``openedx_content`` will need a table(s) that associates course content with catalog's course runs, and which ensures that no more than one content outline can be associated with the same :class:`CourseRun`.
 - Code must never assume that content, a ``CourseOverview``, or any other related model exists just because a catalog row does. Content-dependent behavior must check for the relationship and degrade gracefully.
-- ``openedx_content`` needs no course-, library- or pathway-aware code, and stays reusable by any context type.
-- Looking up a run's content is a direct key lookup from the catalog side. Looking up which course/library/etc. a package belongs to is a reverse query (potentially checking multiple tables, e.g. both ``CourseRun`` and ``ContentLibrary``), which is acceptable because it is an uncommon use case.
 - Deleting a learning package can never cascade into catalog entries, enrollments, or anything else that hangs off the catalog.
-- A :class:`LearningPackage` can be created and populated without yet being associated with a course/library/etc.
-- Import Linter will fail any change that makes ``openedx_content`` import ``openedx_catalog``, including a Pathways applet that references :class:`CourseRun` if it is placed inside ``openedx_content``. Such models belong in ``openedx_learning``.
-
-Sharing a LearningPackage
--------------------------
-
-This ADR deliberately does not specify exactly how a catalog :class:`CourseRun` maps to a :class:`LearningPackage`. The simplest option is a foreign key from one to the other, which is the tentative plan specified in the proposed `Course Learning Packages ADR`_. However, in the future it may evolve to become e.g. a foreign key from :class:`CourseRun` to a ``CourseRoot`` or ``OutlineRoot`` object *within* a :class:`LearningPackage`; this would allow multiple course runs and even pathways to store their content in a large, combined :class:`LearningPackage`.
+- A :class:`LearningPackage` can still be created and populated without yet being associated with a course/library/etc.
+- Import Linter will fail any change that makes ``openedx_catalog`` import ``openedx_content``.
 
 Rejected Alternatives
 ---------------------
 
 **Peer layering with cross-references.** In this case, we'd state that in general, :class:`LearningPackage` is context agnostic, and catalog models point to :class:`LearningPackage` rather than vice versa, but *within* ``openedx_content`` a new ``PathwayItem`` model allows references to ``CourseRun``. This is probably workable, but lacks the clean separation that we're looking for. It is also a package cycle: ``openedx_catalog`` imports ``openedx_content`` for :class:`LearningPackage` while ``openedx_content`` imports ``openedx_catalog`` for :class:`CourseRun`, which a ``layers`` contract in Import Linter cannot express at all. What's more, ``PathwayItem`` is only useful for the ``pathways`` app, which is presumably optional, so it's not as generic or reusable as the other models offered by ``openedx_content``.
 
-**Content layers above the catalog.** In this case, ``openedx_content`` would need to hold some mechanism for mapping from :class:`LearningPackage` (or a root container) to :class:`CourseRun` (and presumably to :class:`ContentLibrary`), either hard-coding awareness of "courses", "libraries" and "pathways", or using a polymorphic context registry. This makes the generic content layer aware of one specific context type, and offers no way to treat libraries or pathways the same way without also moving them below content, which is impossible for ``ContentLibrary`` in ``openedx-platform``.
-
-.. _Course Learning Packages ADR: https://github.com/openedx/openedx-core/pull/812
+**Catalog layers above the content.** In this case, ``openedx_catalog`` would hold a foreign key from :class:`CourseRun` to :class:`LearningPackage`, but any refactors to how content is stored (e.g. relationship to ``OutlineRoot`` instead of ``LearningPackage``) would require changing this foreign key, which shouldn't be the case.
