@@ -74,6 +74,8 @@ Consequences
 Rejected Alternatives
 ---------------------
 
+**Another app joins content and catalog.** In this case, ``catalog`` and ``content`` would be wholly independent, prohibited from referencing each other. Another app, like ``openedx_learning``, ``openedx_courses``, or ``cms.contentstore`` would be layered on top and hold the records that associate each catalog with each course. This is a perfectly viable option, and is currently how content libraries are implemented. However, for now it seems simpler and more useful to put the mapping into the ``content`` app directly.
+
 **Peer layering with cross-references.** In this case, we'd state that in general, :class:`LearningPackage` is context agnostic, and catalog models point to :class:`LearningPackage` rather than vice versa, but *within* ``openedx_content`` a new ``PathwayItem`` model allows references to ``CourseRun``. This is probably workable, but lacks the clean separation that we're looking for. It is also a package cycle: ``openedx_catalog`` imports ``openedx_content`` for :class:`LearningPackage` while ``openedx_content`` imports ``openedx_catalog`` for :class:`CourseRun`, which a ``layers`` contract in Import Linter cannot express at all. What's more, ``PathwayItem`` is only useful for the ``pathways`` app, which is presumably optional, so it's not as generic or reusable as the other models offered by ``openedx_content``.
 
 **Catalog layers above the content.** In this case, ``openedx_catalog`` would hold a foreign key from :class:`CourseRun` to :class:`LearningPackage`, but any refactors to how content is stored (e.g. relationship to ``OutlineRoot`` instead of ``LearningPackage``) would require changing this foreign key, which shouldn't be the case.
