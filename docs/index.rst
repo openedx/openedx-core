@@ -16,6 +16,7 @@
    openedx_core/decisions/index
 
    openedx_content/index
+   openedx_catalog/index
    openedx_tagging/index
    openedx_learning/index
 
