@@ -75,9 +75,8 @@ class CourseRun(models.Model):
       this catalog app or other apps. They should either be versioned using
       `PublishableEntity` or use the `HistoricalRecords()` history from
       `django-simple-history` to preserve a record of all changes.
-    - In the future, there will be a relationship to Learning Package. Several
-      course runs from the same catalog course may be stored in the same
-      learning package.
+    - In the future, there will be a column referencing the Learning Package
+      that holds the course run's actual content.
     """
 
     CourseRunID = NewType("CourseRunID", int)
