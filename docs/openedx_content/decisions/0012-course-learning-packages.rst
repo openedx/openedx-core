@@ -64,9 +64,7 @@ Content shared deliberately between runs of a catalog course is expressed the sa
 3. CourseRun holds the relationship
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:class:`CourseRun` gains a nullable, unique foreign key to :class:`LearningPackage`. It is nullable because a course run may exist purely as a marketing or enrollment placeholder, or may still have its content in modulestore. It is unique because the relationship is one-to-one. This is also exactly analogous to how the ``ContentLibrary`` model in openedx-platform stores a relationship to :class:`LearningPackage`.
-
-This aligns with the `Proposed Catalog Models ADR`_, which states that the dependency runs from catalog to content, and the content applets are deliberately ignorant of what a package represents.
+TODO: update this section based on the decision in the `Proposed Catalog Models ADR`_.
 
 4. The package_ref of a course learning package is the course key
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -76,7 +74,7 @@ This aligns with the `Proposed Catalog Models ADR`_, which states that the depen
 5. Reruns copy content but de-duplicate asset file storage
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Creating a rerun copies the source run's entities into a new learning package. To avoid also duplicating the asset *bytes*, :class:`LearningPackage` will gains an immutable ``media_file_namespace`` string field, and :meth:`Media.path` becomes::
+Creating a rerun copies the source run's entities into a new learning package. To avoid also duplicating the asset *bytes*, :class:`LearningPackage` will gain an immutable ``media_file_namespace`` string field, and :meth:`Media.path` becomes::
 
     content/{learning_package.media_file_namespace}/{hash_digest}
 
@@ -93,7 +91,7 @@ This addresses the "media file bytes" part of the volume problem in full. It doe
 6. Publishing, drafts and deletion are per run
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Because a run owns its learning package outright, all of the existing package-level operations mean "this run" with no further qualification: ``publish_all_drafts``, ``get_all_drafts``, the draft and publish change logs, pruning, and backup and restore. No API in ``openedx_content`` needs to become aware of course runs.
+Because a run owns its learning package outright, all of the existing package-level operations mean "this run" with no further qualification: ``publish_all_drafts``, ``get_all_drafts``, the draft and publish change logs, pruning, and backup and restore. No API in ``openedx_content`` needs to become aware of course runs in order to preserve isolation and avoid cross-run write bugs.
 
 7. Course structure and static assets are specified separately
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -146,15 +144,15 @@ Secondly, either one of the following goals:
 Regardless of which approach to libraries is taken, the implementation details required for this include:
 
 - Some sort of ``Course`` / ``OutlineRoot`` entity which exists in the :class:`LearningPackage` for each course run.
-- The catalog's :class:`CourseRun` no longer has a ForeignKey to :class:`LearningPackage`, but instead to the ``OutlineRoot`` object, which can be used to determine the :class:`LearningPackage`. Runs and learning packages are no longer necessarily 1:1.
+- Each catalog's :class:`CourseRun` is no longer mapped 1:1 with :class:`LearningPackage`, but instead to the ``OutlineRoot`` object, which can be used to determine the :class:`LearningPackage`.
 - The ``component_code`` and ``container_code`` for each course run's entities would not directly match the code in the user-visible usage key. Some kind of "usage table" or prefixing scheme would be required. If it's a usage table, it would have to be considered part of the content and exported along with the learning package content, to avoid breakage via import/export cycles.
 - We would likely also leverage **Collections**, such that each course run within a learning packages has all of its content within a collection. This would work especially well with the ability to view the whole package as a library, as it would keep each course run's content separate in the library UI. The run-specific usage codes could be stored in a new field on ``CollectionPublishableEntity``, although a prefixing scheme or usage table could also be used.
 
 We are trying to leave this open as a future option, but we are rejecting it for now because:
 
+- We don't yet have a clear definition of any user-facing feature that would necessitate this.
 - The representation of each course run's outline, settings, grading policy, pages, etc. within the LearningPackage has yet to be defined (that will be the subject of future ADRs). We cannot properly plan namespacing and isolation without knowing what the entities involved are, or introducing a new ``scope`` concept (see next rejected alternative).
 - Isolation of each LearningPackage is very strong at the moment, but changing to this system requires all content-related APIs to be modified to prevent bugs where edits in one course run inadvertently affect another, or users with permission to edit one course run can deliberately edit another in the same LearningPackage. (Since permissions are defined at the Learning Context level, not the Learning Package level.)
-- There are a lot of open questions around this idea.
 
 One LearningPackage per CatalogCourse, with run-scoped entities
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
