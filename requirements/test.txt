@@ -107,6 +107,8 @@ django-stubs==6.1.0
     #   djangorestframework-stubs
 django-stubs-ext==6.1.0
     # via django-stubs
+django-test-migrations==1.6.0
+    # via -r requirements/test.in
 django-waffle==5.0.0
     # via
     #   -r requirements/base.txt
@@ -293,6 +295,7 @@ typing-extensions==4.16.0
     #   -r requirements/base.txt
     #   django-stubs
     #   django-stubs-ext
+    #   django-test-migrations
     #   djangorestframework-stubs
     #   edx-opaque-keys
     #   import-linter

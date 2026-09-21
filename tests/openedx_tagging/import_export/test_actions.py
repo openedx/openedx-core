@@ -339,34 +339,6 @@ class TestUpdateParentTag(TestImportActionMixin, TestCase):
         )
         assert str(action) == expected
 
-    def test_str_no_external_id(self):
-        tag_1 = Tag(
-            value="Tag 5",
-            taxonomy=self.taxonomy,
-        )
-        tag_1.save()
-        tag_2 = Tag(
-            value="Tag 6",
-            taxonomy=self.taxonomy,
-            parent=tag_1,
-        )
-        tag_2.save()
-        tag_item = TagItem(
-            id=None,
-            value='Tag 6',
-            parent_id='tag_3',
-        )
-        action = UpdateParentTag(
-            taxonomy=self.taxonomy,
-            tag=tag_item,
-            index=100,
-        )
-        expected = (
-            "Update the parent of <Tag> (Tag 6) "
-            "from parent <Tag> (Tag 5) to tag_3"
-        )
-        assert str(action) == expected
-
     @ddt.data(
         ('tag_100', None, False),  # Tag doesn't exist on database
         ('tag_2', 'tag_1', False),  # Parent don't change

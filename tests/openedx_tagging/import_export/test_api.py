@@ -214,36 +214,59 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
                     assert new_tag.parent
                     assert tag.parent.external_id == new_tag.parent.external_id
 
-    def test_import_removing_no_external_id(self) -> None:
-        new_taxonomy = Taxonomy(name="New taxonomy")
-        new_taxonomy.save()
-        tag1 = Tag.objects.create(
-            id=1000,
-            value="Tag 1",
-            taxonomy=new_taxonomy,
-        )
-        tag2 = Tag.objects.create(
-            id=1001,
-            value="Tag 2",
-            taxonomy=new_taxonomy,
-        )
-        tag3 = Tag.objects.create(
-            id=1002,
-            value="Tag 3",
-            taxonomy=new_taxonomy,
-        )
-        tag1.save()
-        tag2.save()
-        tag3.save()
-        # Import with empty tags, to remove all tags
-        importFile = BytesIO(json.dumps({"tags": []}).encode())
-        result, _tasks, _plan = import_export_api.import_tags(
-            new_taxonomy,
-            importFile,
-            ParserFormat.JSON,
+    def test_reimport_after_generated_external_ids_is_a_no_op(self) -> None:
+        """
+        Export a taxonomy whose tags have auto-generated external_ids, then re-import
+        the exact same file. The plan should report no changes at all.
+        """
+        self.taxonomy.add_tag("Generated Tag One")
+        self.taxonomy.add_tag("Generated Tag Two", parent_tag_value="Generated Tag One")
+
+        output = import_export_api.export_tags(self.taxonomy, self.parser_format)
+        file = BytesIO(output.encode())
+
+        result, _task, plan = import_export_api.import_tags(
+            self.taxonomy,
+            file,
+            self.parser_format,
             replace=True,
+            plan_only=True,
         )
         assert result
+        assert plan is not None
+        assert not plan.errors
+        assert all(action.name == "without_changes" for action in plan.actions)
+
+    def test_reimport_pre_upgrade_export_file_fails_safely(self) -> None:
+        """
+        A file exported before this ticket's upgrade has each tag's old integer database id
+        in the `id` column instead of a real external_id. Re-importing it afterward (in ADD
+        mode, not replace) must fail safely: validation errors identifying the rows it can't
+        match, and no tag created, renamed, re-parented, or deleted.
+        """
+        tag = self.taxonomy.add_tag("Existing Tag")
+        tag_count_before = self.taxonomy.tag_set.count()
+
+        # Simulate a pre-upgrade export: `id` is an old integer PK, not `tag.external_id`.
+        stale_pk = str(tag.pk)
+        assert stale_pk != tag.external_id  # sanity check the simulation is realistic
+        import_file = BytesIO(json.dumps({"tags": [{"id": stale_pk, "value": tag.value}]}).encode())
+
+        result, _task, plan = import_export_api.import_tags(
+            self.taxonomy,
+            import_file,
+            self.parser_format,
+            replace=False,
+            plan_only=True,
+        )
+        assert not result
+        assert plan is not None
+        assert plan.errors
+        assert any("Duplicated tag value" in str(error) for error in plan.errors)
+        assert self.taxonomy.tag_set.count() == tag_count_before
+        # Confirm nothing was renamed either:
+        tag.refresh_from_db()
+        assert tag.value == "Existing Tag"
 
     def test_import_removing_with_childs(self) -> None:
         """
@@ -277,66 +300,6 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
         # Import with empty tags, to remove all tags
         importFile = BytesIO(json.dumps({"tags": []}).encode())
-        result, _tasks, _plan = import_export_api.import_tags(
-            new_taxonomy,
-            importFile,
-            ParserFormat.JSON,
-            replace=True,
-        )
-        assert result
-
-    def test_import_removing_with_childs_no_external_id(self) -> None:
-        """
-        Test import need to remove childs with parents that will also be removed,
-        using tags without external_id
-        """
-        new_taxonomy = Taxonomy(name="New taxonomy")
-        new_taxonomy.save()
-        level2 = Tag.objects.create(
-            id=1000,
-            value="Tag 2",
-            taxonomy=new_taxonomy,
-        )
-        level1 = Tag.objects.create(
-            id=1001,
-            value="Tag 1",
-            taxonomy=new_taxonomy,
-        )
-        level3 = Tag.objects.create(
-            id=1002,
-            value="Tag 3",
-            taxonomy=new_taxonomy,
-        )
-        level2.parent = level1
-        level2.save()
-
-        level3.parent = level3
-        level3.save()
-
-        # Import with empty tags, to remove all tags
-        importFile = BytesIO(json.dumps({"tags": []}).encode())
-
-        result, _tasks, _plan = import_export_api.import_tags(
-            new_taxonomy,
-            importFile,
-            ParserFormat.JSON,
-            replace=True,
-        )
-        assert result
-
-    def test_import_same_value_without_external_id(self) -> None:
-        new_taxonomy = Taxonomy(name="New taxonomy")
-        new_taxonomy.save()
-
-        # Tag with no external_id
-        Tag.objects.create(
-            value="same_value",
-            taxonomy=new_taxonomy,
-        )
-
-        # Import with one tag with the same value
-        importFile = BytesIO(json.dumps({"tags": [{"id": "imported_tag", "value": "same_value"}]}).encode())
-
         result, _tasks, _plan = import_export_api.import_tags(
             new_taxonomy,
             importFile,

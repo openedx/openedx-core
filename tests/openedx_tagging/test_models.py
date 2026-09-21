@@ -17,7 +17,7 @@ from django.test.testcases import TestCase
 
 from openedx_tagging import api
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
-from openedx_tagging.models.utils import RESERVED_TAG_CHARS
+from openedx_tagging.models.utils import RESERVED_TAG_CHARS, TAG_EXTERNAL_ID_MAX_LENGTH, tag_external_id_candidate
 from openedx_tagging.signal_handlers import _is_explicit_tag_delete
 from openedx_tagging.tasks import (
     emit_content_object_associations_changed_for_object_ids_task,
@@ -284,14 +284,15 @@ class TestFilteredTagsClosedTaxonomy(TestTagTaxonomyMixin, TestCase):
         get_filtered_tags().
         """
         result = list(self.taxonomy.get_filtered_tags(depth=1))
-        common_fields = {"depth": 0, "parent_value": None, "external_id": None}
+        common_fields = {"depth": 0, "parent_value": None}
         for r in result:
             del r["_id"]  # Remove the internal database IDs; they aren't interesting here and a other tests check them
         assert result == [
-            # These are the root tags, in alphabetical order:
-            {"value": "Archaea", "child_count": 3, **common_fields},
-            {"value": "Bacteria", "child_count": 2, **common_fields},
-            {"value": "Eukaryota", "child_count": 5, **common_fields},
+            # These are the root tags, in alphabetical order. The fixture gives each tag an
+            # external_id equal to its own value.
+            {"value": "Archaea", "child_count": 3, "external_id": "Archaea", **common_fields},
+            {"value": "Bacteria", "child_count": 2, "external_id": "Bacteria", **common_fields},
+            {"value": "Eukaryota", "child_count": 5, "external_id": "Eukaryota", **common_fields},
         ]
 
     def test_get_child_tags_one_level(self) -> None:
@@ -300,16 +301,17 @@ class TestFilteredTagsClosedTaxonomy(TestTagTaxonomyMixin, TestCase):
         the closed taxonomy, using get_filtered_tags(). With counts included.
         """
         result = list(self.taxonomy.get_filtered_tags(depth=1, parent_tag_value="Eukaryota"))
-        common_fields = {"depth": 1, "parent_value": "Eukaryota", "external_id": None}
+        common_fields = {"depth": 1, "parent_value": "Eukaryota"}
         for r in result:
             del r["_id"]  # Remove the internal database IDs; they aren't interesting here and a other tests check them
         assert result == [
-            # These are the Eukaryota tags, in alphabetical order:
-            {"value": "Animalia", "child_count": 7, **common_fields},
-            {"value": "Fungi", "child_count": 0, **common_fields},
-            {"value": "Monera", "child_count": 0, **common_fields},
-            {"value": "Plantae", "child_count": 0, **common_fields},
-            {"value": "Protista", "child_count": 0, **common_fields},
+            # These are the Eukaryota tags, in alphabetical order. The fixture gives each tag an
+            # external_id equal to its own value.
+            {"value": "Animalia", "child_count": 7, "external_id": "Animalia", **common_fields},
+            {"value": "Fungi", "child_count": 0, "external_id": "Fungi", **common_fields},
+            {"value": "Monera", "child_count": 0, "external_id": "Monera", **common_fields},
+            {"value": "Plantae", "child_count": 0, "external_id": "Plantae", **common_fields},
+            {"value": "Protista", "child_count": 0, "external_id": "Protista", **common_fields},
         ]
 
     def test_get_grandchild_tags_one_level(self) -> None:
@@ -318,18 +320,19 @@ class TestFilteredTagsClosedTaxonomy(TestTagTaxonomyMixin, TestCase):
         "Eukaryota" root tag in the closed taxonomy, using get_filtered_tags().
         """
         result = list(self.taxonomy.get_filtered_tags(depth=1, parent_tag_value="Animalia"))
-        common_fields = {"depth": 2, "parent_value": "Animalia", "external_id": None}
+        common_fields = {"depth": 2, "parent_value": "Animalia"}
         for r in result:
             del r["_id"]  # Remove the internal database IDs; they aren't interesting here and a other tests check them
         assert result == [
-            # These are the Eukaryota tags, in alphabetical order:
-            {"value": "Arthropoda", "child_count": 0, **common_fields},
-            {"value": "Chordata", "child_count": 1, **common_fields},
-            {"value": "Cnidaria", "child_count": 0, **common_fields},
-            {"value": "Ctenophora", "child_count": 0, **common_fields},
-            {"value": "Gastrotrich", "child_count": 0, **common_fields},
-            {"value": "Placozoa", "child_count": 0, **common_fields},
-            {"value": "Porifera", "child_count": 0, **common_fields},
+            # These are the Eukaryota tags, in alphabetical order. The fixture gives each tag an
+            # external_id equal to its own value.
+            {"value": "Arthropoda", "child_count": 0, "external_id": "Arthropoda", **common_fields},
+            {"value": "Chordata", "child_count": 1, "external_id": "Chordata", **common_fields},
+            {"value": "Cnidaria", "child_count": 0, "external_id": "Cnidaria", **common_fields},
+            {"value": "Ctenophora", "child_count": 0, "external_id": "Ctenophora", **common_fields},
+            {"value": "Gastrotrich", "child_count": 0, "external_id": "Gastrotrich", **common_fields},
+            {"value": "Placozoa", "child_count": 0, "external_id": "Placozoa", **common_fields},
+            {"value": "Porifera", "child_count": 0, "external_id": "Porifera", **common_fields},
         ]
 
     def test_get_depth_1_search_term(self) -> None:
@@ -343,7 +346,7 @@ class TestFilteredTagsClosedTaxonomy(TestTagTaxonomyMixin, TestCase):
                 "child_count": 3,
                 "depth": 0,
                 "parent_value": None,
-                "external_id": None,
+                "external_id": "Archaea",  # The fixture gives this tag an external_id equal to its own value
                 "_id": 2,  # These IDs are hard-coded in the test fixture file
             },
         ]
@@ -360,7 +363,7 @@ class TestFilteredTagsClosedTaxonomy(TestTagTaxonomyMixin, TestCase):
                 "child_count": 0,
                 "depth": 1,
                 "parent_value": "Bacteria",
-                "external_id": None,
+                "external_id": "Archaebacteria",  # The fixture gives this tag an external_id equal to its own value
                 "_id": 5,  # These IDs are hard-coded in the test fixture file
             },
         ]
@@ -467,7 +470,7 @@ class TestFilteredTagsClosedTaxonomy(TestTagTaxonomyMixin, TestCase):
                 "parent_value": "Chordata",
                 "depth": 3,
                 "child_count": 0,
-                "external_id": None,
+                "external_id": "Mammalia",  # The fixture gives this tag an external_id equal to its own value
                 "_id": 21,  # These IDs are hard-coded in the test fixture file
             }
         ]
@@ -1203,3 +1206,100 @@ class TestTagLineage(TestCase):
             for call in mock_signal.send_event.call_args_list
         }
         assert emitted_object_ids == {first_object_id, second_object_id}
+
+
+class TestTagExternalIdCandidate(TestCase):
+    """
+    Direct unit tests for the tag_external_id_candidate() helper.
+    """
+
+    def test_bare_value_round_trips(self) -> None:
+        assert tag_external_id_candidate("Bacteria", 1) == "Bacteria"
+
+    def test_long_value_truncates(self) -> None:
+        value = "x" * (TAG_EXTERNAL_ID_MAX_LENGTH + 50)
+        candidate = tag_external_id_candidate(value, 1)
+        assert candidate == value[:TAG_EXTERNAL_ID_MAX_LENGTH]
+        assert len(candidate) == TAG_EXTERNAL_ID_MAX_LENGTH
+
+    def test_whitespace_at_truncation_boundary_is_stripped(self) -> None:
+        # Construct a value where the character landing exactly at the truncation
+        # boundary is whitespace, so the naive slice would leave a trailing space.
+        value = ("a" * (TAG_EXTERNAL_ID_MAX_LENGTH - 1)) + " " + "bbbbb"
+        candidate = tag_external_id_candidate(value, 1)
+        assert candidate == "a" * (TAG_EXTERNAL_ID_MAX_LENGTH - 1)
+        assert not candidate.endswith(" ")
+
+    def test_different_attempts_differ(self) -> None:
+        value = "Some Tag"
+        assert tag_external_id_candidate(value, 1) != tag_external_id_candidate(value, 2)
+
+
+class TestTagExternalIdGeneration(TestTagTaxonomyMixin, TestCase):
+    """
+    Tests for the three entry points that generate a Tag's external_id.
+    """
+
+    def test_tag_save_generates_external_id_from_value(self) -> None:
+        tag = Tag(taxonomy=self.taxonomy, value="Generated From Save")
+        tag.save()
+        assert tag.external_id == "Generated From Save"
+
+    def test_bare_tag_create_generates_external_id(self) -> None:
+        # Proves the generation logic lives in Tag.save(), not just in Taxonomy.add_tag().
+        tag = Tag.objects.create(taxonomy=self.taxonomy, value="Bare Create Tag")
+        assert tag.external_id == "Bare Create Tag"
+
+    def test_add_tag_generates_external_id(self) -> None:
+        tag = self.taxonomy.add_tag("Added Via Taxonomy")
+        assert tag.external_id == "Added Via Taxonomy"
+
+    def test_add_tag_duplicate_external_id_raises(self) -> None:
+        self.taxonomy.add_tag("First Tag", external_id="dup-id")
+        with pytest.raises(ValueError):
+            self.taxonomy.add_tag("Second Tag", external_id="dup-id")
+        # Also raises on a case-different duplicate:
+        with pytest.raises(ValueError):
+            self.taxonomy.add_tag("Third Tag", external_id="DUP-ID")
+
+    def test_rename_preserves_external_id(self) -> None:
+        original_external_id = self.bacteria.external_id
+        self.bacteria.value = "Renamed Bacteria"
+        self.bacteria.save()
+        assert self.bacteria.external_id == original_external_id
+
+    def test_save_resolves_generated_external_id_collision(self) -> None:
+        """
+        Two tags whose values share the same first 255 characters would otherwise
+        generate the same attempt-1 candidate; Tag.save()'s own collision branch (not
+        the migration's separate copy of the same logic) must resolve that here.
+        """
+        value_one = "X" * 300
+        value_two = ("X" * 255) + ("Y" * 50)
+
+        first = Tag.objects.create(taxonomy=self.taxonomy, value=value_one)
+        second = Tag.objects.create(taxonomy=self.taxonomy, value=value_two)
+
+        assert first.external_id == "X" * 255
+        assert second.external_id != first.external_id
+        assert second.external_id
+        assert second.external_id == tag_external_id_candidate(value_two, 2)
+        assert second.external_id.endswith("-2")
+
+    def test_read_only_taxonomy_tags_get_external_id_and_stay_read_only(self) -> None:
+        """
+        A tag created directly on a read-only taxonomy (bypassing add_tag()'s own
+        read_only check, e.g. as a plugin writing directly to the model might) still
+        gets a generated external_id, and the taxonomy's read_only enforcement in
+        add_tag()/update_tag()/delete_tags() is unaffected by that.
+        """
+        read_only_taxonomy = Taxonomy.objects.create(name="RO Test", read_only=True)
+        tag = Tag.objects.create(taxonomy=read_only_taxonomy, value="RO Tag")
+        assert tag.external_id == "RO Tag"
+
+        with pytest.raises(ValueError):
+            read_only_taxonomy.add_tag("Another Tag")
+        with pytest.raises(ValueError):
+            read_only_taxonomy.update_tag("RO Tag", "Renamed")
+        with pytest.raises(ValueError):
+            read_only_taxonomy.delete_tags(["RO Tag"])
