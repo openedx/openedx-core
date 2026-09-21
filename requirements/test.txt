@@ -4,7 +4,7 @@
 #
 #    make upgrade
 #
-amqp==5.3.1
+amqp==5.4.0
     # via
     #   -r requirements/base.txt
     #   kombu
@@ -18,7 +18,7 @@ attrs==26.1.0
     # via
     #   -r requirements/base.txt
     #   openedx-events
-billiard==4.2.4
+billiard==4.3.0
     # via
     #   -r requirements/base.txt
     #   celery
@@ -55,7 +55,7 @@ click-plugins==1.1.1.2
     # via
     #   -r requirements/base.txt
     #   celery
-click-repl==0.3.0
+click-repl==0.4.0
     # via
     #   -r requirements/base.txt
     #   celery
@@ -101,11 +101,11 @@ django-simple-history==3.13.0
     # via
     #   -r requirements/base.txt
     #   edx-organizations
-django-stubs==6.1.0
+django-stubs==6.1.1
     # via
     #   -r requirements/test.in
     #   djangorestframework-stubs
-django-stubs-ext==6.1.0
+django-stubs-ext==6.1.1
     # via django-stubs
 django-waffle==5.0.0
     # via
@@ -137,7 +137,7 @@ edx-django-utils==8.0.2
     #   -r requirements/base.txt
     #   edx-drf-extensions
     #   openedx-events
-edx-drf-extensions==10.8.0
+edx-drf-extensions==10.9.0
     # via
     #   -r requirements/base.txt
     #   edx-organizations
@@ -158,7 +158,7 @@ freezegun==1.5.5
     # via -r requirements/test.in
 grimp==3.17
     # via import-linter
-idna==3.19
+idna==3.20
     # via
     #   -r requirements/base.txt
     #   requests
@@ -186,7 +186,7 @@ mypy==2.3.1
     # via -r requirements/test.in
 mypy-extensions==1.1.0
     # via mypy
-mysqlclient==2.2.8
+mysqlclient==2.3.0
     # via -r requirements/test.in
 openedx-events==11.2.0
     # via -r requirements/base.txt
@@ -248,7 +248,7 @@ python-dateutil==2.9.0.post0
     #   -r requirements/base.txt
     #   celery
     #   freezegun
-python-slugify==9.0.0
+python-slugify==9.1.0
     # via code-annotations
 pyyaml==6.0.3
     # via code-annotations
@@ -291,6 +291,7 @@ types-pyyaml==6.0.12.20260906
 typing-extensions==4.16.0
     # via
     #   -r requirements/base.txt
+    #   click-repl
     #   django-stubs
     #   django-stubs-ext
     #   djangorestframework-stubs
@@ -305,7 +306,7 @@ tzlocal==5.4.4
     # via
     #   -r requirements/base.txt
     #   celery
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   -r requirements/base.txt
     #   requests
@@ -315,7 +316,7 @@ vine==5.1.0
     #   amqp
     #   celery
     #   kombu
-wcwidth==0.8.3
+wcwidth==0.8.4
     # via
     #   -r requirements/base.txt
     #   prompt-toolkit
