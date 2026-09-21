@@ -7,6 +7,7 @@
 root_packages =
     openedx_learning
     openedx_content
+    openedx_catalog
     openedx_tagging
     openedx_django_lib
     openedx_core
@@ -25,6 +26,11 @@ layers =
 
     # Content: authoring-side models and APIs.
     openedx_content
+
+    # Catalog: CatalogCourse/CourseRun. CompetencyCriteriaGroup and CompetencyRuleProfile
+    # (openedx_learning) scope to a CourseRun, so this must sit below openedx_learning; it doesn't
+    # depend on tagging or content, so it can sit above openedx_tagging.
+    openedx_catalog
 
     # Tagging is very simple & fundamental. Should probably not depend on any other Django apps.
     openedx_tagging
