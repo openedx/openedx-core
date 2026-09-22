@@ -43,7 +43,7 @@ Decisions
 1. One LearningPackage per CourseRun
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Each :class:`CourseRun` that has content in ``openedx_content`` gets its own :class:`LearningPackage`. A rerun gets a new learning package containing its own copy of the course's entities.
+Each :class:`CourseRun` that has content in ``openedx_content`` gets its a corresponding :class:`LearningPackage`. A rerun gets a new learning package containing its own copy of the course's entities.
 
 This is the decision from which most of the others follow. It is chosen for simplicity, predictability, strong isolation, and by rejecting the alternatives.
 
@@ -61,10 +61,12 @@ The cost is that reruns duplicate rows. This is accepted; see "Consequences".
 
 Content shared deliberately between runs of a catalog course is expressed the same way as content shared between any two learning contexts: by copying it, optionally with an upstream link back to its source.
 
-3. CourseRun holds the relationship
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+3. CourseContent holds the relationship
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-TODO: update this section based on the decision in the `Proposed Catalog Models ADR`_.
+A django model in ``openedx_content``, called ``CourseContent``, will hold the mapping between ``CourseRun`` and ``LearningPackage``. The ``CourseRun`` field will be unique, such that each run is associated with zero or one ``LearningPackage``, never multiple.
+
+To emphasize that ``CourseContent`` should not be used as the canonical "Course" model nor a target for foreign keys (``CourseRun`` should be used), the foreign key to ``CourseRun`` can double as the primary key for ``CourseContent``.
 
 4. The package_ref of a course learning package is the course key
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -214,5 +216,3 @@ Open Questions
 **Block ID stability through migration.** Decision 1 is satisfied regardless of block IDs, but blob deduplication (and any future OLX deduplication) depends on the modulestore migrator producing byte-identical output for unchanged content across runs. Content libraries strip the ``url_name`` attribute before storing OLX, precisely because instance identity is carried by the component key; the future course content migrator will need to do the same.
 
 **Where run-level course metadata lives.** :class:`CourseRun`'s docstring anticipates models such as ``CourseSchedule`` and ``CourseGradingPolicy``, versioned either as publishable entities or with ``django-simple-history``. Whether any of those become publishable entities inside the run's learning package, and therefore participate in its publishing lifecycle, is left to a later decision.
-
-.. _Proposed Catalog Models ADR: https://github.com/openedx/openedx-core/pull/818
