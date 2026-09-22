@@ -10,6 +10,7 @@ from rest_framework import serializers
 from rest_framework.request import Request
 from rest_framework.reverse import reverse
 
+from openedx_tagging.api import TaxonomyType
 from openedx_tagging.data import TagData
 from openedx_tagging.import_export.parsers import ParserFormat
 from openedx_tagging.models import ObjectTag, Tag, TagImportTask, Taxonomy
@@ -74,6 +75,11 @@ class TaxonomySerializer(UserPermissionsSerializerMixin, serializers.ModelSerial
     can_delete_taxonomy = serializers.SerializerMethodField(method_name='get_can_delete')
     can_tag_object = serializers.SerializerMethodField()
     export_id = serializers.CharField(required=False)
+    taxonomy_type = serializers.ChoiceField(
+        choices=[TaxonomyType.TAGS.value, TaxonomyType.COMPETENCY.value],
+        default=TaxonomyType.TAGS.value,
+        write_only=True,
+    )
 
     class Meta:
         model = Taxonomy
@@ -91,6 +97,7 @@ class TaxonomySerializer(UserPermissionsSerializerMixin, serializers.ModelSerial
             "can_delete_taxonomy",
             "can_tag_object",
             "export_id",
+            "taxonomy_type",
         ]
 
     def get_tags_count(self, instance):
@@ -429,6 +436,11 @@ class TaxonomyImportNewBodySerializer(TaxonomyImportBodySerializer):  # pylint: 
     taxonomy_name = serializers.CharField(required=True)
     taxonomy_description = serializers.CharField(default="")
     taxonomy_export_id = serializers.CharField(required=False)
+    taxonomy_type = serializers.ChoiceField(
+        choices=[TaxonomyType.TAGS.value, TaxonomyType.COMPETENCY.value],
+        default=TaxonomyType.TAGS.value,
+        write_only=True,
+    )
 
 
 class TagImportTaskSerializer(serializers.ModelSerializer):

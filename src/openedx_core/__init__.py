@@ -6,4 +6,4 @@ The public APIs belong to the specific apps (openedx_content, openedx_tagging, e
 """
 
 # The version for the entire repository
-__version__ = "1.3.0"
+__version__ = "1.4.0"

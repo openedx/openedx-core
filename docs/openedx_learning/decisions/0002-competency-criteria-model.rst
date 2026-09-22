@@ -83,7 +83,7 @@ Decision
    1. ``id``: unique primary key
    2. ``parent_id``: The ``CompetencyCriteriaGroup.id`` of the parent group. Null means this is a root group.
    3. ``oel_tagging_tag_id``: The ``oel_tagging_tag.id`` for the competency represented by this criteria tree.
-   4. ``course_id``: Nullable foreign key to ``openedx_catalog_courserun.id`` for the course that scopes this criteria tree.
+   4. ``course_id``: Nullable foreign key for the course that scopes this criteria tree. Within a course-scoped subtree, every group carries the same ``course_id``, not only its topmost group; immutable after creation. Root groups always have ``course_id`` null.
    5. ``name``: string
    6. ``ordering``: Indicates evaluation sequence number for this criteria group. This defines deterministic evaluation order for siblings during read-time evaluation and event-driven recomputation, and enables short-circuit evaluation.
    7. ``logic_operator``: Either “AND” or “OR” or null. This determines how children are combined at a group node ("AND" or "OR").
@@ -109,8 +109,8 @@ Decision
 
    - Empty groups: Persisted criteria definitions should not contain empty groups. Authoring flows may temporarily create empty groups while editing, but backend validation must reject them.
    - Mixed tree depths: Backend supports deeply nested groups. Current frontend authoring constraint is a maximum depth of 3 layers total, using zero-indexed depth (``0=root``, ``1=course-scope group``, ``2=leaf criteria/group``).
-   - Retrieval scope: Evaluation/read paths should be windowed by course run dates, not full-history by default. For a requested date window ``[window_start, window_end]``, include (a) all nodes where ``course_id is null``, and (b) complete subtrees for course-scoped groups whose course run overlaps the window (``course_start <= window_end`` and ``course_end >= window_start``, with null ``course_end`` treated as ongoing). Do not return partial subtrees.
-   - Practical size and growth: Total rows in ``CompetencyCriteriaGroup`` are expected to grow over time as course runs are added; this ADR sets no global DB row cap. No max total node-count cap is required per root group. For ``course_id is null`` branches, expected size is small (realistically <=500 nodes). Pagination is supported for authoring/list APIs.
+   - Retrieval scope: A read always includes the root scope (all nodes where ``course_id is null``), plus any selected subset of course-scoped groups, each returned as a complete subtree, never truncated.
+   - Practical size and growth: Total rows in ``CompetencyCriteriaGroup`` are expected to grow over time as course runs are added; this ADR sets no global DB row cap. No max total node-count cap is required per root group. For ``course_id is null`` branches, expected size is small (realistically <=500 nodes).
 
 
 3. ``CompetencyRuleProfile`` concept (database table)
@@ -445,3 +445,10 @@ Changelog
   characterization of :ref:`openedx-learning-adr-0004`'s locking behavior: the accepted ADR 0004
   has only its staff-correction path take a lock, not every update. That entry is left as
   originally written rather than edited in place.
+
+2026-09-04:
+
+* For issue #676: clarified that ``course_id`` applies to every group in a
+  course-scoped subtree, not just the top one, and can't change after creation.
+  Simplified retrieval scope and dropped the pagination note, since both assumed
+  course-date windowing, which #676's new read path doesn't use.

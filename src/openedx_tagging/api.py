@@ -13,6 +13,7 @@ are stored in this app.
 from __future__ import annotations
 
 from collections import defaultdict
+from enum import Enum
 from typing import Any, Counter, cast
 
 from django.db import models, transaction
@@ -31,6 +32,15 @@ TagDoesNotExist = Tag.DoesNotExist
 OBJECT_MAX_TAGS = 100
 
 
+class TaxonomyType(Enum):
+    """
+    Valid values for a taxonomy's type on create.
+    """
+
+    TAGS = "tags"
+    COMPETENCY = "competency"
+
+
 def create_taxonomy(  # pylint: disable=too-many-positional-arguments
     name: str,
     description: str | None = None,
@@ -39,14 +49,23 @@ def create_taxonomy(  # pylint: disable=too-many-positional-arguments
     allow_free_text=False,
     read_only=False,
     export_id: str | None = None,
+    *,
+    taxonomy_cls: type[Taxonomy] = Taxonomy,
 ) -> Taxonomy:
     """
     Creates, saves, and returns a new Taxonomy with the given attributes.
+
+    If `export_id` is not given, one is auto-generated from the current
+    Taxonomy count and a slug of `name`.
+
+    Pass `taxonomy_cls` to create a subclass instance instead (e.g. a
+    multi-table-inheritance child): building it fresh with every field, in one
+    full_clean()+save(), writes both tables correctly without a separate step.
     """
     if not export_id:
         export_id = f"{Taxonomy.objects.count() + 1}-{slugify(name, allow_unicode=True)}"
 
-    taxonomy = Taxonomy(
+    taxonomy = taxonomy_cls(
         name=name,
         description=description or "",
         enabled=enabled,

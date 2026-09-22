@@ -4,7 +4,7 @@
 #
 #    make upgrade
 #
-amqp==5.3.1
+amqp==5.4.0
     # via
     #   -r requirements/quality.txt
     #   kombu
@@ -12,7 +12,7 @@ asgiref==3.12.1
     # via
     #   -r requirements/quality.txt
     #   django
-ast-serialize==0.8.0
+ast-serialize==0.11.2
     # via
     #   -r requirements/quality.txt
     #   mypy
@@ -25,15 +25,15 @@ attrs==26.1.0
     # via
     #   -r requirements/quality.txt
     #   openedx-events
-billiard==4.2.4
+billiard==4.3.0
     # via
     #   -r requirements/quality.txt
     #   celery
-build==1.6.0
+build==1.6.1
     # via
     #   -r requirements/pip-tools.txt
     #   pip-tools
-cachetools==7.1.7
+cachetools==7.2.0
     # via
     #   -r requirements/ci.txt
     #   tox
@@ -80,7 +80,7 @@ click-plugins==1.1.1.2
     # via
     #   -r requirements/quality.txt
     #   celery
-click-repl==0.3.0
+click-repl==0.4.0
     # via
     #   -r requirements/quality.txt
     #   celery
@@ -92,7 +92,7 @@ colorama==0.4.6
     # via
     #   -r requirements/ci.txt
     #   tox
-coverage[toml]==7.16.0
+coverage[toml]==7.16.1
     # via
     #   -r requirements/quality.txt
     #   pytest-cov
@@ -135,7 +135,7 @@ django-crum==0.7.9
     # via
     #   -r requirements/quality.txt
     #   edx-django-utils
-django-debug-toolbar==7.1.1
+django-debug-toolbar==8.0.0
     # via
     #   -r requirements/dev.in
     #   -r requirements/quality.txt
@@ -147,11 +147,11 @@ django-simple-history==3.13.0
     # via
     #   -r requirements/quality.txt
     #   edx-organizations
-django-stubs==6.1.0
+django-stubs==6.1.1
     # via
     #   -r requirements/quality.txt
     #   djangorestframework-stubs
-django-stubs-ext==6.1.0
+django-stubs-ext==6.1.1
     # via
     #   -r requirements/quality.txt
     #   django-stubs
@@ -160,7 +160,7 @@ django-waffle==5.0.0
     #   -r requirements/quality.txt
     #   edx-django-utils
     #   edx-drf-extensions
-djangorestframework==3.18.0
+djangorestframework==3.18.1
     # via
     #   -r requirements/quality.txt
     #   drf-jwt
@@ -189,7 +189,7 @@ edx-django-utils==8.0.2
     #   -r requirements/quality.txt
     #   edx-drf-extensions
     #   openedx-events
-edx-drf-extensions==10.7.0
+edx-drf-extensions==10.9.0
     # via
     #   -r requirements/quality.txt
     #   edx-organizations
@@ -210,7 +210,7 @@ fastavro==1.12.2
     # via
     #   -r requirements/quality.txt
     #   openedx-events
-filelock==3.32.4
+filelock==3.32.7
     # via
     #   -r requirements/ci.txt
     #   python-discovery
@@ -218,7 +218,7 @@ filelock==3.32.4
     #   virtualenv
 freezegun==1.5.5
     # via -r requirements/quality.txt
-grimp==3.16
+grimp==3.17
     # via
     #   -r requirements/quality.txt
     #   import-linter
@@ -226,11 +226,11 @@ id==1.6.1
     # via
     #   -r requirements/quality.txt
     #   twine
-idna==3.19
+idna==3.20
     # via
     #   -r requirements/quality.txt
     #   requests
-import-linter==2.14
+import-linter==2.15
     # via -r requirements/quality.txt
 iniconfig==2.3.0
     # via
@@ -274,7 +274,7 @@ librt==0.15.0
     # via
     #   -r requirements/quality.txt
     #   mypy
-lxml[html-clean]==6.1.2
+lxml[html-clean]==6.1.3
     # via
     #   edx-i18n-tools
     #   lxml-html-clean
@@ -310,7 +310,7 @@ mypy-extensions==1.1.0
     #   -r requirements/quality.txt
     #   isort
     #   mypy
-mysqlclient==2.2.8
+mysqlclient==2.3.0
     # via -r requirements/quality.txt
 nh3==0.3.7
     # via
@@ -342,7 +342,7 @@ pillow==12.3.0
     #   edx-organizations
 pip-tools==7.6.1
     # via -r requirements/pip-tools.txt
-platformdirs==4.11.5
+platformdirs==4.11.11
     # via
     #   -r requirements/ci.txt
     #   -r requirements/quality.txt
@@ -382,7 +382,7 @@ pygments==2.21.0
     #   pytest
     #   readme-renderer
     #   rich
-pyjwt[crypto]==2.13.0
+pyjwt[crypto]==2.14.0
     # via
     #   -r requirements/quality.txt
     #   drf-jwt
@@ -407,7 +407,7 @@ pylint-plugin-utils==0.9.0
     #   -r requirements/quality.txt
     #   pylint-celery
     #   pylint-django
-pymongo==4.17.0
+pymongo==4.18.1
     # via
     #   -r requirements/quality.txt
     #   edx-opaque-keys
@@ -415,11 +415,11 @@ pynacl==1.6.2
     # via
     #   -r requirements/quality.txt
     #   edx-django-utils
-pyproject-api==1.11.0
+pyproject-api==1.11.2
     # via
     #   -r requirements/ci.txt
     #   tox
-pyproject-hooks==1.2.0
+pyproject-hooks==1.3.3
     # via
     #   -r requirements/pip-tools.txt
     #   build
@@ -438,12 +438,12 @@ python-dateutil==2.9.0.post0
     #   -r requirements/quality.txt
     #   celery
     #   freezegun
-python-discovery==1.6.0
+python-discovery==1.6.1
     # via
     #   -r requirements/ci.txt
     #   tox
     #   virtualenv
-python-slugify==8.0.4
+python-slugify==9.1.0
     # via
     #   -r requirements/quality.txt
     #   code-annotations
@@ -519,11 +519,11 @@ tomlkit==0.15.1
     #   -r requirements/quality.txt
     #   edx-lint
     #   pylint
-tox==4.61.1
+tox==4.63.0
     # via -r requirements/ci.txt
 twine==7.0.0
     # via -r requirements/quality.txt
-types-pyyaml==6.0.12.20260815
+types-pyyaml==6.0.12.20260906
     # via
     #   -r requirements/quality.txt
     #   django-stubs
@@ -532,6 +532,7 @@ typing-extensions==4.16.0
     # via
     #   -r requirements/ci.txt
     #   -r requirements/quality.txt
+    #   click-repl
     #   django-stubs
     #   django-stubs-ext
     #   djangorestframework-stubs
@@ -539,7 +540,7 @@ typing-extensions==4.16.0
     #   import-linter
     #   mypy
     #   tox
-tzdata==2026.3
+tzdata==2026.4
     # via
     #   -r requirements/quality.txt
     #   kombu
@@ -547,7 +548,7 @@ tzlocal==5.4.4
     # via
     #   -r requirements/quality.txt
     #   celery
-urllib3==2.7.0
+urllib3==2.8.0
     # via
     #   -r requirements/quality.txt
     #   id
@@ -559,11 +560,11 @@ vine==5.1.0
     #   amqp
     #   celery
     #   kombu
-virtualenv==21.7.7
+virtualenv==21.9.0
     # via
     #   -r requirements/ci.txt
     #   tox
-wcwidth==0.8.3
+wcwidth==0.8.4
     # via
     #   -r requirements/quality.txt
     #   prompt-toolkit
