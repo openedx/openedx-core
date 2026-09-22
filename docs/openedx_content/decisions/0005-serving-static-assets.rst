@@ -33,7 +33,7 @@ Key takeaways about how this data is stored:
 
 Currently, all assets are associated and versioned with Components, where a Component is typically an XBlock. So you don't ask for "version 5 of /static/fig1.webp"; you ask for "the /static/fig1.webp associated with version 5 of this Component".
 
-:ref:`openedx-content-adr-0013` proposes a special type of component that only holds assets (an "AssetSet"), and no XBlock, so that a course's existing files and uploads can be referenced by multiple XBlocks or used independently (e.g. a PDF download).
+:ref:`openedx-content-adr-0013` proposes a special type of component that only holds assets (an "Upload"), and no XBlock, so that a course's existing files and uploads can be referenced by multiple XBlocks or used independently (e.g. a PDF download).
 
 The actual raw asset data is stored in django-storages using its hash value as the file name. This makes it cheap to make many references to the same asset data under different names and versions, but it means that we cannot simply give direct links to the raw file data to the browser (see the next section for details).
 
