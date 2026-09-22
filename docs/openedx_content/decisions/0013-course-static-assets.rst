@@ -11,7 +11,9 @@ Draft. Depends on :ref:`openedx-content-adr-0012` and :ref:`openedx-content-adr-
 Context
 -------
 
-Today, a course's "Files & Uploads" live in the legacy MongoDB contentstore, as a flat, course-wide namespace of paths that OLX references as ``/static/{path}``. As a first step in migrating all content away from MongoDB, we need to define how to store such files in ``openedx_content`` (within a :class:`LearningPackage`).
+Today, a course's authored "Files" (previously known as "Files & Uploads") live in the legacy MongoDB contentstore, as a semi-flat, course-wide namespace of paths that OLX references as ``/static/{path}``. Semi-flat means that the UI only supports a flat list of files, but by editing course tarballs, it's possible to nest assets within subfolders. The current Course Files system tends to get very disorganized in large courses, as the UI lacks the ability to organize assets into folders, and the reporting of which assets are in use in the course is not reliable.
+
+As a first step in migrating all content away from MongoDB, we need to define how to store such files in ``openedx_content`` (within a :class:`LearningPackage`).
 
 :ref:`openedx-content-adr-0005` anticipates the shape of the answer when it refers to a special type of component that only holds assets and no XBlock, and the :class:`ComponentType` docstring mentions "a component type to represent packages of files for things like Files and Uploads". `openedx-learning issue #70 <https://github.com/openedx/openedx-learning/issues/70>`_ independently proposed folders as a component type, with relative references resolving within a folder and its subdirectories.
 
@@ -30,7 +32,7 @@ In both courses and libraries, shared/reusable assets (referenced by multiple co
 
 The type is a :class:`ComponentType` with namespace ``openedx.v1`` and name ``upload``.
 
-An upload is technically most like a folder, and our preliminary thinking about this idea also used the terms "AssetSet" or "Folder" for what we are naming an "Upload" in this ADR. "Upload" is chosen because it matches the "Uploads" part of the "Files & Uploads" page in the Studio UI, implies a generally singular thing without ruling out multiple files, doesn't conflict with any other names used in the platform, and is hopefully fairly self-evident to users, unlike a technical term like "AssetSet".
+An upload is technically most like a folder, and our preliminary thinking about this idea also used the terms "AssetSet" or "Folder" for what we are naming an "Upload" in this ADR. "Upload" is chosen because it matches the "Uploads" part of the page in the Studio UI which was previously known as "Files & Uploads", implies a generally singular thing without ruling out multiple files, doesn't conflict with any other names used in the platform, and is hopefully fairly self-evident to users, unlike a technical term like "AssetSet".
 
 2. Uploads group related files
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -48,15 +50,15 @@ Grouping files together into a single ``Upload`` for organizational purposes onl
 
 Within a single "Upload", files can use relative references to each other. For example, an HTML file can reference "./image.jpeg" which would be rendered if the HTML file was viewed in the browser and the image in question was part of the same ``Upload`` component.
 
-4. Course "Files & Uploads" assets are "Upload"-type Components within the run's learning package
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+4. Course Files assets are "Upload"-type Components within the run's learning package
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For courses authored in the future, we want to encourage most static assets to be directly attached to the Component where they are used. But shared assets (referenced by multiple components), including every "Files & Uploads" asset migrated from legacy MongoDB storage, will live in the run's learning package as Uploads.
+For courses authored in the future, we want to encourage most static assets to be directly attached to the Component where they are used. But shared assets (referenced by multiple components), including every Course Files asset migrated from legacy MongoDB storage, will live in the run's learning package as Uploads.
 
-5. One Upload per existing "Files & Uploads" asset
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+5. One Upload per existing Course Files asset
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When migrating assets from MongoDB/contentstore to ``openedx_content``, each asset in "Files & Uploads" will become one ``Upload`` component in the LearningPackage. It would be nice to automatically group related files together, but this is likely not worth the effort it would require.
+When migrating assets from MongoDB/contentstore to ``openedx_content``, each asset in a course's "Files" will become one ``Upload`` component in the LearningPackage. It would be nice to automatically group related files together, but this is likely not worth the effort it would require.
 
 6. Identifiers
 ~~~~~~~~~~~~~~
@@ -75,12 +77,12 @@ Upload components are not children of the course container or any of its descend
 8. Uploads cannot be referenced without an ``UploadUsageLink``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-TODO: write this up
+
 
 9. Per-asset metadata stays in openedx-platform
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``locked`` flag, ``displayname``, thumbnails and import paths that the legacy contentstore carries are not modelled here. :ref:`openedx-content-adr-0005` already makes permission checking the platform's responsibility, so a platform-side model keyed by run and path is the right home. The Upload stays a dumb mapping of paths to :class:`Media`.
+The ``locked`` flag, ``displayname``, thumbnails and import paths that the legacy contentstore carries are not modelled here. :ref:`openedx-content-adr-0005` already makes permission checking the platform's responsibility. The Upload stays a dumb mapping of paths to :class:`Media`.
 
 Rejected Alternatives
 ---------------------
