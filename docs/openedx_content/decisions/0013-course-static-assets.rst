@@ -77,7 +77,9 @@ Upload components are not children of the course container or any of its descend
 8. Uploads cannot be referenced without an ``UploadUsageLink``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+To improve asset management, the new "Uploads" will _not_ support a global namespace of shared assets for the entire course (where almost any XBlock/OLX content can reference `/static/x` to use a file uploaded to the Course Files). Instead, Uploads must be linked to Components before they can be referenced by the Component. This allows shared Uploads from libraries to be used in exactly the same way as shared Uploads associated with the course itself. For example, if a course author wants to reference a shared image in a Text (HTML) component, whether the image Upload is in the Course Files or in a content library, the first step is to "link" that Upload to the Component, then to reference its filename. The UX flow for this can be optimized so it is no different than selecting an image from an image gallery.
 
+When a Component references an asset like ``/static/foo.ext``, the system will first check the assets attached to that component, and then fall back on any "linked" Uploads. If no linked Uploads have a file with that name, the asset will be "not found".
 
 9. Per-asset metadata stays in openedx-platform
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
