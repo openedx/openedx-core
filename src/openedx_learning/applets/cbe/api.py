@@ -5,12 +5,42 @@ from __future__ import annotations
 
 from django.db.models import QuerySet
 
+from openedx_tagging.api import create_taxonomy
 from openedx_tagging.models import Taxonomy
 
+from .models import CompetencyTaxonomy
+
 __all__ = [
+    "create_competency_taxonomy",
     "is_competency_taxonomy",
     "select_competency_taxonomies",
 ]
+
+
+def create_competency_taxonomy(  # pylint: disable=too-many-positional-arguments
+    name: str,
+    description: str | None = None,
+    enabled=True,
+    allow_multiple=True,
+    allow_free_text=False,
+    read_only=False,
+    export_id: str | None = None,
+) -> CompetencyTaxonomy:
+    """
+    Create, save, and return a new CompetencyTaxonomy with the given attributes.
+    """
+    taxonomy = create_taxonomy(
+        name=name,
+        description=description,
+        enabled=enabled,
+        allow_multiple=allow_multiple,
+        allow_free_text=allow_free_text,
+        read_only=read_only,
+        export_id=export_id,
+        taxonomy_cls=CompetencyTaxonomy,
+    )
+    assert isinstance(taxonomy, CompetencyTaxonomy)
+    return taxonomy
 
 
 def is_competency_taxonomy(taxonomy: Taxonomy) -> bool:
