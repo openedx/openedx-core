@@ -64,9 +64,6 @@ Application Requirements
 Security Requirements
 ~~~~~~~~~~~~~~~~~~~~~
 
-**The ``openedx_content`` app only knows about LearningPackages and content, not Learning Contexts**
-  Permissions in the Open edX platform are (now) defined by the ``openedx-authz`` authorization framework, and depend on various factors like which learning context (course/library) hosts the asset and what roles the requesting user has. However, this ``openedx_content`` app is a low-level content management system, and does not know about ``openedx-authz`` nor have any way to directly check permissions/authorization.
-
 **Assets require fine-grained permissions.**
   The Open edX platform today depends on various rules for determining who can access each asset file. The MongoDB GridFS backed ContentStore currently supports course-level access checks that can be toggled on and off for individual assets. Uploaded assets are public by default, but can optionally be "locked", which will restrict downloads to students who are enrolled in the course. Components in courses have complex authorization rules (release dates, cohorts, A/B testing, etc.), so any assets that are attached to Components should also respect those same rules. In other words, *permissions checking must be extensible*. The ``openedx_content`` app will implement the details of how to serve an asset, but it will not have the necessary models and logic to determine whether it is allowed to.
 
