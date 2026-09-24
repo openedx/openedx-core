@@ -1,6 +1,6 @@
 .. _openedx-content-adr-0013:
 
-13. Course Static Assets as File Components
+13. Shared Static Assets as File Components
 ===========================================
 
 Status
@@ -55,9 +55,9 @@ For courses authored in the future, we want to encourage most static assets to b
 5. One File component per existing Course Files asset
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When migrating assets from MongoDB/contentstore to ``openedx_content``, each asset in a course's "Files" will become one File component in the LearningPackage. It would be nice to automatically group related files together, but this is likely not worth the effort it would require.
+When migrating assets from MongoDB/contentstore to ``openedx_content``, each asset in a course's "Files" will become one File component in the LearningPackage.
 
-More details of this migration will be specified in the upcoming "contentstore migration" ADR.
+In order to avoid breaking migrated Files that depend on other files (mostly HTML files that load assets using relative paths), however, it is necessary to mark migrated Files as "legacy" File components that can use relative references and old-style `/static/filename` references in the OLX. More details of this migration will be specified in the upcoming "contentstore migration" ADR.
 
 6. Human readable titles
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -79,7 +79,7 @@ File components are not children of the course container or any of its descendan
 9. "locked" flag is a separate, unversioned model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``locked`` flag is the only piece of metadata used in the existing CourseFiles feature that cannot be directly modelled within the existing :class:`Component` / :class:`Media` models. To provide this functionality, we will consider all File components to be "unlocked" by default, unless a row in the new ``LockedFileComponent`` table exists, which is a trivial model that has only one field, a ``OneToOneField(primary_key=True)`` referencing :class:`Component`.
+The ``locked`` flag is the only piece of metadata used in the existing Course Files feature that cannot be directly modelled within the existing :class:`Component` / :class:`Media` models. To provide this functionality, we will consider all File components to be "unlocked" by default, unless a row in the new ``LockedFileComponent`` table exists, which is a trivial model that has only one field, a ``OneToOneField(primary_key=True)`` referencing :class:`Component`.
 
 Locking is not part of versioning, because often authors will wish to lock down all versions of an asset, not just lock the current version while still allowing access to previous versions.
 
@@ -98,7 +98,7 @@ Thus, we need to have support for some File components or some assets within the
 
 For asset files attached to regular XBlock components, this is achieved by file name conventions: any files in the ``static/`` "folder" of assets attached to a component are accessible by learners (if they know the URL), whereas files not under the ``static/`` prefix (such as the OLX file for the Component itself) are restricted to course staff only. (Note: the UI only allows authors to download/upload files in the ``static/`` prefix anyways, so only the backend is really aware of any non-public files.)
 
-For File Components (shared among multiple components in a course), the ``static/`` prefix convention is likely to be too noisy or confusing. Instead, we will implement a ``private`` flag that means "restricted to staff only". Like ``locked``, it will be unversioned. The initial implementation may be read-only and based on the hard-coded filename matching ``python_lib.zip`` but in the future this could be upgraded to a ``FileComponentMetadata`` table that stores both ``locked`` and ``private`` fields for File components.
+For File components (shared among multiple components in a course), the ``static/`` prefix convention is likely to be too noisy or confusing. Instead, we will implement a ``private`` flag that means "restricted to staff only". Like ``locked``, it will be unversioned. The initial implementation may be read-only and based on the hard-coded filename matching ``python_lib.zip`` but in the future this could be upgraded to a ``FileComponentMetadata`` table that stores both ``locked`` and ``private`` fields for File components.
 
 11. Image metadata will be in separate models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -114,7 +114,7 @@ Consequences
 
 **Replaced files are not deleted**, and old versions of the replaced file will still exist; this follows from the fact that the files are now versioned.
 
-**There will be two different ways to use files in course content**: by attaching them directly to XBlock Components, or by uploading them as shared File components. Content libraries already supports the former (attached to Components). Note that "locking" assets will only be support for shared File components, as any public files attached to a ``Component`` that are meant to be accessible to learners will share the same permissions as the ``Component`` they're attached to.
+**There will be two different ways to use files in course content**: by attaching them directly to XBlock Components, or by uploading them as shared File components. Content libraries already support the former (attached to Components). Note that "locking" assets will only be supported for shared File components, as any public files attached to a ``Component`` that are meant to be accessible to learners will share the same permissions as the ``Component`` they're attached to.
 
 **Linking library components into courses will be simplified**, once we support XBlocks with files attached to their ``Component`` because part of the complexity in copying library components into courses involves analyzing their attached files and merging them into the course's shared Course Files. If we can instead just copy the ``Component``, including all its attached files, directly into the course's Learning Package, no analysis nor merging into shared files is necessary.
 
