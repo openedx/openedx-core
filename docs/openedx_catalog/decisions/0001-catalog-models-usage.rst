@@ -6,7 +6,7 @@
 Status
 ------
 
-Draft
+Accepted and partially implemented.
 
 Context
 -------
