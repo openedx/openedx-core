@@ -7,6 +7,7 @@
 root_packages =
     openedx_learning
     openedx_content
+    openedx_catalog
     openedx_tagging
     openedx_django_lib
     openedx_core
@@ -23,8 +24,8 @@ layers =
     # particular, openedx_tagging must never know that CBE exists.
     openedx_learning
 
-    # Content: authoring-side models and APIs.
-    openedx_content
+    # Content (authoring-side models and APIs) and Catalog (CatalogCourse/CourseRun) as siblings
+    openedx_content | openedx_catalog
 
     # Tagging is very simple & fundamental. Should probably not depend on any other Django apps.
     openedx_tagging
