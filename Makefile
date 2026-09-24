@@ -34,17 +34,10 @@ upgrade: ## update the uv.lock file with the latest packages satisfying pyprojec
 	uv lock --upgrade
 
 quality: ## check coding style with pycodestyle and pylint
-	uv sync --group quality
-	uv run pylint src tests test_utils manage.py test_settings.py mysql_test_settings.py
-	uv run mypy --show-traceback
-	uv run pycodestyle src tests test_utils manage.py test_settings.py mysql_test_settings.py
-	uv run pydocstyle src
-	uv run isort --check-only --diff src tests test_utils manage.py test_settings.py mysql_test_settings.py
-	$(MAKE) selfcheck
-	uv run lint-imports
+	uv run tox -e quality
 
 pii_check: ## check for PII annotations on all Django models
-	DJANGO_SETTINGS_MODULE=test_settings uv run code_annotations django_find_annotations --config_file .pii_annotations.yml --lint --report --coverage
+	uv run tox -e pii_check
 
 requirements: ## install development environment requirements
 	uv sync --group dev
