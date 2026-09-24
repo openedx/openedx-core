@@ -55,7 +55,7 @@ The general principle behind this is that changes in how content is represented 
 
 For performance and correctness, any Django model in this repository or in ``openedx-platform`` that needs to reference a course should do so with a foreign key to :class:`CourseRun` (or, rarely, :class:`CatalogCourse`), rather than by storing a course key string or pointing at ``CourseOverview`` (although much existing code does not yet follow this new convention).
 
-On the other hand, public APIs and events should continue to identify courses by their full string course key and never expose the integer primary keys.
+On the other hand, public REST APIs and events should continue to identify courses by their full string course key and never expose the integer primary keys.
 
 4. Catalog models stay minimal, unversioned, and extended by related models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
