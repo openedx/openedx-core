@@ -37,8 +37,9 @@ Decisions
      shown in the catalog, SEO metadata, and a **Category**. It is **not versioned**.
 
    - **Pathway content** - the definition of the Pathway: its Items and its completion criteria. The content is
-     **versioned**, so that we can always tell what the definition was at any given moment. A version of the Pathway
-     content *implements* a Catalog Pathway.
+     **versioned**, so that we can always tell what the definition was at any given moment. The Pathway content
+     *implements* exactly one Catalog Pathway, and a Catalog Pathway is implemented by at most one Pathway. That link
+     is fixed for the Pathway's whole life, so it is not versioned: every version implements the same Catalog Pathway.
 
 2. The **Category** is a student-facing label for the kind of Pathway (e.g. "Master's Degree", "Annual Training").
    Learners see the Category rather than the word "Pathway". It is always required: rather than falling back to
@@ -62,15 +63,15 @@ Decisions
 
 Example content of each model:
 
-============================  ===================================
+============================  =====================================
 Catalog Pathway               Pathway content
-============================  ===================================
+============================  =====================================
 Display name                  Pathway Items
 Category                      Completion criteria
 Description                   References to CourseRuns
 SEO metadata                  Link to the related Catalog Pathway
-Enrollment
-============================  ===================================
+Enrollment                    (one-to-one, not versioned)
+============================  =====================================
 
 .. Run `dot -Tsvg images/pathway-catalog-content.dot > images/pathway-catalog-content.svg` to regenerate the diagram
    after making changes to `images/pathway-catalog-content.dot`.
@@ -86,5 +87,19 @@ Consequences
 - Because evaluation follows the published version rather than the enrollment-time version, edits to a Pathway apply
   to learners who are already enrolled, which is what we want, but it means edits need care and re-evaluation.
 - The unversioned Catalog Pathway can be long-lived even if its content definition is changed significantly over time.
+- Because the link is fixed and one-to-one, a Catalog Pathway can't be switched over to a different Pathway; changing
+  what it requires means a new version of the Pathway that already implements it. In exchange, anything that records a
+  content version, such as a credential, can always tell which Catalog Pathway that version implemented.
 - The dependency direction means a Catalog Pathway cannot, on its own, tell which content implements it. Queries in
   that direction start from the content side.
+
+Changelog
+---------
+
+2026-09-23:
+
+* The link to the Catalog Pathway is held by the Pathway content as a whole rather than by each of its versions, and is
+  one-to-one: a Pathway implements exactly one Catalog Pathway for its whole life, and a Catalog Pathway is implemented
+  by at most one Pathway.
+* The diagram now shows the Pathway content in ``openedx_learning``, where it lives, built on the versioning that
+  ``openedx_content`` provides.

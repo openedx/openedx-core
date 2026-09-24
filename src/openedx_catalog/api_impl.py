@@ -5,11 +5,15 @@ Implementation of the `openedx_catalog` API.
 import logging
 from typing import overload
 
+from django.db import transaction
+from django.db.models import QuerySet
+from django.utils import timezone
 from opaque_keys.edx.keys import CourseKey
 from organizations.api import ensure_organization  # type: ignore[import]
 from organizations.api import exceptions as org_exceptions
 
-from .models import CatalogCourse, CourseRun
+from .models import CatalogCourse, CatalogPathway, CourseRun, PathwayCategory, PathwayEnrollment
+from .models.pathway_category import get_default_pathway_category
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +26,17 @@ __all__ = [
     "sync_course_run_details",
     "create_course_run_for_modulestore_course_with",
     "delete_course_run",
+    "get_default_pathway_category",
+    "get_pathway_category",
+    "get_catalog_pathway",
+    "get_catalog_pathways",
+    "create_catalog_pathway",
+    "update_catalog_pathway",
+    "delete_catalog_pathway",
+    "enroll_in_pathway",
+    "unenroll_from_pathway",
+    "is_enrolled_in_pathway",
+    "get_pathway_enrollments",
 ]
 
 
@@ -249,3 +264,246 @@ def delete_course_run(course_key: CourseKey) -> None:
     ⚠️ Does not emit any course lifecycle events.
     """
     CourseRun.objects.get(course_key=course_key).delete()
+
+
+# Pathways (catalog side).
+#
+# A Pathway is split into a catalog half (these models) and a versioned content half in
+# `openedx_learning.applets.pathways`. See the openedx_learning ADR 0007. The functions below only touch the catalog
+# half; creating and versioning the *definition* of a Pathway is done through `openedx_learning.api`.
+
+
+# `get_default_pathway_category` is part of this API too, and is re-exported via `__all__`. It's defined next to the
+# model because the `CatalogPathway.category` field default needs it as well.
+
+
+def get_pathway_category(category_code: str) -> PathwayCategory:
+    """
+    Get a `PathwayCategory` by its stable code.
+
+    Its translations come with it, so ``category.localized_name`` costs no further queries, however often it's read.
+
+    ⚠️ Does not check permissions.
+    """
+    return PathwayCategory.objects.prefetch_related("translations").get(category_code=category_code)
+
+
+def _catalog_pathways() -> QuerySet[CatalogPathway]:
+    """
+    Catalog pathways along with everything needed to show them: org, category, and the category's translations.
+
+    With the translations prefetched, ``pathway.category.localized_name`` costs no further queries.
+    """
+    return CatalogPathway.objects.select_related("org", "category").prefetch_related("category__translations")
+
+
+@overload
+def get_catalog_pathway(*, org_code: str, pathway_code: str) -> CatalogPathway: ...
+@overload
+def get_catalog_pathway(*, key_str: str) -> CatalogPathway: ...
+@overload
+def get_catalog_pathway(*, pk: CatalogPathway.ID) -> CatalogPathway: ...
+
+
+def get_catalog_pathway(
+    pk: CatalogPathway.ID | None = None,
+    key_str: str = "",
+    org_code: str = "",
+    pathway_code: str = "",
+) -> CatalogPathway:
+    """
+    Get a catalog pathway.
+
+    Its org and category come with it, and so do the category's translations, so ``pathway.category.localized_name``
+    costs no further queries.
+
+    ⚠️ Does not check permissions or visibility rules.
+
+    The `CatalogPathway` may not have any content implementing it yet. Because `openedx_catalog` never knows about the
+    content side, this function cannot tell you whether it does; ask `openedx_learning.api` instead.
+    """
+    assert pk or key_str or (org_code and pathway_code)
+    if pk:
+        assert not org_code
+        assert not key_str
+        return _catalog_pathways().get(pk=pk)
+    if key_str:
+        assert key_str.startswith("catalog-pathway:")
+        assert not org_code
+        assert not pathway_code
+        _, org_code, pathway_code = key_str.split(":", 2)
+    return _catalog_pathways().get(org__short_name=org_code, pathway_code=pathway_code)
+
+
+def get_catalog_pathways(
+    *,
+    org_code: str | None = None,
+    category_code: str | None = None,
+) -> QuerySet[CatalogPathway]:
+    """
+    List catalog pathways, most recently created first, optionally narrowed down to an org and/or a category.
+
+    Both filters match exactly; an unknown org or category simply matches nothing. The result is a `QuerySet`, so that
+    callers can narrow, search and paginate it further. Each pathway's org and category come with it, and so do the
+    category's translations, so ``pathway.category.localized_name`` costs no further queries.
+
+    ⚠️ Does not check permissions or visibility rules. That suits authoring and administration, but a listing shown to
+    learners will need the visibility logic described in the `openedx_catalog.api` docstring, which doesn't exist yet.
+
+    As with `get_catalog_pathway`, this can't tell you which pathways have content implementing them yet; ask
+    `openedx_learning.api` instead.
+    """
+    pathways = _catalog_pathways()
+    if org_code is not None:
+        pathways = pathways.filter(org__short_name=org_code)
+    if category_code is not None:
+        pathways = pathways.filter(category__category_code=category_code)
+    return pathways
+
+
+def create_catalog_pathway(
+    *,
+    org_code: str,
+    pathway_code: str,
+    title: str = "",
+    category: PathwayCategory | None = None,
+    description: str = "",
+) -> CatalogPathway:
+    """
+    Create a `CatalogPathway`.
+
+    The `Organization` identified by `org_code` must already exist. Pass `category=None` to use the default category.
+
+    This creates only the catalog half of a Pathway. Use `openedx_learning.api` to create the versioned content that
+    implements it.
+
+    ⚠️ Does not check permissions.
+    """
+    pathway = CatalogPathway(
+        pathway_code=pathway_code,
+        title=title,
+        description=description,
+        # Only pass the category if given, so that the field default (which queries for the shipped category) runs
+        # only when it's actually needed.
+        **({"category": category} if category is not None else {}),
+    )
+    pathway.org_code = org_code  # Resolves the Organization by short_name; raises Organization.DoesNotExist.
+    pathway.save()
+    return pathway
+
+
+def update_catalog_pathway(
+    catalog_pathway: CatalogPathway | CatalogPathway.ID,
+    *,
+    title: str | None = None,
+    category: PathwayCategory | None = None,
+    description: str | None = None,
+) -> None:
+    """
+    Update a `CatalogPathway`. Pass `None` for a field to leave it unchanged.
+
+    None of these edits create a new content version: catalog copy and the Pathway definition change at different rates
+    and are edited by different people, which is the whole point of the split.
+
+    ⚠️ Does not check permissions.
+    """
+    if isinstance(catalog_pathway, CatalogPathway):
+        cp = catalog_pathway
+    else:
+        cp = CatalogPathway.objects.get(pk=catalog_pathway)
+
+    update_fields = []
+    for field_name, value in (
+        ("title", title),
+        ("category", category),
+        ("description", description),
+    ):
+        if value is not None:
+            setattr(cp, field_name, value)
+            update_fields.append(field_name)
+    if update_fields:
+        cp.save(update_fields=update_fields + ["modified"])
+
+
+def delete_catalog_pathway(catalog_pathway: CatalogPathway | CatalogPathway.ID) -> None:
+    """
+    Delete a `CatalogPathway`, along with its enrollments.
+
+    This will fail with a `ProtectedError` if any Pathway content still implements it, because that link is a `PROTECT`
+    foreign key on the content side.
+
+    ⚠️ Does not check permissions.
+    """
+    if isinstance(catalog_pathway, CatalogPathway):
+        cp = catalog_pathway
+    else:
+        cp = CatalogPathway.objects.get(pk=catalog_pathway)
+    cp.delete()
+
+
+def enroll_in_pathway(user_id: int, catalog_pathway: CatalogPathway | CatalogPathway.ID) -> PathwayEnrollment:
+    """
+    Enroll a learner in a `CatalogPathway`, or return their existing active enrollment.
+
+    If the learner had previously unenrolled, their existing row is reactivated rather than replaced, so the original
+    enrollment date is kept.
+
+    Enrollment does not pin a content version: progress is always evaluated against whatever is published at the time,
+    so that authoring changes reach learners who are already enrolled.
+
+    ⚠️ Does not check permissions.
+    """
+    pathway_id = catalog_pathway.id if isinstance(catalog_pathway, CatalogPathway) else catalog_pathway
+    with transaction.atomic():
+        # Lock the row so a concurrent unenroll can't slip in between reading `is_active` and writing it back.
+        enrollment, created = PathwayEnrollment.objects.select_for_update().get_or_create(
+            user_id=user_id, catalog_pathway_id=pathway_id
+        )
+        if not created and not enrollment.is_active:
+            enrollment.is_active = True
+            enrollment.save(update_fields=["is_active", "modified"])
+    return enrollment
+
+
+def unenroll_from_pathway(user_id: int, catalog_pathway: CatalogPathway | CatalogPathway.ID) -> None:
+    """
+    Unenroll a learner from a `CatalogPathway`. A no-op if they aren't enrolled.
+
+    The enrollment row is deactivated, not deleted.
+
+    ⚠️ Does not check permissions.
+    """
+    pathway_id = catalog_pathway.id if isinstance(catalog_pathway, CatalogPathway) else catalog_pathway
+    PathwayEnrollment.objects.filter(user_id=user_id, catalog_pathway_id=pathway_id, is_active=True).update(
+        is_active=False, modified=timezone.now()
+    )
+
+
+def is_enrolled_in_pathway(user_id: int, catalog_pathway: CatalogPathway | CatalogPathway.ID) -> bool:
+    """
+    Check whether this learner is actively enrolled in this `CatalogPathway`.
+
+    ⚠️ Does not check permissions.
+    """
+    pathway_id = catalog_pathway.id if isinstance(catalog_pathway, CatalogPathway) else catalog_pathway
+    return PathwayEnrollment.objects.filter(user_id=user_id, catalog_pathway_id=pathway_id, is_active=True).exists()
+
+
+def get_pathway_enrollments(user_id: int, *, include_inactive: bool = False) -> QuerySet[PathwayEnrollment]:
+    """
+    Get a learner's pathway enrollments, most recent first.
+
+    Only active enrollments are returned unless ``include_inactive`` is set. Each enrollment's catalog pathway comes
+    with it, along with the pathway's org, category and the category's translations, so a dashboard can show
+    ``enrollment.catalog_pathway.category.localized_name`` without further queries.
+
+    ⚠️ Does not check permissions or visibility rules.
+    """
+    enrollments = (
+        PathwayEnrollment.objects.filter(user_id=user_id)
+        .select_related("catalog_pathway__org", "catalog_pathway__category")
+        .prefetch_related("catalog_pathway__category__translations")
+    )
+    if not include_inactive:
+        enrollments = enrollments.filter(is_active=True)
+    return enrollments

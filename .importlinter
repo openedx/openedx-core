@@ -8,6 +8,7 @@ root_packages =
     openedx_learning
     openedx_content
     openedx_tagging
+    openedx_catalog
     openedx_django_lib
     openedx_core
 
@@ -18,13 +19,19 @@ root_packages =
 name = "top-level source folders are layered correctly"
 type = layers
 layers =
-    # Learning-domain features (currently CBE; Learning Pathways to follow).
-    # May build on content and tagging. Nothing below may import it: in
-    # particular, openedx_tagging must never know that CBE exists.
+    # Learning-domain features (CBE and Pathways). May build on content, catalog and
+    # tagging. Nothing below may import it: in particular, openedx_tagging must never
+    # know that CBE exists.
     openedx_learning
 
-    # Content: authoring-side models and APIs.
+    # Content: authoring-side models and APIs. May reference catalog entities, e.g. to record
+    # which content implements a given CourseRun.
     openedx_content
+
+    # Catalog: the enrollable things (CatalogCourse, CourseRun, CatalogPathway) that content and
+    # everything above it may point at. It stays unaware of content, so that changes in how
+    # content is represented never reach it. See the openedx_catalog ADR 0001, decision 2.
+    openedx_catalog
 
     # Tagging is very simple & fundamental. Should probably not depend on any other Django apps.
     openedx_tagging
@@ -69,3 +76,18 @@ layers=
     # to create Learning Packages and manage the draft and publish states for
     # various types of content.
     openedx_content.applets.publishing
+
+# This is "applet" layering, within our Learning djangoapp.
+# Every new applet should be added to this list when it is created.
+[importlinter:contract:learning_applet_layering]
+name = "openedx_learning's internal applets are layered correctly"
+type = layers
+layers =
+    # The public API is at the top. None of the internal applets should call to it.
+    openedx_learning.api
+
+    # The "pathways" applet holds the versioned definition of what a learner must complete
+    # to earn a larger achievement. The "cbe" applet models learner mastery of competencies.
+    # These are independent of each other today; if a future fulfillment type lets a
+    # competency attainment fulfill a Pathway Item, pathways would move above cbe.
+    openedx_learning.applets.pathways | openedx_learning.applets.cbe
