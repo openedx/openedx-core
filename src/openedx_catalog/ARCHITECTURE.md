@@ -24,7 +24,7 @@ flowchart TB
     style Modes fill:#ccc
     style Organizations fill:#ccc
 
-    Pathways["<a href='https://openedx.atlassian.net/wiki/spaces/OEPM/pages/5148147732/Brief+Modular+Content+Delivery+-+Platform+Strategy'>**openedx_learning: pathways**</a> (Pathway definition, PathwayItem, PathwayEnrollment, PathwayCertificate, etc. The unversioned CatalogPathway lives in openedx_catalog.)"]
+    Pathways["<a href='https://openedx.atlassian.net/wiki/spaces/OEPM/pages/5148147732/Brief+Modular+Content+Delivery+-+Platform+Strategy'>**openedx_learning: pathways**</a> (Pathway definition, PathwayItem, PathwayCertificate, etc. The unversioned CatalogPathway lives in openedx_catalog.)"]
     Pathways -- References --> Catalog
     Pathways -- References --> Content
 
