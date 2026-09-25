@@ -75,8 +75,10 @@ class CourseRun(models.Model):
       this catalog app or other apps. They should either be versioned using
       `PublishableEntity` or use the `HistoricalRecords()` history from
       `django-simple-history` to preserve a record of all changes.
-    - In the future, there will be a column referencing the Learning Package
-      that holds the course run's actual content.
+    - This app is deliberately not aware of content. The mapping from a course
+      run to its content (a Learning Package and/or an OutlineRoot container in
+      `openedx_content`) is maintained on the `openedx_content` side, never as a
+      field on this model. See docs/openedx_catalog/decisions/0001.
     """
 
     CourseRunID = NewType("CourseRunID", int)
@@ -167,14 +169,12 @@ class CourseRun(models.Model):
 
     # Do we want mix in SoftDeletableModel from django-model-utils to make courses soft deletable?
 
-    # In the future, either this model or CatalogCourse will have:
-    # learning_package = models.ForeignKey(LearningPackage)
-
-    # In the future, this model will likely have a relationship to the
-    # OutlineRoot which would be an `openedx_content` `Container` instance that
-    # holds the conten tree (Sections, Subsections, Units, etc.). For now, if
-    # the content exists, it will be in modulestore instead (you can get the
-    # `SplitModulestoreCourseIndex` using TODO: define API method).
+    # 🛑 Do not add a relationship to LearningPackage, OutlineRoot, or any other
+    #    `openedx_content` model here. The catalog app is not aware of content;
+    #    `openedx_content` holds the table that maps a CourseRun to its content
+    #    (see docs/openedx_catalog/decisions/0001). For now, if the content
+    #    exists, it will be in modulestore instead (you can get the
+    #    `SplitModulestoreCourseIndex` using TODO: define API method).
 
     def clean(self):
         """Defaults and validation of model fields"""

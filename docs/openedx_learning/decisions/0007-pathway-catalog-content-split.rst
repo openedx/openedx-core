@@ -34,7 +34,8 @@ Decisions
 1. A Pathway is split into two parts:
 
    - **Catalog Pathway** - the learner-browsable, enrollable thing. It includes the display name, the description
-     shown in the catalog, SEO metadata, and a **Category**. It is **not versioned**.
+     shown in the catalog, SEO metadata, and a **Category**. It is **not versioned**. Its definition lives in the
+     ``openedx_catalog`` app.
 
    - **Pathway content** - the definition of the Pathway: its Items and its completion criteria. The content is
      **versioned**, so that we can always tell what the definition was at any given moment. A version of the Pathway

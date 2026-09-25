@@ -14,7 +14,7 @@ The existing ``CourseOverview`` model in ``openedx-platform`` is derived from va
 1. Provide a core model to represent each course, for foreign key purposes.
 2. To allow provisioning placeholder courses before any content even exists.
 3. To be much simpler and more performant than ``CourseOverview`` was (far fewer fields generally, fewer legacy fields, integer primary key).
-4. Perhaps to provide a transition mechanism, a pointer than can point either to modulestore or openedx_content, as we transition content storage.
+4. To be independent of how and where content is stored: the catalog is not aware of content, and the mapping from a course run to its content (in modulestore or in ``openedx_content``) is maintained outside this app. See `ADR 0001 <../../docs/openedx_catalog/decisions/0001-catalog-models-usage.rst>`__.
 
 Architecture
 ------------

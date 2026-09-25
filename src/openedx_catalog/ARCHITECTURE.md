@@ -15,7 +15,7 @@ flowchart TB
     Organizations["**edx-organizations** (Organization)"]
     Enrollments["**platform: enrollments** (CourseEnrollment, CourseEnrollmentAllowed)"]
     Modes["**platform: course_modes** (CourseMode)"]
-    Catalog <-. "Direction of this relationship TBD." .-> Content
+    Content -- "References (see ADR 0001)" --> Catalog
     Catalog -- References --> Organizations
     Enrollments -- References --> Modes
     Enrollments -- References --> Catalog
@@ -24,8 +24,9 @@ flowchart TB
     style Modes fill:#ccc
     style Organizations fill:#ccc
 
-    Pathways["<a href='https://openedx.atlassian.net/wiki/spaces/OEPM/pages/5148147732/Brief+Modular+Content+Delivery+-+Platform+Strategy'>**openedx_pathways**</a> (Pathway, PathwaySchedule, PathwayEnrollment, PathwayCertificate, etc.)"]
+    Pathways["<a href='https://openedx.atlassian.net/wiki/spaces/OEPM/pages/5148147732/Brief+Modular+Content+Delivery+-+Platform+Strategy'>**openedx_learning: pathways**</a> (Pathway definition, PathwayItem, PathwayCertificate, etc. The unversioned CatalogPathway lives in openedx_catalog.)"]
     Pathways -- References --> Catalog
+    Pathways -- References --> Content
 
     style Pathways fill:#c0ffee,stroke-dasharray: 5 5
 
