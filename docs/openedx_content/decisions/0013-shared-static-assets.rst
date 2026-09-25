@@ -6,7 +6,7 @@
 Status
 ------
 
-Draft. Depends on :ref:`openedx-content-adr-0012` and :ref:`openedx-content-adr-0005`. How content references File components is decided in ADR 0014.
+Draft. Depends on :ref:`openedx-content-adr-0012` and :ref:`openedx-content-adr-0005`. How content references File components is decided in :ref:`openedx-content-adr-0014`.
 
 Context
 -------
@@ -76,14 +76,14 @@ All File components (in fact, all PublishableEntities) have a mutable ``title`` 
 
 File components are not children of the course container or any of its descendants. Putting them there would mean every asset upload creates a new version of an outline container.
 
-9. "locked" flag is a separate, unversioned model
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+9. "locked" flag is a separate, unversioned metadata model
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``locked`` flag is the only piece of metadata used in the existing Course Files feature that cannot be directly modelled within the existing :class:`Component` / :class:`Media` models. To provide this functionality, we will consider all File components to be "unlocked" by default, unless a row in the new ``LockedFileComponent`` table exists, which is a trivial model that has only one field, a ``OneToOneField(primary_key=True)`` referencing :class:`Component`.
+The ``locked`` flag is the only piece of metadata used in the existing Course Files feature that cannot be directly modelled within the existing :class:`Component` / :class:`Media` models. To provide this functionality, we will consider all File components to be "unlocked" by default, unless a corresponding row in the new ``FileComponentMetadata`` table exists and has its ``locked`` column set to "true". The ``FileComponentMetadata`` table will have a ``OneToOneField(primary_key=True)`` referencing :class:`Component`.
 
 Locking is not part of versioning, because often authors will wish to lock down all versions of an asset, not just lock the current version while still allowing access to previous versions.
 
-TODO: it is unclear how we can ensure that a model like ``LockedFileComponent`` will be correctly copied whenever the associated ``Component`` gets copied, such as during re-runs and import/export.
+TODO: it is unclear how we can ensure that a model like ``FileComponentMetadata`` will be correctly copied whenever the associated ``Component`` gets copied, such as during re-runs and import/export. For both "locked" and "private" (see next decision), this represents a potential security lapse, if the copied asset drops its restrictions.
 
 Open question: do we care about setting ``locked`` in a library context? Not directly, since learners cannot usually access libraries, but authors may wish to specify that e.g. a certain PDF should always be locked in any course where it is used.
 
@@ -98,7 +98,7 @@ Thus, we need to have support for some File components or some assets within the
 
 For asset files attached to regular XBlock components, this is achieved by file name conventions: any files in the ``static/`` "folder" of assets attached to a component are accessible by learners (if they know the URL), whereas files not under the ``static/`` prefix (such as the OLX file for the Component itself) are restricted to course staff only. (Note: the UI only allows authors to download/upload files in the ``static/`` prefix anyways, so only the backend is really aware of any non-public files.)
 
-For File components (shared among multiple components in a course), the ``static/`` prefix convention is likely to be too noisy or confusing. Instead, we will implement a ``private`` flag that means "restricted to staff only". Like ``locked``, it will be unversioned. The initial implementation may be read-only and based on the hard-coded filename matching ``python_lib.zip`` but in the future this could be upgraded to a ``FileComponentMetadata`` table that stores both ``locked`` and ``private`` fields for File components.
+For File components (shared among multiple components in a course), the ``static/`` prefix convention is likely to be too noisy or confusing. Instead, we will implement a ``private`` flag that means "restricted to staff only". Like ``locked``, it will be unversioned and stored as a boolean column on the ``FileComponentMetadata`` table. If ``FileComponentMetadata`` doesn't exist for a particular asset, it is treated as public.
 
 11. Image metadata will be in separate models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -120,7 +120,7 @@ Consequences
 
 However, a library XBlock Component that in turn uses a library File component still has to bring that File component into the course.
 
-**Many more rows per course.** Each course file goes from one Mongo document to about eight rows: ``PublishableEntity``, ``Component``, a version, ``Draft``, ``Published``, ``Media``, ``ComponentVersionMedia``, and a publish log entry. For a course with 200 assets that's about 1,600 rows. Per :ref:`openedx-content-adr-0012`, most of those rows would need to be copied each time the course is rerun.
+**Many more rows per course.** Each course file goes from one Mongo document to about eight rows: ``PublishableEntity``, ``Component``, a version, ``Draft``, ``Published``, ``Media``, ``ComponentVersionMedia``, and a publish log entry. For a course with 2,000 assets that's about 16,000 rows. Per :ref:`openedx-content-adr-0012`, most of those rows would need to be copied each time the course is rerun.
 
 **Code that assumes every component is an XBlock needs auditing.** We'll have to review library search indexing, "list all components" APIs, collections API/UI, etc, and either handle the new File component type or filter out non-XBlocks as needed. This is a good thing to do in any case, as we always wanted to keep "Component" flexible to support non-XBlock use cases in the future.
 
@@ -139,14 +139,16 @@ This is rejected because replacing MongoDB is one of our major goals.
 One File component per course run
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Treating the whole course's files as a single component is the simplest model, and is simpler to migrate to from contentstore's flat namespace. Rejected because :class:`ComponentVersionMedia` is a snapshot, so a single course-wide File component would rewrite one row per asset on every upload. For a course with 5,000 assets, that would require updating 5,000 rows per upload, which is incredibly inefficient. Further, this big volume of data cannot be pruned while any draft or published version still references it.
+Treating the whole course's files as a single component is the simplest model, and is simpler to migrate to from contentstore's flat namespace. Rejected because :class:`ComponentVersionMedia` is a snapshot, so a single course-wide File component would rewrite one row per asset on every upload. For a course with 2,000 assets, that would require updating 2,000 rows per upload, which is incredibly inefficient. Further, this big volume of data cannot be pruned while any draft or published version still references it.
 
 A flat, unversioned CourseAsset table mapping a path to Media per learning package
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 This is the closest to a 1:1 port of contentstore, and would be both cheap in rows and trivial to migrate.
 
-It's rejected because it doesn't provide the foundation we want that would allow us to improve the end-user experience. Specifically, it doesn't provide better tools for organizing files (like version history, draft-publish, Collections, and per-Component assets).
+It's rejected because it doesn't provide the foundation we want that would allow us to improve the end-user experience. Specifically, it doesn't provide better tools for organizing files (like version history, draft-publish, Collections, and per-Component assets). It also introduces new, alternative primitives rather than building with the ones we have (e.g. ``Component``).
+
+However, if we find the architecture or implementation getting unreasonably complicated, it may make sense to revisit this option.
 
 Pushing every legacy file into the components that reference it during migration, with no shared File components
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -156,7 +158,7 @@ This is rejected because removing course-wide/shared Files would be a major prod
 Strictly one file per File component
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This is an appealing alternative, especially when you consider that the number of use cases that require multiple files per File component is likely very, very small. Videos require multiple files but are rarely if ever stored in Course Files (instead hosted on video-specific services like YouTube or edX.org's video platform). This is rejected primarily to support the use case of HTML "interactive" files that in turn reference image, JavaScript, and/or CSS files.
+This is an appealing alternative, especially when you consider that the number of use cases that require multiple files per File component is likely very small. Videos require multiple files but are rarely if ever stored in Course Files (instead hosted on video-specific services like YouTube or edX.org's video platform). This is rejected primarily to support the use case of HTML "interactive" files that in turn reference image, JavaScript, and/or CSS files. Examples of this can be seen in the `Studio Advanced course <https://github.com/HarvardX/studio-advanced/tree/5cf820c29e3439c9f45cb88e5cf22fd4ab269739/course/static>`_.
 
 TODO: can we quantify how much this feature would be used?
 
@@ -176,6 +178,6 @@ Other names for File components
 "locked" flag alternatives
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Instead of a separate ``LockedFileComponent`` table/model, locking a File component could be implemented by adding a ``locked`` field to ``Component``; we rejected this in order to keep ``Component`` as simple and efficient as possible, and because most Components are XBlocks, not File components, and not subject to locking. Locking could also be implemented as a single per-course list of locked file codes/IDs maintained and enforced elsewhere in the system; that is a perfectly reasonable alternative, still open for consideration, especially if we don't need ``locked`` in a library context.
+Instead of a separate ``FileComponentMetadata`` table/model, locking a File component could be implemented by adding a ``locked`` field to ``Component``; we rejected this in order to keep ``Component`` as simple and efficient as possible, and because most Components are XBlocks, not File components, and not subject to locking. Locking could also be implemented as a single per-course list of locked file codes/IDs maintained and enforced elsewhere in the system; that is a perfectly reasonable alternative, still open for consideration, especially if we don't need ``locked`` in a library context.
 
 "Make all assets locked" and "don't implement locking at all" are rejected for lack of backwards compatibility and lack of the strong buy-in required for removing a feature.
