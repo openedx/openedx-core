@@ -200,7 +200,7 @@ class Media(models.Model):
     When we use :class:`Media` across :class:`LearningPackage` objects, we need
     to copy them. That way, even if the originating :class:`LearningPackage` is
     deleted, it won't break other :class:`LearningPackage` objects that are
-    making use if it.
+    making use of it.
 
     Media Types, and file duplication
     ---------------------------------
