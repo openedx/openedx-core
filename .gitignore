@@ -58,10 +58,6 @@ docs/modules.rst
 docs/openedx_content.rst
 docs/openedx_content.*.rst
 
-# Private requirements
-requirements/private.in
-requirements/private.txt
-
 # database file
 dev.db*
 
