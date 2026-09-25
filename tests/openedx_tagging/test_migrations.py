@@ -41,6 +41,11 @@ def test_backfill_generates_missing_external_ids(migrator) -> None:
     colliding_tag = Tag.objects.create(
         taxonomy=taxonomy, value="Colliding Value", external_id=None, depth=0, lineage="Colliding Value\t",
     )
+    # An empty string is also "no external_id": the field has always been blank=True,
+    # and downstream data outside this repo's own code paths could hold "" instead of NULL.
+    empty_string_tag = Tag.objects.create(
+        taxonomy=taxonomy, value="Empty String Tag", external_id="", depth=0, lineage="Empty String Tag\t",
+    )
 
     new_state = migrator.apply_tested_migration(MIGRATE_TO)
     NewTag = new_state.apps.get_model("oel_tagging", "Tag")
@@ -49,8 +54,10 @@ def test_backfill_generates_missing_external_ids(migrator) -> None:
     new_long_tag = NewTag.objects.get(pk=long_tag.pk)
     new_institution_tag = NewTag.objects.get(pk=institution_tag.pk)
     new_colliding_tag = NewTag.objects.get(pk=colliding_tag.pk)
+    new_empty_string_tag = NewTag.objects.get(pk=empty_string_tag.pk)
 
     assert new_plain_tag.external_id == "Plain Tag"
+    assert new_empty_string_tag.external_id == "Empty String Tag"
 
     # Truncated, non-empty, and unique in its taxonomy:
     assert new_long_tag.external_id
@@ -66,6 +73,7 @@ def test_backfill_generates_missing_external_ids(migrator) -> None:
         NewTag.objects.filter(taxonomy_id=taxonomy.pk).values_list("external_id", flat=True)
     )
     assert None not in all_external_ids
+    assert "" not in all_external_ids
     assert len(all_external_ids) == len({eid.casefold() for eid in all_external_ids})
 
 

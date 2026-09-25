@@ -268,6 +268,45 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         tag.refresh_from_db()
         assert tag.value == "Existing Tag"
 
+    def test_reimport_pre_upgrade_export_file_fails_safely_on_id_collision(self) -> None:
+        """
+        Same stale-database-id scenario as above, but the id also happens to equal a
+        different tag's real, current external_id, so the row resolves to that other
+        tag instead of failing to match anyone. The import still fails safely: that
+        tag's value differs from the row's (Tag.value is unique per taxonomy, and the
+        original tag still holds it), so a rename action also applies to it and its
+        duplicate-value check rejects the whole plan.
+        """
+        tag = self.taxonomy.add_tag("Existing Tag")
+        stale_pk = str(tag.pk)
+        assert stale_pk != tag.external_id  # sanity check the simulation is realistic
+
+        # A different, unrelated tag whose real external_id happens to equal that stale id.
+        other_tag = self.taxonomy.add_tag("Unrelated Tag", external_id=stale_pk)
+        tag_count_before = self.taxonomy.tag_set.count()
+
+        import_file = BytesIO(json.dumps({"tags": [{"id": stale_pk, "value": tag.value}]}).encode())
+
+        result, _task, plan = import_export_api.import_tags(
+            self.taxonomy,
+            import_file,
+            self.parser_format,
+            replace=False,
+            plan_only=True,
+        )
+        assert not result
+        assert plan is not None
+        assert plan.errors
+        assert any("Duplicated tag value" in str(error) for error in plan.errors)
+        assert self.taxonomy.tag_set.count() == tag_count_before
+        # Confirm the unrelated tag was not renamed or re-parented:
+        other_tag.refresh_from_db()
+        assert other_tag.value == "Unrelated Tag"
+        assert other_tag.parent is None
+        # And the original tag is also untouched:
+        tag.refresh_from_db()
+        assert tag.value == "Existing Tag"
+
     def test_import_removing_with_childs(self) -> None:
         """
         Test import need to remove childs with parents that will also be removed

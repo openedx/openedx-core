@@ -1274,13 +1274,13 @@ class TestTagExternalIdGeneration(TestTagTaxonomyMixin, TestCase):
         generate the same attempt-1 candidate; Tag.save()'s own collision branch (not
         the migration's separate copy of the same logic) must resolve that here.
         """
-        value_one = "X" * 300
-        value_two = ("X" * 255) + ("Y" * 50)
+        value_one = "X" * (TAG_EXTERNAL_ID_MAX_LENGTH + 45)
+        value_two = ("X" * TAG_EXTERNAL_ID_MAX_LENGTH) + ("Y" * 50)
 
         first = Tag.objects.create(taxonomy=self.taxonomy, value=value_one)
         second = Tag.objects.create(taxonomy=self.taxonomy, value=value_two)
 
-        assert first.external_id == "X" * 255
+        assert first.external_id == "X" * TAG_EXTERNAL_ID_MAX_LENGTH
         assert second.external_id != first.external_id
         assert second.external_id
         assert second.external_id == tag_external_id_candidate(value_two, 2)

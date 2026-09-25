@@ -17,6 +17,7 @@ regardless of any future changes to that app code (matching the precedent in
 from __future__ import annotations
 
 from django.db import migrations
+from django.db.models import Q
 
 import openedx_django_lib.fields
 
@@ -24,6 +25,10 @@ import openedx_django_lib.fields
 # openedx_tagging.models.utils, as of when this migration was written. See the
 # module docstring for why this isn't just imported.
 _TAG_EXTERNAL_ID_MAX_LENGTH = 255
+
+# Caps both the SQL batch size of each bulk_update() and how many Tag instances
+# are held in memory at once before being flushed.
+_BATCH_SIZE = 500
 
 
 def _tag_external_id_candidate(value: str, attempt: int = 1) -> str:
@@ -36,19 +41,25 @@ def _tag_external_id_candidate(value: str, attempt: int = 1) -> str:
 def backfill(apps, _schema_editor):
     """
     Generate and persist an external_id for every tag that doesn't have one.
+
+    "Doesn't have one" covers both NULL and an empty string: the field has always
+    been blank=True, and this migration runs unmodified against arbitrary
+    downstream data, so a row written by code outside this repo could plausibly
+    hold "" rather than NULL for "no external_id".
     """
     Tag = apps.get_model("oel_tagging", "Tag")
 
-    taxonomy_ids = Tag.objects.filter(external_id__isnull=True).values_list("taxonomy_id", flat=True).distinct()
+    is_missing = Q(external_id__isnull=True) | Q(external_id="")
+    has_value = ~is_missing
+
+    taxonomy_ids = Tag.objects.filter(is_missing).values_list("taxonomy_id", flat=True).distinct()
     for taxonomy_id in taxonomy_ids:
         existing = {
             eid.casefold() for eid in
-            Tag.objects.filter(taxonomy_id=taxonomy_id, external_id__isnull=False).values_list(
-                "external_id", flat=True
-            )
+            Tag.objects.filter(has_value, taxonomy_id=taxonomy_id).values_list("external_id", flat=True)
         }
         batch = []
-        for tag in Tag.objects.filter(taxonomy_id=taxonomy_id, external_id__isnull=True).order_by("id").iterator():
+        for tag in Tag.objects.filter(is_missing, taxonomy_id=taxonomy_id).order_by("id").iterator():
             attempt = 1
             candidate = _tag_external_id_candidate(tag.value, attempt)
             while candidate.casefold() in existing:
@@ -57,7 +68,13 @@ def backfill(apps, _schema_editor):
             existing.add(candidate.casefold())
             tag.external_id = candidate
             batch.append(tag)
-        Tag.objects.bulk_update(batch, ["external_id"], batch_size=500)
+
+            if len(batch) >= _BATCH_SIZE:
+                Tag.objects.bulk_update(batch, ["external_id"], batch_size=_BATCH_SIZE)
+                batch.clear()
+
+        if batch:
+            Tag.objects.bulk_update(batch, ["external_id"], batch_size=_BATCH_SIZE)
 
 
 def reverse_backfill(_apps, _schema_editor):
