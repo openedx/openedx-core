@@ -68,6 +68,30 @@ no existing caller has to change what it sends. The response side narrows from
 "nullable string" to "always a string," which is the safe direction for consumers:
 code written to expect a possible ``null`` simply never takes that branch anymore.
 
+Known limitations
+~~~~~~~~~~~~~~~~~
+
+Importing a file exported before ``0022_tag_external_id_not_null.py`` ran, for a tag that
+had no ``external_id`` at export time, references that tag by its database id instead of a
+real ``external_id`` (that export's own stand-in for one). Re-importing such a file
+unchanged is safe even if that stand-in id happens to equal a different tag's real,
+current ``external_id``: the row's ``value`` still belongs to the original tag, which
+this kind of re-import leaves untouched, so ``Tag.value``'s own per-taxonomy uniqueness
+guarantees the wrongly-matched tag's value differs from it. That mismatch makes a rename
+action apply to the wrongly-matched tag too, and its value-duplicate check rejects the
+whole import before anything executes.
+
+That protection depends on the row's ``value`` still matching an existing tag. If the
+re-imported file also assigns that row a value nothing else in the taxonomy currently
+has, meaning it isn't simply "re-import unchanged" but also intends a genuine rename,
+and the row's id still happens to collide with a different, unrelated tag's real
+``external_id``, that combination isn't guarded against: the rename applies to the
+wrongly-matched tag instead of the one the file's own history means it should apply to.
+Closing this would require changes to the import matching logic itself, weighed against a
+real risk of rejecting legitimate imports that use a plain numeric ``external_id`` (a
+common style for CBE competency identifiers) that happens to equal an unrelated tag's
+database id. That tradeoff is not addressed by this decision.
+
 Future considerations
 ~~~~~~~~~~~~~~~~~~~~~~
 
@@ -114,3 +138,12 @@ Changelog
   the backfill algorithm: it isn't injective, so it can map two distinct tag values
   onto the same ``external_id``, undermining the collision-free argument this decision
   relies on.
+
+2026-09-25:
+
+* Added "Known limitations", documenting why re-importing a
+  pre-``0022_tag_external_id_not_null.py`` export unchanged stays safe even if its
+  database-id stand-in collides with another tag's real ``external_id`` (an existing
+  value-duplicate check on a co-triggered rename action catches it), and the narrower
+  residual risk when such a file is also given a genuinely new value on top of that
+  collision.

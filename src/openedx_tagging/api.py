@@ -446,7 +446,9 @@ def add_tag_to_taxonomy(
     """
     Adds a new Tag to provided Taxonomy. If a Tag already exists in the
     Taxonomy, an exception is raised, otherwise the newly created
-    Tag is returned
+    Tag is returned.
+
+    If `external_id` is omitted, one is generated from the tag's name.
     """
     new_tag = taxonomy.add_tag(tag, parent_tag_value, external_id)
 
