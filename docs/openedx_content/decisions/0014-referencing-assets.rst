@@ -219,3 +219,4 @@ TODOs and open questions
 - Referencing a ``private`` File component from learner-facing content should warn.
 - Specify whether syncing a library component also syncs the File components it links to, and what happens if the course edited its copy locally.
 - Export: Files attached to a component (``oex-asset:/path``) also need a rule for export to older platforms. The ``locked`` and ``title`` need to go into ``policies/assets.json``. Private static files will have to be in a separate folder outside of ``static/`` and won't be backwards compatible.
+- Figure out if we can also re-use ``FileComponentLink`` to track references to external Digital Asset Management Systems.
