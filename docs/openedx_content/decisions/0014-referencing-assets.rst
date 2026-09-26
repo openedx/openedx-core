@@ -19,7 +19,7 @@ Today, course content references assets in one of two ways:
   These resolve against a single course-wide namespace of files, and must be rewritten before they can be served. They technically share a namespace with Studio's built-in assets (e.g. ``/static/studio/css/studio-main-v1.css``). However, since user-authored content generally does not reference Studio's built-in JS/CSS files, any usage of ``/static/...`` in XBlock OLX is assumed to be referring to course Files, and will be rewritten to the form shown below before being served to the user.
 
 **Asset key URLs**, e.g. ``https://courses.example.com/asset-v1:HarvardX+StudioAdv1+2T2019+type@asset+block@Time_medium_icon.png`` or sometimes just ``/asset-v1:HarvardX+StudioAdv1+2T2019+type@asset+block@Time_medium_icon.png``
-  These are unambiguous, but they encode the course run key and sometimes the hostname, so they break when content is copied to a new run (every rerun), to another course, or to another instance. Technically, the ``asset-v1:...`` opaque key part could be used as an identifier on its own, but this rarely occurs in practice.
+  These are unambiguous, but they encode the course run key and sometimes the hostname, so they can break when content is copied to a new run (every rerun), to another course, or to another instance, and the original version is deleted or modified. Technically, the ``asset-v1:...`` opaque key part could be used as an identifier on its own, but this rarely occurs in practice.
 
 For backwards compatibility, both of these formats must continue to be supported indefinitely.
 
