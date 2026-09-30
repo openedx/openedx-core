@@ -80,11 +80,11 @@ Creating a rerun copies the source run's entities into a new learning package. T
 
     content/{learning_package.media_file_namespace}/{hash_digest}
 
-``media_file_namespace`` defaults to the **org ID** of the org that owns the content in the learning package, if it was known at the time the learning package was created. Existing rows are backfilled with the UUID of the learning package, so every existing :class:`Media` row computes an identical storage path after the migration. **No blobs move and no downtime is required.** The ``content/`` prefix is retained for the same backwards-compatibility reason.
+``media_file_namespace`` defaults to the **org code** of the org that owns the content in the learning package (e.g. `MITx`), if it was known at the time the learning package was created. Existing rows are backfilled with the UUID of the learning package, so every existing :class:`Media` row computes an identical storage path after the migration. **No blobs move and no downtime is required.** The ``content/`` prefix is retained for the same backwards-compatibility reason.
 
 When a learning package is created for a rerun, it copies the ``media_file_namespace`` of the previous run's learning package rather than generating a new one. All runs of a catalog course therefore share one namespace, and identical asset files are stored once across all of them. :meth:`Media.write_file` already returns without writing when a file of matching size exists at the target path, so deduplication happens automatically on write with no change to the media API.
 
-In fact, as we are using the org ID as the default ``media_file_namespace`` moving forward, file storage will be de-duplicated on a per-org basis, not just a catalog course basis.
+In fact, as we are using the org code as the default ``media_file_namespace`` moving forward, file storage will be de-duplicated on a per-org basis, not just a catalog course basis.
 
 :class:`Media` *rows* remain scoped to a learning package: the ``(learning_package, media_type, hash_digest)`` constraint is unchanged, and each package has its own rows even when they resolve to a shared blob. This preserves per-package accounting, cascading cleanup on delete, and the borrowing-by-copy model. **No code may depend on two learning packages sharing a blob namespace; it is a storage optimization only.**
 
@@ -120,6 +120,8 @@ Consequences
 **Blob deletion requires reference counting within the namespace.** Deleting a learning package can no longer imply deleting everything under its storage prefix. Before deleting a blob, a future cleanup process must confirm that no other learning package sharing that ``media_file_namespace`` holds a :class:`Media` row with the same ``hash_digest``. (No blob cleanup has been implemented yet, so this does not affect any existing workflow.)
 
 **Blast radius for blob storage bugs is bounded to the organization**: a corrupted or wrongly written object can affect other courses/content within the same organization, but never other organizations.
+
+**The Library Restore workflow may need changes.** With the current "restore library" from backup UI flow, we stage the content (including media) before the user chooses a target ``org`` and ``library_code``. That means that we cannot set the ``media_file_namespace`` of the new ``LearningPackage`` correctly. We'll need to either: (a) ask for the org before staging the content (would be a UX change); (b) stage media file under a temporary path, and then rename and de-dupe the staged media files after the user picks an org; or (c) just continue to use the old-style ``content/{package_uuid}`` media namespace for restored libraries, at the cost of no org-wide deduplication.
 
 Rejected Alternatives
 ---------------------
