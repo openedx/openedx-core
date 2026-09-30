@@ -137,6 +137,11 @@ When exporting to a course tarball, we want the result to be importable on older
 - On export, shared File components that don't have a ``legacy_path`` or that use ``oex-asset:`` references will be included in the tarball at e.g. ``static/-oex-asset-[code]/x.png`` and references in the OLX will be rewritten to ``/static/-oex-asset-[code]/x.png``
 - On import, that will be reversed, and File components will be created and OLX will be rewritten to use the ``oex-asset:`` format.
 
+8. Support for multiple python libraries per course
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The Problem component (also known as "capa") has support for writing advanced problems that use Python to compute parts of the problem or grade user answers. In particular, it allows authors to provide a library of python functions that will be available for use in any python code used to define a given problem. Currently, this is limited to one library file per course, which must be called ``python_lib.zip``. Once courseware is moved into ``openedx_content``, we should extend the Problem component so that the Python library is a field that can point to any shared asset (e.g. ``oex-asset:physics-100-python/lib.zip``), falling back to whichever legacy asset has the filename ``python_lib.zip``. This will provide authors with more flexibility and simplify the process of linking advanced python-based Problems from a library into a course, without breaking backwards compatibility.
+
 Consequences
 ------------
 
