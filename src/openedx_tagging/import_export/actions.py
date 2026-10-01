@@ -72,12 +72,7 @@ class ImportAction:
         """
         Returns the respective tag of this actions
         """
-        if self.tag.id:
-            try:
-                return self.taxonomy.tag_set.get(external_id=self.tag.id)
-            except Tag.DoesNotExist:
-                pass
-        return self.taxonomy.tag_set.get(value=self.tag.value, external_id=None)
+        return self.taxonomy.tag_set.get(external_id=self.tag.id)
 
     def _search_action(
         self,

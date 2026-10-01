@@ -102,6 +102,7 @@ test-base = [
     "ddt",
     "django-debug-toolbar",
     "django-stubs",
+    "django-test-migrations",
     "djangorestframework-stubs",
     "freezegun",
     "import-linter",

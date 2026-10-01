@@ -11,3 +11,21 @@ RESERVED_TAG_CHARS = [
            # e.g. languages-v1: en;es;fr
 ]
 TAGS_CSV_SEPARATOR = RESERVED_TAG_CHARS[2]
+
+TAG_EXTERNAL_ID_MAX_LENGTH = 255
+
+
+def tag_external_id_candidate(value: str, attempt: int = 1) -> str:
+    """
+    Generate a candidate ``external_id`` for a tag from its ``value``.
+
+    ``attempt`` 1 returns ``value`` alone, capped at ``TAG_EXTERNAL_ID_MAX_LENGTH``.
+    Each later attempt appends a ``-{attempt}`` suffix (``-2``, ``-3``, ...) and
+    truncates ``value`` further so the suffixed result still fits within that cap.
+    Callers use successive attempts to find an ``external_id`` that doesn't collide
+    with one already used in the same taxonomy.
+    """
+    if attempt == 1:
+        return value.strip()[:TAG_EXTERNAL_ID_MAX_LENGTH].strip()
+    suffix = f"-{attempt}"
+    return value.strip()[: TAG_EXTERNAL_ID_MAX_LENGTH - len(suffix)].strip() + suffix

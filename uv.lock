@@ -712,6 +712,15 @@ wheels = [
 ]
 
 [[package]]
+name = "django-test-migrations"
+version = "1.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/26/6518a878dcdf5de8c20eee254a8dc942d8e907edbc5e131c1c3057837705/django_test_migrations-1.7.0.tar.gz", hash = "sha256:9b199fa3817b28846455d8a13434eed44d15cd1bd89a5144902f8e5212bc1199", size = 20635, upload-time = "2026-09-23T09:32:41.042Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8c/3f/32851cdb5850136349ba5d7f5e2536e9f3460452b20508460f91218b4b6d/django_test_migrations-1.7.0-py3-none-any.whl", hash = "sha256:409d5437f7a2a9a47c4c9384902c8fa6d072c142f73b1d75a6df310831f9edea", size = 25542, upload-time = "2026-09-23T09:32:42.105Z" },
+]
+
+[[package]]
 name = "django-waffle"
 version = "5.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1587,6 +1596,7 @@ dev = [
     { name = "django" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "doc8" },
     { name = "edx-i18n-tools" },
@@ -1617,6 +1627,7 @@ doc = [
     { name = "django" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "doc8" },
     { name = "freezegun" },
@@ -1640,6 +1651,7 @@ quality = [
     { name = "django" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "edx-lint" },
     { name = "freezegun" },
@@ -1662,6 +1674,7 @@ test = [
     { name = "django" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "freezegun" },
     { name = "import-linter" },
@@ -1678,6 +1691,7 @@ test-base = [
     { name = "ddt" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "freezegun" },
     { name = "import-linter" },
@@ -1716,6 +1730,7 @@ dev = [
     { name = "django", specifier = ">=5.2,<6.0" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "doc8" },
     { name = "edx-i18n-tools" },
@@ -1746,6 +1761,7 @@ doc = [
     { name = "django", specifier = ">=5.2,<6.0" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "doc8" },
     { name = "freezegun" },
@@ -1769,6 +1785,7 @@ quality = [
     { name = "django", specifier = ">=5.2,<6.0" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "edx-lint" },
     { name = "freezegun" },
@@ -1791,6 +1808,7 @@ test = [
     { name = "django", specifier = ">=5.2,<6.0" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "freezegun" },
     { name = "import-linter" },
@@ -1807,6 +1825,7 @@ test-base = [
     { name = "ddt" },
     { name = "django-debug-toolbar" },
     { name = "django-stubs" },
+    { name = "django-test-migrations" },
     { name = "djangorestframework-stubs" },
     { name = "freezegun" },
     { name = "import-linter" },

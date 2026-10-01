@@ -96,13 +96,9 @@ class TagImportPlan:
         """
         Get the id used on the Tag model.
 
-        By default, the external_id is used for import and export,
-        but there are cases where taxonomies are created without external_id.
-        In those cases the tag id is used
+        The external_id is used for import and export.
         """
-        if tag.external_id:
-            return tag.external_id
-        return str(tag.id)
+        return tag.external_id
 
     def _build_delete_actions(self, tags: dict):
         """
