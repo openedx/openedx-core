@@ -238,6 +238,53 @@ class TestJSONParser(TestImportExportMixin, TestCase):
             if output_tag.get("parent_id"):
                 assert output_tag.get("parent_id") == tag.parent_id
 
+    @ddt.data(
+        (
+            {"tags": [
+                {"id": "tag_2", "value": "Tag 2", "previous_id": "tag_1"},
+            ]},
+            "tag_1",
+        ),
+        (
+            {"tags": [
+                {"id": "tag_2", "value": "Tag 2"},
+            ]},
+            None,
+        ),
+        (
+            {"tags": [
+                {"id": "tag_2", "value": "Tag 2", "previous_id": ""},
+            ]},
+            None,
+        ),
+        (
+            {"tags": [
+                {"id": "tag_2", "value": "Tag 2", "previous_id": None},
+            ]},
+            None,
+        ),
+        (
+            {"tags": [
+                {"id": "tag_2", "value": "Tag 2", "previous_id": 123},
+            ]},
+            "123",
+        ),
+    )
+    @ddt.unpack
+    def test_parse_previous_id(self, json_data: dict, expected_previous_id: str | None) -> None:
+        json_file = BytesIO(json.dumps(json_data).encode())
+        tags, errors = JSONParser.parse_import(json_file)
+        self.assertEqual(len(errors), 0)
+        self.assertEqual(len(tags), 1)
+        self.assertEqual(tags[0].previous_id, expected_previous_id)
+
+    def test_export_does_not_include_previous_id(self) -> None:
+        result = JSONParser.export(self.taxonomy)
+        tags = json.loads(result).get("tags")
+        assert len(tags) > 0
+        for tag in tags:
+            assert "previous_id" not in tag
+
 
 @ddt.ddt
 class TestCSVParser(TestImportExportMixin, TestCase):
@@ -363,3 +410,21 @@ class TestCSVParser(TestImportExportMixin, TestCase):
             assert tag.value == taxonomy_tag.value
             if tag.parent_id:
                 assert tag.parent_id == taxonomy_tag.parent.external_id
+
+    @ddt.data(
+        ("id,value,previous_id\ntag_2,Tag 2,tag_1\n", "tag_1"),
+        ("id,value,previous_id\ntag_2,Tag 2,\n", None),
+        ("id,value\ntag_2,Tag 2\n", None),
+    )
+    @ddt.unpack
+    def test_parse_previous_id(self, csv_data: str, expected_previous_id: str | None) -> None:
+        csv_file = BytesIO(csv_data.encode())
+        tags, errors = CSVParser.parse_import(csv_file)
+        self.assertEqual(len(errors), 0)
+        self.assertEqual(len(tags), 1)
+        self.assertEqual(tags[0].previous_id, expected_previous_id)
+
+    def test_export_does_not_include_previous_id(self) -> None:
+        output = CSVParser.export(self.taxonomy)
+        header = output.splitlines()[0]
+        assert "previous_id" not in header.split(",")
