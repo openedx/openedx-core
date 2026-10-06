@@ -32,4 +32,9 @@ urlpatterns = [
         views.CompetencyCriteriaGroupDetailView.as_view(),
         name="criteria-group-detail",
     ),
+    path(
+        "competencies/<int:tag_id>/criteria/<int:criterion_id>/",
+        views.CompetencyCriterionDeleteView.as_view(),
+        name="criterion-delete",
+    ),
 ]
