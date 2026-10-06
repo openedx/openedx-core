@@ -16,61 +16,44 @@ Context
 Today, course content references assets in one of two ways:
 
 **Portable URLs**, e.g. ``/static/Time_medium_icon.png``.
-  These resolve against a single course-wide namespace of files, and must be rewritten before they can be served. They technically share a namespace with Studio's built-in assets (e.g. ``/static/studio/css/studio-main-v1.css``). However, since user-authored content generally does not reference Studio's built-in JS/CSS files, any usage of ``/static/...`` in XBlock OLX is assumed to be referring to course Files, and will be rewritten to the form shown below before being served to the user.
+  These resolve against a single course-wide namespace of files, and must be rewritten before they can be served. They technically share a namespace with Studio's built-in assets (e.g. ``/static/studio/css/studio-main-v1.css``). However, since user-authored content generally does not reference Studio's built-in JS/CSS files, any usage of ``"/static/..."`` or ``'/static/...'`` in XBlock OLX is assumed to be referring to course Files, and will be rewritten to the form shown below before being served to the user.
 
 **Asset key URLs**, e.g. ``https://courses.example.com/asset-v1:HarvardX+StudioAdv1+2T2019+type@asset+block@Time_medium_icon.png`` or sometimes just ``/asset-v1:HarvardX+StudioAdv1+2T2019+type@asset+block@Time_medium_icon.png``
   These are unambiguous, but they encode the course run key and sometimes the hostname, so they can break when content is copied to a new run (every rerun), to another course, or to another instance, and the original version is deleted or modified. Technically, the ``asset-v1:...`` opaque key part could be used as an identifier on its own, but this rarely occurs in practice.
 
 For backwards compatibility, both of these formats must continue to be supported indefinitely.
 
-However, neither format is a good fit for the new model:
-
-- :ref:`openedx-content-adr-0013` gives each shared asset its own Asset Component, rather than a single course-wide namespace. A reference by bare filename has to search every Asset Component in the course, and the data model doesn't prevent several different Asset Components from having file assets with the same file name (``path``), so conflicts and ambiguity can occur.
-- As with the contentstore/MongoDB backend, the system has no reliable way to report which assets are in use, or by which components. Asset usage reporting is a long-standing pain point in Studio, and clipboard copy/paste and library sync both have to work out which files a piece of content needs.
-- Library components that use shared assets need to reference them the same way before and after being copied into a course.
+However, we would ideally want a format which is both portable and unambiguous. The ``/static/`` format is portable but suffers from the challenge that ``/static/`` can occur in many unrelated contexts, so the system has to limit auto-detection to *quoted* URLs like ``"/static/blah"``; but this also means that any reference that is not quoted as expected (e.g. something on its own line in the text or something like ``&quot;/static/...&quot;``) will not be detected.
 
 Decisions
 ---------
 
-1. Asset Components can have a "legacy path" which provides full backwards compatibility
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1. Asset Components references prefer component assets over shared Asset Components
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A ``legacy_path`` column will be present in the ``AssetComponentMetadata`` table mentioned in :ref:`openedx-content-adr-0013`. When course Files are migrated to ``openedx_content``, the ``legacy_path`` will be set to the filename from the course's global namespace, e.g. ``example.png``. Any asset with a ``legacy_path`` defined will have these properties:
+Imagine a course with ``solar-system.svg`` and ``earth.svg`` as shared Asset Components in the Course Files area.
 
-- It is limited to one file per Asset Component, and the filename must match the ``legacy_path`` (it cannot be renamed, which is already the case for course files).
-- All Asset Components with legacy paths can be accessed using either of the reference formats mentioned above (``/static/example.png`` or ``[https://courses.example.com]/asset-v1:org+course+run+type@asset+block@example.png``)
-- All Asset Components served using a legacy path are served from shared course-wide URL namespace (``.../legacy/example.png``) so that relative references among legacy asset files continue to work.
-
-Naturally, the ``AssetComponentMetadata`` table will enforce that ``legacy_path`` is unique per learning package.
+If that course contains an HTML Component (an ``html`` XBlock) with ``earth.svg`` attached as an asset file, then any reference that XBlock makes to ``earth.svg`` will refer to the local ``earth.svg`` attached to the Component, not to the shared ``earth.svg`` Asset Component used by the overall course. But a reference to ``solar-system.svg`` will use the shared Asset Component from Course Files, since there is no local asset file with that name attached to the HTML Component.
 
 2. Asset Components can be referenced using new ``oex-asset:`` URL
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 When editing an XBlock Component (stored in ``openedx_content``, not modulestore), whether using a visual editor or editing OLX directly, users who want to reference a static asset file (e.g. embed an image) can browse through all files attached to the current component (with the ``/static/`` prefix to indicate they're public), as well as all shared Asset Components in the course (or copied/linked into the course from a library). They can then use the new ``oex-asset:`` URL scheme to uniquely identify that asset::
 
-    oex-asset:{alias}/{path}
-
-- ``{alias}`` is generally the ``component_code`` of the Asset Component that holds the asset file in question (see next sections for details)
-- ``{path}`` is the file's path within that Asset Component. It may contain slashes, and must be percent-encoded as any URL path is.
-
-A reference with an empty alias refers to a file attached to the referencing component itself::
-
-    oex-asset:/{path}
+    oex-asset:filename.ext
 
 Examples, for an HTML component that has linked the Asset Component ``moon-orbit-illustration`` under its default alias:
 
 .. code-block:: html
 
-    <img src="oex-asset:/diagram-1.png">                                 <!-- this component's own file, static/diagram-1.png -->
-    <img src="oex-asset:moon-orbit-illustration/moon-orbit.svg">         <!-- an SVG file in a linked Asset Component -->
-    <a href="oex-asset:lecture-notes/week1/notes.pdf">Week 1 notes</a>   <!-- nested path in a linked Asset Component -->
+    <img src="oex-asset:moon-orbit.svg">
 
 This scheme:
 
 - **Is easy to detect.** ``oex-asset:…`` does not occur in content for any other reason, so a single pattern finds every reference in any field type (HTML, problem XML, JSON, CSS ``url()``, etc.) with no false positives from platform or theme ``/static/`` URLs. (The only exception is that course content *about* OLX authoring itself would need to escape ``oex-asset:`` if it occurs in text.)
 - **Is unambiguous.** A reference names exactly one link and one path. Linking a new Asset Component or adding files to one can never change what an existing reference resolves to.
 - **Contains no context.** It holds no hostname, course key, library key or version. Copying content to a rerun, another course, a library or another instance doesn't require rewriting any references, as long as the links come along (see decision 4).
-- **Can be rewritten trivially and unambiguously.** Browsers cannot load an ``oex-asset:`` URL directly; like the legacy formats, it must be rewritten before it reaches the browser. At render time, each ``oex-asset:{alias}/{path}`` is replaced with the :ref:`openedx-content-adr-0005` URL for the draft (Studio) or published (LMS) version of the linked Asset Component, or of the referencing component for an empty alias. Visual editors do the same when loading content, and reverse it when saving (see decision 5). Unlike ``/static/`` rewriting, this never needs to guess whether a URL is an asset reference.
+- **Can be rewritten trivially and unambiguously.** Browsers cannot load an ``oex-asset:`` URL directly; like the legacy formats, it must be rewritten before it reaches the browser. At render time, each ``oex-asset:{filename}`` is replaced with the :ref:`openedx-content-adr-0005` URL for the draft (Studio) or published (LMS) version of the linked Asset Component, or of the referencing component for an empty alias. Visual editors do the same when loading content, and reverse it when saving (see decision 5). Unlike ``/static/`` rewriting, this never needs to guess whether a URL is an asset reference.
 - **Is not an opaque key.** Unlike the existing ``asset-v1:...`` scheme, the ``oex-asset:`` URL format is meant as a portable, URL-shaped scoped identifier, local to a learning package. It is not an opaque key, nor is it unique across courses.
 
 3. References using ``oex-asset:`` URLs are tracked with ``AssetComponentLink``
@@ -86,19 +69,19 @@ Links are attached to a *version*, not to the Component, for the same reason :cl
 
 Each ``AssetComponentLink`` also creates a :class:`PublishableEntityVersionDependency` from the component version to the Asset Component. This means the existing side-effect machinery works unchanged: editing a draft Asset Component marks every component that uses it as having unpublished changes, and the publish log records the change against those components as well. It also answers "where is this asset used?" with a query instead of by parsing content (though this excludes "legacy path" references).
 
-4. The ``alias`` is used to avoid ID conflicts when pasting/linking content from another Learning Package
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+4. Shared assets become attached assets when linked to another Learning Package
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When an XBlock Component with references to shared Asset Component(s) is pasted/copied from one Learning Package to another, e.g. from a library to a course, or from a library to another library, all of the shared Asset Component(s) that it references need to be copied into the destination Learning Package as well.
+When an XBlock Component with references to shared Asset Component(s) is pasted/copied from one Learning Package to another, e.g. from a library to a course, or from a library to another library, the shared Asset Component(s) that it references may be converted to attached asset files.
 
-A new principle that we want to uphold is that **OLX should not change** when a Component is copied from one Learning Package to another. So if the Component in question has some HTML like ``<img src="oex-asset:shared-file5/example.png" alt="Example" />``, then we want to ensure that ``shared-file5`` can refer to the correct shared Asset Component copied from the original Learning Package, and not conflict with a potentially unrelated Asset Component in the destination Learning Package that uses the same ``shared-file5`` identifier as its ``component_code``. By avoiding any need to rewrite the OLX, we can reduce storage space, consolidate ``Media`` rows, and facilitate simpler comparison of content.
+A new principle that we want to uphold is that **OLX should not change** when a Component is copied from one Learning Package to another. So if the Component in question has some HTML like ``<img src="oex-asset:example.png" alt="Example" />``, then we want to ensure that ``example5.png`` can refer to the correct shared Asset Component copied from the original Learning Package, and not conflict with a potentially unrelated Asset Component in the destination Learning Package that uses the same ``example5.png`` filename. By avoiding any need to rewrite the OLX, we can reduce storage space, consolidate ``Media`` rows, and facilitate simpler comparison of content.
 
 When copying a Component with references to shared Asset Components to a new Learning Package, each referenced Asset Component is handled as follows:
 
-- First, if the destination Learning Package already has an Asset Component that is a downstream copy of the same upstream Asset Component (see decision 6), that existing copy is reused, even if its ``component_code`` or content differs. The copy is not updated as a side effect of pasting, since that would change every other component that uses it; if the source uses a newer upstream version, the author can sync the Asset Component as usual. Matching on upstream prevents repeated pastes or imports of the same library content from creating a new copy of the Asset Component each time.
-- Otherwise, if the destination Learning Package already has an Asset Component with identical ``component_code`` and media asset file hash(es), it is reused and no Asset Components need to be copied. Identical bytes don't prove that it's the same asset, but reusing an Asset Component with the same code and content is harmless.
-- In both of the above cases, only the main Component needs to be copied, but we still have to create ``AssetComponentLink`` and :class:`PublishableEntityVersionDependency` objects to track the relationship, using the original ``component_code`` as the ``alias`` if the reused Asset Component's code differs.
-- Otherwise, the Asset Component is copied into the destination Learning Package, and becomes a downstream of the original if the original is in a library. If the destination Learning Package already has a conflicting Asset Component, with identical ``component_code`` but different media asset file hash(es), the copy is given a different ``component_code``, and the ``AssetComponentLink`` created for it will use the ``alias`` column to alias this new code to the old code, so that no changes to the OLX are required.
+- First, if the destination Learning Package already has an Asset Component that is a downstream copy of the same upstream Asset Component (see decision 6), that existing copy is reused.
+- Otherwise, if the destination Learning Package already has an Asset Component with identical filename and file hash, it is reused and no Asset Components need to be copied.
+- In both of the above cases, only the main Component needs to be copied, but we still have to create ``AssetComponentLink`` and :class:`PublishableEntityVersionDependency` objects to track the relationship.
+- Otherwise, the Asset Component is copied to become an asset file attached to the Component in question. No changes to the OLX are required.
 
 5. Editors should de-reference full URLs on save
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -140,7 +123,7 @@ When exporting to a course tarball, we want the result to be importable on older
 8. Support for multiple python libraries per course
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The Problem component (also known as "capa") has support for writing advanced problems that use Python to compute parts of the problem or grade user answers. In particular, it allows authors to provide a library of python functions that will be available for use in any python code used to define a given problem. Currently, this is limited to one library file per course, which must be called ``python_lib.zip``. Once courseware is moved into ``openedx_content``, we should extend the Problem component so that the Python library is a field that can point to any shared asset (e.g. ``oex-asset:physics-100-python/lib.zip``), falling back to whichever legacy asset has the filename ``python_lib.zip``. This will provide authors with more flexibility and simplify the process of linking advanced python-based Problems from a library into a course, without breaking backwards compatibility.
+The Problem component (also known as "capa") has support for writing advanced problems that use Python to compute parts of the problem or grade user answers. In particular, it allows authors to provide a library of python functions that will be available for use in any python code used to define a given problem. Currently, this is limited to one library file per course, which must be called ``python_lib.zip``. Once courseware is moved into ``openedx_content``, we should extend the Problem component so that the Python library is a field that can point to any shared asset (e.g. ``oex-asset:alternative_python_lib.zip``), falling back to whichever legacy asset has the filename ``python_lib.zip``. This will provide authors with more flexibility and simplify the process of linking advanced python-based Problems from a library into a course, without breaking backwards compatibility.
 
 Consequences
 ------------
@@ -186,7 +169,7 @@ Template placeholders instead of a URL scheme
 
 Placeholders such as ``{{ asset "moon-orbit-illustration/moon-orbit.svg" }}`` are equally easy to detect, but they are not URLs. HTML parsers, WYSIWYG editors and sanitizers mangle them in ``src`` and ``href`` attributes, while a URL-shaped reference survives those tools as long as the scheme is allowed.
 
-``oex-asset://{alias}/{path}`` with an authority part (``//``)
+``oex-asset://{path}`` with an authority part (``//``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Adding ``//`` after the scheme would be a little more conventional, and would work equally well since references are rewritten before rendering either way. It is rejected because it makes every reference longer without adding anything, and because the alias is not a host: it is only meaningful relative to the referencing component's links.

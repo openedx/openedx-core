@@ -20,32 +20,38 @@ As a first step in migrating all content away from MongoDB, we need to define ho
 Decisions
 ---------
 
-1. An "Asset Component" is a new :class:`Component` type that holds one or more asset files
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1. An "Asset Component" is a new :class:`Component` type that holds a shared asset file
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In both courses and libraries, shared/reusable assets (referenced by multiple components, or uploaded directly to a library and not to a particular component) will live in the learning package as a new non-XBlock Component type. This can be achieved without any modifications to the existing models (:class:`Component`, :class:`ComponentType`, :class:`Media`, etc.).
+In both courses and libraries, shared/reusable assets (referenced by multiple components, or uploaded directly to a library and not to a particular component) will live in the learning package as instances of a new non-XBlock Component type. This can be achieved without any modifications to the existing models (:class:`Component`, :class:`ComponentType`, :class:`Media`, etc.).
 
 The type is a :class:`ComponentType` with namespace ``openedx.v1`` and name ``asset``. An *Asset Component* is any :class:`Component` of this type; there is no separate model for it.
 
-Throughout this ADR and in related code and documentation, "Asset Component" is always written in full. A plain "file" or "asset file" means an individual file, whether it belongs to an Asset Component or is attached directly to another Component, never the Asset Component itself. This matches existing ``openedx_content`` code, where e.g. ``get_redirect_response_for_component_asset()`` uses "asset" for any file attached to a :class:`ComponentVersion`.
+.. admonition:: "Asset Component" vs. "Component asset"
 
-"Asset Component" is chosen because it describes what the component is (a reusable piece of media such as an image, a PDF or an HTML interactive) without implying that it holds exactly one file. It also matches the names already used for these things elsewhere: the legacy ``asset-v1:...+type@asset+block@...`` keys of the Course Files being migrated, the "assets" APIs behind Studio's "Files" page, and the ``oex-asset:`` reference scheme in :ref:`openedx-content-adr-0014`.
+   - An **Asset Component** is a :class:`Component` whose type is ``openedx.v1:asset``. It exists to hold a single, shared asset file, and has no XBlock.
+   - A **Component asset** (or just "asset file") is an individual file attached to any Component (usually an XBlock) via :class:`ComponentVersionMedia`, such as ``static/diagram-1.png`` on an HTML component. The file inside an Asset Component is a Component asset too.
 
-2. Asset Components can group related files
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   Throughout this ADR and in related code and documentation, "Asset Component" is always written in full and never shortened to "asset". This matches existing ``openedx_content`` code, where e.g. ``get_redirect_response_for_component_asset()`` uses "asset" for any file attached to a :class:`ComponentVersion`.
 
-Asset Components are anticipated to usually contain only a single file. Grouping multiple files together into an Asset Component is supported but meant mostly for files that have a technical relationship to each other:
+"Asset Component" is chosen because "Shared Asset Component" is too long, although that would be clearer. It also matches the names already used for these things elsewhere: the legacy ``asset-v1:...+type@asset+block@...`` keys of the Course Files being migrated, the "assets" APIs behind Studio's "Files" page, and the ``oex-asset:`` reference scheme in :ref:`openedx-content-adr-0014`.
 
-* Different resolutions of a single image file;
-* Different video encodings and associated subtitle files (though videos are rarely if ever stored as Course Files);
-* An HTML file and its associated CSS/JS/PNG resources; etc.
+2. Asset Components are uniquely keyed by filename
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Grouping files together into a single Asset Component for organizational purposes only (e.g. "Images used in the course intro") is not recommended; ``Collection`` and tags are available for those purposes, as well as attaching files directly to the ``Component`` where they are referenced, rather than creating a separate Asset Component.
+Each Asset Component holds only a single file, e.g. ``solar-system.svg``, and within a given learning package (i.e. within a given course or library), each Asset Component's filename must be unique. (This is in contrast to asset files attached to XBlock Components, which allow multiple asset files per Component.)
+
+When assets (of any type) have some relationship to each other and need to be grouped together for organizational purposes, this can be achieve in one of two ways:
+
+* By attached all the related asset files to the same XBlock Component; or
+* By organizing the related Asset Components (one file per Asset Component) into a ``Collection``
 
 3. Asset Components support relative links
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Within a single Asset Component, files can use relative references to each other. For example, an HTML file can reference "./image.jpeg" which would be rendered if the HTML file was viewed in the browser and the image in question was part of the same Asset Component.
+Within a single Learning Package, Asset Components can use relative references to each other. For example, an HTML file stored as a shared Asset Component can reference "./image.jpeg" which would be rendered if the HTML file was viewed in the browser and the image in question was another Asset Component in the same Learning Package.
+
+This is largely for backwards compatibility, and the main use case (HTML interactives) is better served by attaching all the related files to a single HTML Component.
 
 4. Course Files assets are Asset Components within the run's learning package
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -56,8 +62,6 @@ For courses authored in the future, we want to encourage most static assets to b
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 When migrating assets from MongoDB/contentstore to ``openedx_content``, each asset in a course's "Files" will become one Asset Component in the LearningPackage.
-
-In order to avoid breaking migrated Files that depend on other files (mostly HTML files that load assets using relative paths), however, it is necessary to mark migrated Files as "legacy" Asset Components that can use relative references and old-style `/static/filename` references in the OLX. More details of this migration will be specified in the upcoming "contentstore migration" ADR.
 
 6. Human readable titles
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -155,17 +159,27 @@ Pushing every legacy file into the components that reference it during migration
 
 This is rejected because removing course-wide/shared Files would be a major product change, and likely receive strong pushback from users (course authors/instructors). Many files are referenced from outside any component (handouts, textbooks, external links). There would also be no way to update an image file that is used in many different components without replacing the image attached to each component separately.
 
-Strictly one file per Asset Component
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Multiple files per Asset Component
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This is an appealing alternative, especially when you consider that the number of use cases that require multiple files per Asset Component is likely very small. Videos require multiple files but are rarely if ever stored in Course Files (instead hosted on video-specific services like YouTube or edX.org's video platform). This is rejected primarily to support the use case of HTML "interactive" files that in turn reference image, JavaScript, and/or CSS files. Examples of this can be seen in the `Studio Advanced course <https://github.com/HarvardX/studio-advanced/tree/5cf820c29e3439c9f45cb88e5cf22fd4ab269739/course/static>`_.
+The number of use cases that require multiple files per Asset Component is expected to be very small:
 
-TODO: can we quantify how much this feature would be used?
+* HTML Interactives (e.g. an ``.html``, several ``.js``, and a ``.css`` file)
+* Images in multiple resolutions
+* Converted documents, e.g. a PDF and .docx of the same document
+* Videos, each with multiple chunks, multiple encodings, and multiple subtitle files
 
-Strictly one file per Asset Component, with a separate component type for multiple files
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+For each of these, there is usually a better option:
 
-We could have two different component types, e.g. ``asset`` and ``assetset`` which support only one or multiple files respectively. Tentatively rejected in order to keep the implementation simpler.
+* HTML Interactives can be implemented as HTML XBlocks with the required ``.js`` and ``.css`` files attached.
+* Images can use the thunbnail system to derive different resolutions, so authors only ever have to manage the "original" vector or full-resolution file.
+* Document conversions are the same thing: it's often better for the author to upload and manage only a single authoritative document and have the system generate the derived version automatically. If the author needs full control of each version, they can just use two separate Asset Components.
+* Videos are rarely if ever stored in Course Files anyways, and are best hosted on video-specific services like YouTube or edX.org's video platform.
+
+A separate component type for multiple files
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+We could have a separate "Asset Set" Component which holds multiple files, but it's unclear if there's any use case for this that would justify hte complexity, both in terms of implementation and end user experience.
 
 Other names for Asset Components
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -173,7 +187,6 @@ Other names for Asset Components
 - **Upload** was used in earlier drafts of this ADR, to match the "Uploads" part of the old "Files & Uploads" page. Reviewers found it unclear, and that page is now just called "Files".
 - **File** was used in a later draft, to match the Studio "Files" page. It was dropped because "File component" and "file" are too easily confused: an Asset Component can hold several files, and every Component can have files attached to it.
 - **Folder** would be more accurate for multi-file cases, but implies using Asset Components as an organizational tool, whereas we want to encourage authors to think of each Asset Component as a singular thing (an Image, a PDF, an HTML interactive, a Video), regardless of how many files it technically consists of.
-- **AssetSet** is a technical term that is not self-evident to users, and like "Folder" emphasizes the rare multi-file case.
 
 "locked" flag alternatives
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
