@@ -87,38 +87,61 @@ class ImportAction:
         action_name: str,
         attr: str,
         search_value: str | None,
-    ):
+        *,
+        casefold: bool = False,
+    ) -> ImportAction | None:
         """
-        Use this function to find and action using an `attr` of `TagItem`
+        Find an action matching `attr` of `TagItem`, casefolding both sides when `casefold` is True.
         """
         for action in indexed_actions[action_name]:
-            if search_value == getattr(action.tag, attr):
+            candidate_value = getattr(action.tag, attr)
+            if casefold and search_value is not None and candidate_value is not None:
+                if search_value.casefold() == candidate_value.casefold():
+                    return action
+            elif search_value == candidate_value:
                 return action
 
         return None
 
     def _validate_parent(self, indexed_actions) -> ImportActionError | None:
         """
-        Helper method to validate that the parent tag has already been defined.
+        Validate that `parent_id` names a tag that will exist once this import finishes.
 
-        `parent_id` must match a tag's *end-state* external_id, not one
-        that's being renamed away in this same import (see `_vacated_pks`):
-        a stale match falls through to the same "created or renamed-in
-        earlier in this import" check used for a brand-new parent.
+        A match against a tag being renamed away in this same import (see
+        `_vacated_pks`) doesn't count as the real parent: it falls through to the
+        same "created or renamed-in this import" check as a brand-new parent. If
+        nothing lands on that vacated id either, the error names the id it was
+        renamed to, instead of the generic "unknown parent" message for a parent
+        never mentioned at all.
         """
+        vacated_pks: dict[int, str] = indexed_actions.get("_vacated_pks", {})
+        parent_tag = None
+        is_vacated = False
         try:
             # Validates that the parent exists on the taxonomy
             parent_tag = self.taxonomy.tag_set.get(external_id=self.tag.parent_id)
-            if parent_tag.pk in indexed_actions.get("_vacated_pks", set()):
+            if parent_tag.pk in vacated_pks:
+                is_vacated = True
                 raise Tag.DoesNotExist
         except Tag.DoesNotExist:
             # Or if the parent is created or renamed-in on previous actions
             found = self._search_action(
-                indexed_actions, CreateTag.name, "id", self.tag.parent_id
+                indexed_actions, CreateTag.name, "id", self.tag.parent_id, casefold=True
             ) or self._search_action(
-                indexed_actions, RenameTagExternalId.name, "id", self.tag.parent_id
+                indexed_actions, RenameTagExternalId.name, "id", self.tag.parent_id, casefold=True
             )
             if not found:
+                if is_vacated:
+                    # is_vacated is only set after parent_tag was assigned above.
+                    assert parent_tag is not None
+                    new_id = vacated_pks[parent_tag.pk]
+                    return ImportActionError(
+                        action=self,
+                        message=_(
+                            "Parent tag {parent_id} is renamed to {new_id} in this file; "
+                            "use {new_id} as the parent_id."
+                        ).format(parent_id=self.tag.parent_id, new_id=new_id),
+                    )
                 return ImportActionError(
                     action=self,
                     message=_(
@@ -188,24 +211,18 @@ class ImportAction:
         return None
 
     @classmethod
-    def _resolve_update_target(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> Tag | None:
+    def _resolve_update_target(cls, taxonomy: Taxonomy, tag: TagItem) -> Tag | None:
         """
         Resolve the tag that RenameTag/UpdateParentTag would update by `id`,
         or None if this row isn't theirs to handle: a rename_external_id row
         (previous_id set and different from id, where `id` may belong to a
-        different tag entirely), no match, or a tag already queued for
-        deletion in this same import.
+        different tag entirely), or no match.
         """
         if tag.previous_id and tag.id != tag.previous_id:
             return None
         try:
             taxonomy_tag = taxonomy.tag_set.get(external_id=tag.id)
         except Tag.DoesNotExist:
-            return None
-        if indexed_actions and any(
-            taxonomy_tag.external_id == action.tag.id
-            for action in indexed_actions.get("delete", [])
-        ):
             return None
         return taxonomy_tag
 
@@ -252,7 +269,7 @@ class CreateTag(ImportAction):
         """
         Check for id duplicates in previous create actions
         """
-        action = self._search_action(indexed_actions, self.name, "id", self.tag.id)
+        action = self._search_action(indexed_actions, self.name, "id", self.tag.id, casefold=True)
         if action:
             return ImportActionConflict(
                 action=self,
@@ -327,10 +344,9 @@ class UpdateParentTag(ImportAction):
         This action applies whenever there is a change on the parent.
 
         See ImportAction._resolve_update_target for when this doesn't apply
-        regardless of the parent change (queued for deletion, or a
-        rename_external_id row).
+        regardless of the parent change (a rename_external_id row).
         """
-        taxonomy_tag = cls._resolve_update_target(taxonomy, tag, indexed_actions)
+        taxonomy_tag = cls._resolve_update_target(taxonomy, tag)
         if taxonomy_tag is None:
             return False
         return (
@@ -392,10 +408,9 @@ class RenameTag(ImportAction):
         This action applies whenever there is a change on the tag value.
 
         See ImportAction._resolve_update_target for when this doesn't apply
-        regardless of the value change (queued for deletion, or a
-        rename_external_id row).
+        regardless of the value change (a rename_external_id row).
         """
-        taxonomy_tag = cls._resolve_update_target(taxonomy, tag, indexed_actions)
+        taxonomy_tag = cls._resolve_update_target(taxonomy, tag)
         if taxonomy_tag is None:
             return False
         return taxonomy_tag.value != tag.value
@@ -465,14 +480,21 @@ class RenameTagExternalId(ImportAction):
         prior create/rename action in this import. A tag already slated for
         delete or staged onto a placeholder id doesn't count as a collision,
         since both execute before this action (see _build_delete_actions,
-        StageTagExternalIdForSwap).
+        StageTagExternalIdForSwap). The tag's own previous_id is excluded
+        from the existence check, so a case-only rename (e.g. "tag_1" to
+        "TAG_1") doesn't collide with itself via the DB's case-insensitive
+        external_id lookup.
         """
         is_freed_by_delete = any(
-            self.tag.id == action.tag.id
+            self.tag.id.casefold() == action.tag.id.casefold()
             for action in indexed_actions["delete"]
         ) if "delete" in indexed_actions else False
 
-        existing = self.taxonomy.tag_set.filter(external_id=self.tag.id).first()
+        existing = (
+            self.taxonomy.tag_set.filter(external_id=self.tag.id)
+            .exclude(external_id=self.tag.previous_id)
+            .first()
+        )
         is_awaiting_placeholder_swap = existing is not None and any(
             existing.pk == action.target_pk
             for action in indexed_actions.get("stage_external_id", [])
@@ -484,9 +506,9 @@ class RenameTagExternalId(ImportAction):
                 message=_("A tag with external_id ({id}) already exists.").format(id=self.tag.id),
             )
 
-        action = self._search_action(indexed_actions, CreateTag.name, "id", self.tag.id)
+        action = self._search_action(indexed_actions, CreateTag.name, "id", self.tag.id, casefold=True)
         if not action:
-            action = self._search_action(indexed_actions, self.name, "id", self.tag.id)
+            action = self._search_action(indexed_actions, self.name, "id", self.tag.id, casefold=True)
 
         if action:
             return ImportActionConflict(
@@ -495,7 +517,9 @@ class RenameTagExternalId(ImportAction):
                 message=_("Duplicated external_id tag."),
             )
 
-        action = self._search_action(indexed_actions, self.name, "previous_id", self.tag.previous_id)
+        action = self._search_action(
+            indexed_actions, self.name, "previous_id", self.tag.previous_id, casefold=True
+        )
         if action:
             return ImportActionConflict(
                 action=self,
@@ -578,7 +602,19 @@ class StageTagExternalIdForSwap(ImportAction):
     name = "stage_external_id"
 
     def __str__(self) -> str:
-        return str(_("Stage tag (pk={target_pk}) off its current external_id.").format(target_pk=self.target_pk))
+        return str(
+            _(
+                "Temporarily move tag {previous_id} off its external_id, "
+                "so that another row in this file can take it."
+            ).format(previous_id=self.tag.previous_id)
+        )
+
+    def __repr__(self) -> str:
+        return str(
+            _("Action {name} (index={index},id={id})").format(
+                name=self.name, index=self.index, id=self.tag.previous_id,
+            )
+        )
 
     @classmethod
     def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:

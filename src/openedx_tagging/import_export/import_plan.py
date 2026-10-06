@@ -16,7 +16,7 @@ from .actions import (
     WithoutChanges,
     available_actions,
 )
-from .exceptions import DuplicateFinalIdError, TagImportError
+from .exceptions import DuplicateFinalIdError, StaleIdTargetedByPlainRowError, TagImportError
 
 
 @define
@@ -164,12 +164,37 @@ class TagImportPlan:
         is always defined.
         """
         positions_by_id: dict[str, list[int]] = {}
+        display_id_by_key: dict[str, str] = {}
         for position, tag in enumerate(tags, start=1):
-            positions_by_id.setdefault(tag.id, []).append(position)
+            key = tag.id.casefold()
+            display_id_by_key.setdefault(key, tag.id)
+            positions_by_id.setdefault(key, []).append(position)
 
-        for tag_id, positions in positions_by_id.items():
+        for key, positions in positions_by_id.items():
             if len(positions) > 1:
-                self.errors.append(DuplicateFinalIdError(tag_id, positions))
+                self.errors.append(DuplicateFinalIdError(display_id_by_key[key], positions))
+
+    def _validate_no_plain_row_targets_a_vacated_id(self, tags: list[TagItem]) -> None:
+        """
+        Reject a plain row (no previous_id) whose `id` matches another
+        row's `previous_id` in the same import: that other row is renaming
+        its tag away from that id, so a plain row landing on it would
+        either resolve to the wrong tag or crash at execute time, depending
+        on row order. A rename row landing on that same id is the
+        already-supported swap/cycle case and is left alone here. The match is
+        case-insensitive, like `external_id`'s own DB collation.
+        """
+        rename_source_rows: dict[str, int] = {}
+        for position, tag in enumerate(tags, start=1):
+            if tag.previous_id and tag.id != tag.previous_id:
+                rename_source_rows.setdefault(tag.previous_id.casefold(), position)
+
+        for position, tag in enumerate(tags, start=1):
+            if bool(tag.previous_id) and tag.id != tag.previous_id:
+                continue  # a rename row landing on that id is the already-supported swap case
+            rename_row = rename_source_rows.get(tag.id.casefold())
+            if rename_row is not None:
+                self.errors.append(StaleIdTargetedByPlainRowError(tag.id, position, rename_row))
 
     def _build_staging_actions(self, tags: list[TagItem]) -> None:
         """
@@ -178,24 +203,27 @@ class TagImportPlan:
         regardless of file order (see StageTagExternalIdForSwap).
 
         Also records every rename's resolved target pk in
-        indexed_actions["_vacated_pks"], staged or not: once a tag is being
-        renamed away from an external_id, that id is stale for anyone still
-        referencing it via the live database (see _validate_parent), even
-        if nothing in this import reuses it.
+        indexed_actions["_vacated_pks"] (pk -> the id it's renamed *to*), staged
+        or not: once a tag is renamed away from an external_id, that id is stale
+        for anyone still referencing it via the live database, even if nothing
+        in this import reuses it (see _validate_parent, which uses the recorded
+        new id to name it).
         """
         target_ids = {
-            tag.id for tag in tags
+            tag.id.casefold() for tag in tags
             if RenameTagExternalId.applies_for(self.taxonomy, tag)
         }
-        vacated_pks = set()
+        vacated_pks: dict[int, str] = {}
         for tag in tags:
             if not RenameTagExternalId.applies_for(self.taxonomy, tag):
                 continue
+            # RenameTagExternalId.applies_for requires previous_id truthy.
+            assert tag.previous_id is not None
             target_pk = self._resolve_rename_target_pk(tag)
             if target_pk is None:
                 continue
-            vacated_pks.add(target_pk)
-            if tag.previous_id in target_ids:
+            vacated_pks[target_pk] = tag.id
+            if tag.previous_id.casefold() in target_ids:
                 self._build_action(StageTagExternalIdForSwap, tag, target_pk=target_pk)
         self.indexed_actions["_vacated_pks"] = vacated_pks
 
@@ -223,6 +251,11 @@ class TagImportPlan:
         # before staging or per-row action-building runs (see
         # _validate_no_duplicate_final_ids).
         self._validate_no_duplicate_final_ids(tags)
+
+        # Reject a plain row that targets an id another row is renaming
+        # away from in this same import (see
+        # _validate_no_plain_row_targets_a_vacated_id).
+        self._validate_no_plain_row_targets_a_vacated_id(tags)
 
         tags_for_delete = {}
 

@@ -636,6 +636,68 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert renamed_tag.parent is not None
         assert renamed_tag.parent.external_id == "tag_3"
 
+    def test_import_rename_parent_and_child_both_renamed(self) -> None:
+        """
+        A parent tag and its child are both renamed in the same import,
+        with the child's parent_id explicitly set to the parent's NEW id.
+        Must apply cleanly end-to-end, with the child correctly re-parented
+        under the renamed parent.
+        """
+        old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
+        old_pk_2 = self.taxonomy.tag_set.get(external_id="tag_2").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_10", "value": "Tag 1 Renamed", "previous_id": "tag_1"},
+            {"id": "tag_20", "value": "Tag 2 Renamed", "previous_id": "tag_2", "parent_id": "tag_10"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert result
+
+        parent_tag = Tag.objects.get(pk=old_pk_1)
+        child_tag = Tag.objects.get(pk=old_pk_2)
+        assert parent_tag.external_id == "tag_10"
+        assert child_tag.external_id == "tag_20"
+        assert child_tag.parent is not None
+        assert child_tag.parent.pk == parent_tag.pk
+
+    def test_import_rename_parent_and_child_both_renamed_replace_mode(self) -> None:
+        """
+        Same scenario as test_import_rename_parent_and_child_both_renamed,
+        but with replace=True: the delete sweep must not interfere with the
+        parent/child rename, since both are protected by previous_id.
+        """
+        old_pk_1 = self.taxonomy.tag_set.get(external_id="tag_1").pk
+        old_pk_2 = self.taxonomy.tag_set.get(external_id="tag_2").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_10", "value": "Tag 1 Renamed", "previous_id": "tag_1"},
+            {"id": "tag_20", "value": "Tag 2 Renamed", "previous_id": "tag_2", "parent_id": "tag_10"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+            replace=True,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert result
+
+        parent_tag = Tag.objects.get(pk=old_pk_1)
+        child_tag = Tag.objects.get(pk=old_pk_2)
+        assert parent_tag.external_id == "tag_10"
+        assert child_tag.external_id == "tag_20"
+        assert child_tag.parent is not None
+        assert child_tag.parent.pk == parent_tag.pk
+
     def test_import_swap_external_ids(self) -> None:
         """
         A 2-tag swap (tag_1 <-> tag_3, both root tags so parent handling
@@ -815,6 +877,86 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert tag_3.external_id == "tag_3"
         assert tag_3.value == "Tag 3"
 
+    def test_import_duplicate_final_id_rejected_case_insensitive(self) -> None:
+        """
+        Two rows claiming the same final id in different case ("tag_50" and
+        "TAG_50") must be rejected as a duplicate: external_id is
+        case-insensitive at the DB layer (NOCASE / utf8mb4_unicode_ci), so
+        these collide even though the Python-side strings differ.
+        """
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_50", "value": "Tag 1 Renamed", "previous_id": "tag_1"},
+            {"id": "TAG_50", "value": "Tag 3 Renamed", "previous_id": "tag_3"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert "Duplicate id" in log
+        assert not result
+
+        # Nothing changed: neither tag was renamed.
+        tag_1 = self.taxonomy.tag_set.get(external_id="tag_1")
+        tag_3 = self.taxonomy.tag_set.get(external_id="tag_3")
+        assert tag_1.value == "Tag 1"
+        assert tag_3.value == "Tag 3"
+
+    def test_import_plain_row_targets_vacated_id_rejected(self) -> None:
+        """
+        A plain row (no previous_id) with id="tag_1", alongside a different
+        row renaming "tag_1" away (previous_id="tag_1", id="tag_50"), must be
+        rejected at the plan step: the plain row's id would otherwise resolve
+        to the very tag the other row is renaming away from, not to a
+        distinct tag that happens to share that id.
+        """
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_50", "value": "Tag 1", "previous_id": "tag_1"},
+            {"id": "tag_1", "value": "Brand New"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert "is renamed away by row" in log
+        assert not result
+
+        tag_1 = self.taxonomy.tag_set.get(external_id="tag_1")
+        assert tag_1.value == "Tag 1"
+        assert not self.taxonomy.tag_set.filter(external_id="tag_50").exists()
+
+    def test_import_plain_row_targets_vacated_id_rejected_regardless_of_order(self) -> None:
+        """
+        Same collision as test_import_plain_row_targets_vacated_id_rejected,
+        with the plain row moved to the front of the file: rejection must
+        not depend on row order.
+        """
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_1", "value": "Brand New"},
+            {"id": "tag_50", "value": "Tag 1", "previous_id": "tag_1"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert "is renamed away by row" in log
+        assert not result
+
+        tag_1 = self.taxonomy.tag_set.get(external_id="tag_1")
+        assert tag_1.value == "Tag 1"
+        assert not self.taxonomy.tag_set.filter(external_id="tag_50").exists()
+
     def test_import_rename_referencing_stale_old_id_rejected(self) -> None:
         """
         Regression: a plain rename of tag_1 to tag_50, with a different
@@ -835,7 +977,7 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert not result
         log = import_export_api.get_last_import_log(self.taxonomy)
         assert log == task.log
-        assert "Unknown parent tag (tag_1)" in log
+        assert "Parent tag tag_1 is renamed to tag_50 in this file; use tag_50 as the parent_id." in log
         assert "Traceback" not in log
 
         assert self.taxonomy.tag_set.filter(external_id="tag_1").exists()

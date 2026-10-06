@@ -173,8 +173,8 @@ class TestImportAction(TestImportActionMixin, TestCase):
         """
         parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
         landing_tag = TagItem(id='tag_1', value='_', previous_id='tag_2', index=2)
-        indexed_actions: dict[str, list[ImportAction] | set[int]] = dict(self.indexed_actions)
-        indexed_actions['_vacated_pks'] = {parent_pk}
+        indexed_actions: dict[str, list[ImportAction] | dict[int, str]] = dict(self.indexed_actions)
+        indexed_actions['_vacated_pks'] = {parent_pk: 'tag_1'}
         indexed_actions['rename_external_id'] = [
             RenameTagExternalId(taxonomy=self.taxonomy, tag=landing_tag, index=2, target_pk=parent_pk)
         ]
@@ -200,8 +200,8 @@ class TestImportAction(TestImportActionMixin, TestCase):
         physically exists in the database at validate time.
         """
         parent_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
-        indexed_actions: dict[str, list[ImportAction] | set[int]] = dict(self.indexed_actions)
-        indexed_actions['_vacated_pks'] = {parent_pk}
+        indexed_actions: dict[str, list[ImportAction] | dict[int, str]] = dict(self.indexed_actions)
+        indexed_actions['_vacated_pks'] = {parent_pk: 'tag_50'}
         action = ImportAction(
             self.taxonomy,
             TagItem(
@@ -217,8 +217,8 @@ class TestImportAction(TestImportActionMixin, TestCase):
             str(error),
             (
                 "Action error in 'import_action' (#100): "
-                "Unknown parent tag (tag_1). "
-                "You need to add parent before the child in your file."
+                "Parent tag tag_1 is renamed to tag_50 in this file; "
+                "use tag_50 as the parent_id."
             )
         )
 
@@ -233,7 +233,7 @@ class TestImportAction(TestImportActionMixin, TestCase):
         confirms the same rename's *new* id (tag_60) is accepted.
         """
         tag_1_pk = self.taxonomy.tag_set.get(external_id='tag_1').pk
-        indexed_actions: dict[str, list[ImportAction] | set[int]] = dict(self.indexed_actions)
+        indexed_actions: dict[str, list[ImportAction] | dict[int, str]] = dict(self.indexed_actions)
         indexed_actions['rename_external_id'] = [
             RenameTagExternalId(
                 taxonomy=self.taxonomy,
@@ -241,7 +241,7 @@ class TestImportAction(TestImportActionMixin, TestCase):
                 index=1,
             )
         ]
-        indexed_actions['_vacated_pks'] = {tag_1_pk}
+        indexed_actions['_vacated_pks'] = {tag_1_pk: 'tag_60'}
         action = ImportAction(
             self.taxonomy,
             TagItem(
@@ -257,8 +257,8 @@ class TestImportAction(TestImportActionMixin, TestCase):
             str(error),
             (
                 "Action error in 'import_action' (#100): "
-                "Unknown parent tag (tag_1). "
-                "You need to add parent before the child in your file."
+                "Parent tag tag_1 is renamed to tag_60 in this file; "
+                "use tag_60 as the parent_id."
             )
         )
 
@@ -534,31 +534,6 @@ class TestUpdateParentTag(TestImportActionMixin, TestCase):
         )
         self.assertEqual(result, expected)
 
-    def test_applies_for_ignores_tag_queued_for_delete(self) -> None:
-        # Same as the ('tag_2', 'tag_3', True) case above (parent genuinely
-        # changes), but tag_2 is queued for deletion in this same import
-        # (e.g. its external_id is being reused by a RenameTagExternalId
-        # row via previous_id): this action must not also fire against the
-        # doomed tag.
-        indexed_actions = {'delete': [
-            DeleteTag(
-                taxonomy=self.taxonomy,
-                tag=TagItem(id='tag_2', value='Tag 2', index=1),
-                index=1,
-            )
-        ]}
-        result = UpdateParentTag.applies_for(
-            taxonomy=self.taxonomy,
-            tag=TagItem(
-                id='tag_2',
-                value='_',
-                parent_id='tag_3',
-                index=100,
-            ),
-            indexed_actions=indexed_actions,
-        )
-        self.assertFalse(result)
-
     def test_applies_for_swap_previous_id_guard(self) -> None:
         # In a swap (tag_1 <-> tag_2 external_ids), this row's new `id`
         # (tag_1) resolves via external_id lookup to the *other* tag in the
@@ -645,30 +620,6 @@ class TestRenameTag(TestImportActionMixin, TestCase):
             )
         )
         self.assertEqual(result, expected)
-
-    def test_applies_for_ignores_tag_queued_for_delete(self) -> None:
-        # Same as the ('tag_1', 'Tag 1 v2', True) case above (value
-        # genuinely changes), but tag_1 is queued for deletion in this same
-        # import (e.g. its external_id is being reused by a
-        # RenameTagExternalId row via previous_id): this action must not
-        # also fire against the doomed tag.
-        indexed_actions = {'delete': [
-            DeleteTag(
-                taxonomy=self.taxonomy,
-                tag=TagItem(id='tag_1', value='Tag 1', index=1),
-                index=1,
-            )
-        ]}
-        result = RenameTag.applies_for(
-            taxonomy=self.taxonomy,
-            tag=TagItem(
-                id='tag_1',
-                value='Tag 1 v2',
-                index=100,
-            ),
-            indexed_actions=indexed_actions,
-        )
-        self.assertFalse(result)
 
     def test_applies_for_swap_previous_id_guard(self) -> None:
         # In a swap (tag_1 <-> tag_2 external_ids), this row's new `id`
@@ -780,6 +731,25 @@ class TestRenameTagExternalId(TestImportActionMixin, TestCase):
         errors = action.validate(self.indexed_actions)
         self.assertEqual(len(errors), 1)
         self.assertIn("already exists", str(errors[0]))
+
+    def test_validate_new_id_case_only_rename_accepted(self) -> None:
+        # Regression: a case-only rename of a tag onto its own external_id
+        # (previous_id="tag_1", id="TAG_1") must validate cleanly. external_id
+        # is case-insensitive at the DB layer, so the existence check used to
+        # find the tag's own row via previous_id and report a false
+        # "already exists" collision.
+        action = RenameTagExternalId(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='TAG_1',
+                value='Tag 1',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+        )
+        errors = action.validate(self.indexed_actions)
+        self.assertEqual(errors, [])
 
     def test_validate_new_id_freed_by_queued_delete_action(self) -> None:
         # Same setup as test_validate_new_id_collides_with_db_tag (new id
@@ -961,6 +931,38 @@ class TestStageTagExternalIdForSwap(TestImportActionMixin, TestCase):
     """
     Test for 'stage_external_id' action
     """
+
+    def test_str(self) -> None:
+        action = StageTagExternalIdForSwap(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_2',
+                value='_',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+            target_pk=self.taxonomy.tag_set.get(external_id='tag_1').pk,
+        )
+        self.assertEqual(
+            str(action),
+            "Temporarily move tag tag_1 off its external_id, "
+            "so that another row in this file can take it."
+        )
+
+    def test_repr(self) -> None:
+        action = StageTagExternalIdForSwap(
+            taxonomy=self.taxonomy,
+            tag=TagItem(
+                id='tag_2',
+                value='_',
+                previous_id='tag_1',
+                index=100,
+            ),
+            index=100,
+            target_pk=self.taxonomy.tag_set.get(external_id='tag_1').pk,
+        )
+        self.assertEqual(repr(action), "Action stage_external_id (index=100,id=tag_1)")
 
     def test_applies_for(self) -> None:
         result = StageTagExternalIdForSwap.applies_for(

@@ -260,7 +260,7 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             "#7: Rename tag value of <Tag> (tag_2 / Tag 2) to 'Tag 31'\n"
             "\nOutput errors\n"
             "--------------------------------\n"
-            "Duplicate id (tag_31): rows #1, #2 all claim it as their final id. "
+            "Duplicate id (tag_31): file rows 1, 2 all claim it as their final id. "
             "Each row's id must be unique within a single import.\n"
             "Conflict with 'create' (#2) and action #1: Duplicated external_id tag.\n"
             "Action error in 'rename' (#3): Duplicated tag value with tag in database (external_id=tag_2).\n"
@@ -540,7 +540,10 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         ]
         self.import_plan.generate_actions(tags=tags, replace=False)
         self.assertEqual(len(self.import_plan.errors), 1)
-        self.assertIn("Unknown parent tag (tag_1)", str(self.import_plan.errors[0]))
+        self.assertIn(
+            "Parent tag tag_1 is renamed to tag_50 in this file; use tag_50 as the parent_id.",
+            str(self.import_plan.errors[0]),
+        )
 
     def test_generate_actions_parent_id_new_id_after_earlier_rename_accepted(self) -> None:
         """
@@ -578,6 +581,11 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         Reject the whole import outright, naming both offending rows by
         position, instead of letting swap-staging silently treat the
         collision as valid (see DuplicateFinalIdError).
+
+        The unrelated third row (plain, id=tag_1) also independently
+        matches _validate_no_plain_row_targets_a_vacated_id, since tag_1 is
+        also the first row's previous_id: both checks catch a real,
+        distinct problem with that same row, so two errors are expected.
         """
         tags = [
             TagItem(id='tag_3', value='Tag 1', previous_id='tag_1'),
@@ -585,11 +593,10 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             TagItem(id='tag_1', value='Something Else Entirely'),
         ]
         self.import_plan.generate_actions(tags=tags, replace=False)
-        self.assertEqual(len(self.import_plan.errors), 1)
+        self.assertEqual(len(self.import_plan.errors), 2)
         error = str(self.import_plan.errors[0])
         self.assertIn("tag_1", error)
-        self.assertIn("#2", error)
-        self.assertIn("#3", error)
+        self.assertIn("file rows 2, 3", error)
 
     def test_generate_actions_rejects_duplicate_final_id_regardless_of_order(self) -> None:
         """
@@ -603,8 +610,7 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             TagItem(id='tag_1', value='Tag 3', previous_id='tag_3'),
         ]
         self.import_plan.generate_actions(tags=tags, replace=False)
-        self.assertEqual(len(self.import_plan.errors), 1)
+        self.assertEqual(len(self.import_plan.errors), 2)
         error = str(self.import_plan.errors[0])
         self.assertIn("tag_1", error)
-        self.assertIn("#1", error)
-        self.assertIn("#3", error)
+        self.assertIn("file rows 1, 3", error)
