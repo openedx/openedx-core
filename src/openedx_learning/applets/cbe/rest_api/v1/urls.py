@@ -17,4 +17,9 @@ urlpatterns = [
         views.CompetencyCriterionCreateView.as_view(),
         name="criterion-create",
     ),
+    path(
+        "competencies/<int:tag_id>/criteria/<int:criterion_id>/",
+        views.CompetencyCriterionDeleteView.as_view(),
+        name="criterion-delete",
+    ),
 ]

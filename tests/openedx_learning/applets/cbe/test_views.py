@@ -4,6 +4,7 @@ Tests for the CBE REST API views.
 Fixtures live in this directory's conftest.py. Several scenarios here create rule profile rows
 directly rather than through a live call, because no create or archive endpoint exists yet.
 """
+from datetime import datetime
 from typing import Generator
 
 import pytest
@@ -23,7 +24,9 @@ from openedx_learning.models import (
     CompetencyRuleProfile,
     CompetencyTaxonomy,
     LogicOperator,
+    MasteryStatus,
     RuleType,
+    StudentCompetencyCriterionStatus,
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
@@ -66,6 +69,11 @@ def _user_client(api_client: APIClient, user) -> APIClient:
 def criterion_create_url(tag_id: int) -> str:
     """Return the create-criterion endpoint's path for `tag_id`, resolved through the URL name."""
     return reverse("cbe:criterion-create", kwargs={"tag_id": tag_id})
+
+
+def criterion_delete_url(tag_id: int, criterion_id: int) -> str:
+    """Return the delete-criterion endpoint's path for `tag_id`/`criterion_id`, resolved through the URL name."""
+    return reverse("cbe:criterion-delete", kwargs={"tag_id": tag_id, "criterion_id": criterion_id})
 
 
 def usage_key(course_run: CourseRun, block_id: str) -> str:
@@ -804,3 +812,142 @@ def test_tag_refused_at_the_object_tag_limit_is_400_and_creates_nothing(
     assert "Cannot add more than 1 tags" in str(response.data["object_id"])
     assert not CompetencyCriterion.objects.exists()
     assert not CompetencyCriteriaGroup.objects.exists()
+
+
+# ==============================================================================================
+# CompetencyCriterionDeleteView (#674)
+# ==============================================================================================
+
+
+@pytest.fixture(name="criterion")
+def _criterion(
+    group: CompetencyCriteriaGroup, tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile
+) -> CompetencyCriterion:
+    """A leaf-agnostic CompetencyCriterion directly under the root `group`, for the delete-view tests."""
+    # The conftest object_tag's object_id isn't a parseable usage key, which _allow_object_level_tagging denies.
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    return CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
+
+
+def test_create_response_reports_archived_false(user_client: APIClient, tag: Tag, course_run: CourseRun) -> None:
+    """The create endpoint's response carries the read-only archived flag, false for a new criterion."""
+    response = user_client.post(criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p1")}, format="json")
+
+    assert response.status_code == status.HTTP_201_CREATED
+    assert response.data["archived"] is False
+
+
+def test_hard_delete_200s_with_archived_false(user_client: APIClient, criterion: CompetencyCriterion) -> None:
+    """Deleting a criterion with no learner status 200s, hard-deletes it, and reports archived=false."""
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {"id": criterion.id, "archived": False}
+    assert not CompetencyCriterion.objects.filter(id=criterion.id).exists()
+
+
+def test_archive_200s_with_archived_true(
+    user_client: APIClient, user, criterion: CompetencyCriterion, now: datetime,
+) -> None:
+    """Deleting a criterion a learner status row references 200s, archives it, and reports archived=true."""
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {"id": criterion.id, "archived": True}
+    criterion.refresh_from_db()
+    assert criterion.archived is True
+
+
+def test_repeat_delete_on_an_archived_criterion_is_idempotent_200(
+    user_client: APIClient, user, criterion: CompetencyCriterion, now: datetime,
+) -> None:
+    """A second DELETE against an already-archived criterion still 200s with the same body."""
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {"id": criterion.id, "archived": True}
+
+
+def test_unknown_criterion_id_404s(user_client: APIClient, tag: Tag) -> None:
+    """A criterion_id with no matching row 404s."""
+    response = user_client.delete(criterion_delete_url(tag.id, 999999))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_repeat_delete_after_hard_delete_404s(
+    user_client: APIClient, criterion: CompetencyCriterion,
+) -> None:
+    """A second DELETE against the same URL, after a hard-delete already removed the row, 404s."""
+    url = criterion_delete_url(criterion.group.tag_id, criterion.id)
+    first = user_client.delete(url)
+    assert first.status_code == status.HTTP_200_OK
+
+    second = user_client.delete(url)
+
+    assert second.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_cascade_deleted_group_404s_on_subsequent_create(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    Hard-deleting a group's only criterion cascade-deletes that now-empty leaf group, and a later
+    create-criterion POST naming that same (now-gone) group_id 404s rather than resolving.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+
+    delete_response = user_client.delete(criterion_delete_url(tag.id, criterion.id))
+    assert delete_response.status_code == status.HTTP_200_OK
+    assert not CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
+
+    create_response = user_client.post(
+        criterion_create_url(tag.id),
+        {"object_id": usage_key(course_run, "p2"), "group_id": leaf.id},
+        format="json",
+    )
+
+    assert create_response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_tag_id_criterion_id_mismatch_404s(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, criterion: CompetencyCriterion,
+) -> None:
+    """A criterion that exists, but under a different competency tag than the URL names, 404s."""
+    other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Other Competency")
+
+    response = user_client.delete(criterion_delete_url(other_tag.id, criterion.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_delete_no_permission_is_403(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, tag: Tag, group: CompetencyCriteriaGroup,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A caller without object-level tagging permission on the criterion's object is refused with a 403."""
+    object_tag = ObjectTag.objects.create(
+        object_id=f"block-v1:unused+{UNAUTHORIZED_MARKER}+unused+type@sequential+block@p1",
+        taxonomy=competency_taxonomy,
+        tag=tag,
+    )
+    criterion = CompetencyCriterion.objects.create(
+        group=group, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+
+    response = user_client.delete(criterion_delete_url(tag.id, criterion.id))
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
