@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Literal, Sequence
 
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
 from django.db import connection, transaction
@@ -32,6 +32,7 @@ from .models import (
     CompetencyTaxonomy,
     LogicOperator,
     MasteryStatus,
+    StudentCompetencyCriteriaGroupStatus,
     StudentCompetencyCriterionStatus,
 )
 from .rule_payloads import evaluate_rule
@@ -45,6 +46,7 @@ __all__ = [
     "bulk_update_competency_criteria",
     "create_competency_criterion",
     "create_competency_taxonomy",
+    "delete_competency_criterion",
     "get_competency_criteria_tree",
     "get_competency_rule_profiles",
     "get_courses_with_relative_criteria",
@@ -869,3 +871,81 @@ def update_competency_criteria_group(
         # Never QuerySet.update(): it skips post_save, so simple_history would record nothing.
         group.save(update_fields=["logic_operator"])
         return group
+
+
+@dataclass(frozen=True)
+class CriterionDeletionResult:
+    """The outcome of :func:`delete_competency_criterion`: whether the row was hard-deleted or archived."""
+
+    id: int
+    archived: bool
+
+
+def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete", "archive"]) -> None:
+    """
+    Walk `group` and its ancestors, collapsing/archiving any left with no live children.
+
+    `group.criteria` only has rows at the true-leaf level, so checking it at every level
+    unconditionally is harmless (an empty queryset above the leaf) and avoids a separate
+    leaf/non-leaf code path.
+    """
+    has_live_child = (
+        group.criteria.filter(archived=False).exists() or group.child_groups.filter(archived=False).exists()
+    )
+    parent = group.parent
+    if has_live_child:
+        return
+    if event == "delete" and not group.criteria.exists() and not group.child_groups.exists():
+        if StudentCompetencyCriteriaGroupStatus.objects.filter(group_id=group.id).exists():
+            group.archived = True
+            group.save()
+            next_event: Literal["delete", "archive"] = "archive"
+        else:
+            group.delete()
+            next_event = "delete"
+    else:
+        # Only archived children remain.
+        group.archived = True
+        group.save()
+        next_event = "archive"
+    if parent is not None:
+        _cascade_from_group(parent, next_event)
+
+
+def delete_competency_criterion(criterion_id: int) -> CriterionDeletionResult:
+    """
+    Hard-delete `criterion_id`, or archive it if a learner status row already references it.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
+    and archive behavior may change this function's shape without a deprecation cycle.
+
+    The caller is expected to have already checked ``oel_tagging.can_tag_object`` for the
+    criterion's object, the same contract as :func:`associate_competency_criterion`.
+
+    An ancestor :class:`CompetencyCriteriaGroup` left with no live children by this call is
+    cascaded in turn: hard-deleted if it carries no group-level status of its own, archived
+    otherwise. See ADR-0002 Decision 2.
+
+    Raises CompetencyCriterion.DoesNotExist if no such criterion exists.
+    """
+    criterion = CompetencyCriterion.objects.get(pk=criterion_id)
+
+    has_status = StudentCompetencyCriterionStatus.objects.filter(criterion_id=criterion_id).exists()
+    if not has_status:
+        with transaction.atomic():
+            group = criterion.group
+            object_tag = criterion.object_tag
+            criterion.delete()
+            if not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists():
+                existing_values = [
+                    t.value for t in get_object_tags(object_tag.object_id, taxonomy_id=object_tag.taxonomy_id)
+                    if t.value != group.tag.value
+                ]
+                tag_object(object_tag.object_id, group.tag.taxonomy, existing_values)
+            _cascade_from_group(group, "delete")
+        return CriterionDeletionResult(id=criterion_id, archived=False)
+
+    criterion.archived = True
+    criterion.save()
+    _cascade_from_group(criterion.group, "archive")
+    return CriterionDeletionResult(id=criterion_id, archived=True)

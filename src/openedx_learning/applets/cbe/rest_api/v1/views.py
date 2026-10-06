@@ -26,6 +26,7 @@ from ...api import (
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
+    delete_competency_criterion,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
     resolve_competency_tag,
@@ -254,3 +255,37 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
         except CompetencyCriteriaGroupArchivedError as exc:
             raise CompetencyCriteriaConflict(str(exc)) from exc
         return Response(CompetencyCriteriaGroupSerializer(group).data, status=status.HTTP_200_OK)
+
+
+class CompetencyCriterionDeleteView(generics.GenericAPIView):
+    """
+    DELETE-only. Remove a CompetencyCriterion: hard-delete, or archive if learner status exists.
+
+    Does not call self.check_object_permissions(): oel_tagging.can_tag_object is checked inline
+    with a manual ``has_perm()`` call, the same pattern CompetencyCriterionCreateView uses.
+    """
+
+    serializer_class = CompetencyCriterionSerializer
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, *args, **kwargs):
+        """
+        Resolve the criterion scoped to both path segments, check permission, then delegate to the public API.
+
+        Scoped by tag_id rather than a specific group_id, matching CompetencyCriterionCreateView's
+        own URL convention; a group-scoped delete is a separate ticket's concern (direct group
+        deletion/archival). The lookup deliberately does not filter `archived=False`, so a repeat
+        DELETE against an already-archived row still resolves (200), and a mismatched tag_id or a
+        nonexistent criterion_id both 404 the same way, via this one get_object_or_404 call.
+        """
+        criterion = get_object_or_404(
+            CompetencyCriterion, pk=self.kwargs["criterion_id"], group__tag_id=self.kwargs["tag_id"],
+        )
+        perm_obj = ObjectTagPermissionItem(
+            taxonomy=criterion.group.tag.taxonomy, object_id=criterion.object_tag.object_id,
+        )
+        if not request.user.has_perm("oel_tagging.can_tag_object", perm_obj):
+            raise PermissionDenied()
+        result = delete_competency_criterion(criterion.id)
+        return Response({"id": result.id, "archived": result.archived}, status=status.HTTP_200_OK)
