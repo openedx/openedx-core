@@ -46,6 +46,8 @@ When assets (of any type) have some relationship to each other and need to be gr
 * By attached all the related asset files to the same XBlock Component; or
 * By organizing the related Asset Components (one file per Asset Component) into a ``Collection``
 
+Note: due to decision 7 below, the actual requirement is slightly stricter than this: the derived ``component_code`` must be unique, which means that ``images_a.png`` and ``images/a.png`` would conflict with each other; this is already the case in ``contentstore`` today.
+
 3. Asset Components support relative links
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -71,9 +73,16 @@ All Asset Components (in fact, all PublishableEntities) have a mutable ``title``
 7. Codes based on filename
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``component_code`` must be unique among all Asset Components in the same :class:`LearningPackage`, and is restricted in what special characters can be used (alphanumeric characters, underscores, hyphens, and periods are allowed but nothing else). While any slug-style ID can be used, a simple option is to set the ``component_code`` to match the filename of the "main" file of the asset during initial upload, without a file extension, e.g. ``moon-orbit-illustration``. (Special characters would need to be replaced, and subdirectories ignored.) Leaving off the file extension is recommended to avoid confusion between the ``component_code`` of the Asset Component itself, and the actual filename(s) of the individual asset file(s) associated with it.
+``component_code`` must be unique among all Asset Components in the same :class:`LearningPackage`, and is restricted in what special characters can be used (alphanumeric characters, underscores, hyphens, and periods are allowed but nothing else).
 
-:class:`ComponentVersionMedia` continues to hold the full path and filename of each asset.
+For simplicity and backwards compatibility, we will set the ``component_code`` to (almost) the same value as the ``contentstore`` ``path`` value: all characters other than hyphens, underscores, and periods are converted to underscores. (Note: the ``contentstore`` algorithm also allowed ``%`` in the result, which ``component_code`` will not.)
+
+Examples::
+
+* ``image 001.png`` would become code ``image_001.png``
+* ``subfolder/jane & todd.orig.jpeg`` would become code ``subfolder_jane___todd.orig.jpeg``
+
+:class:`ComponentVersionMedia` continues to hold the full path and filename of the actual asset file.
 
 8. Assets are not part of the learner-facing outline
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -172,14 +181,14 @@ The number of use cases that require multiple files per Asset Component is expec
 For each of these, there is usually a better option:
 
 * HTML Interactives can be implemented as HTML XBlocks with the required ``.js`` and ``.css`` files attached.
-* Images can use the thunbnail system to derive different resolutions, so authors only ever have to manage the "original" vector or full-resolution file.
+* Images can use the thumbnail system to derive different resolutions, so authors only ever have to manage the "original" vector or full-resolution file.
 * Document conversions are the same thing: it's often better for the author to upload and manage only a single authoritative document and have the system generate the derived version automatically. If the author needs full control of each version, they can just use two separate Asset Components.
 * Videos are rarely if ever stored in Course Files anyways, and are best hosted on video-specific services like YouTube or edX.org's video platform.
 
 A separate component type for multiple files
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-We could have a separate "Asset Set" Component which holds multiple files, but it's unclear if there's any use case for this that would justify hte complexity, both in terms of implementation and end user experience.
+We could have a separate "Asset Set" Component which holds multiple files, but it's unclear if there's any use case for this that would justify the complexity, both in terms of implementation and end user experience.
 
 Other names for Asset Components
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
