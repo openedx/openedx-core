@@ -16,7 +16,12 @@ from .actions import (
     WithoutChanges,
     available_actions,
 )
-from .exceptions import DuplicateFinalIdError, StaleIdTargetedByPlainRowError, TagImportError
+from .exceptions import (
+    DuplicateFinalIdError,
+    ParentReferencesContendedVacatedIdError,
+    StaleIdTargetedByPlainRowError,
+    TagImportError,
+)
 
 
 @define
@@ -196,6 +201,45 @@ class TagImportPlan:
             if rename_row is not None:
                 self.errors.append(StaleIdTargetedByPlainRowError(tag.id, position, rename_row))
 
+    def _validate_no_parent_references_a_contended_vacated_id(self, tags: list[TagItem]) -> None:
+        """
+        Reject a row whose `parent_id` names an id that one row vacates via
+        rename while a *different* row claims that same id as its own final
+        id in the same import (the swap/cycle case): it's ambiguous whether
+        the reference means the original tag or its replacement. A plain,
+        non-contended rename (nothing else in this file reuses the vacated
+        id) is left alone here; `_validate_parent`'s stale-parent check
+        covers that case instead. The match is case-insensitive, like
+        `external_id`'s own DB collation.
+        """
+        rename_source_rows: dict[str, tuple[int, str]] = {}
+        rename_target_rows: dict[str, int] = {}
+        for position, tag in enumerate(tags, start=1):
+            if not RenameTagExternalId.applies_for(self.taxonomy, tag):
+                continue
+            # RenameTagExternalId.applies_for requires previous_id truthy.
+            assert tag.previous_id is not None
+            rename_source_rows.setdefault(tag.previous_id.casefold(), (position, tag.id))
+            rename_target_rows[tag.id.casefold()] = position
+
+        for position, tag in enumerate(tags, start=1):
+            if not tag.parent_id:
+                continue
+            source = rename_source_rows.get(tag.parent_id.casefold())
+            if source is None:
+                continue
+            source_row, new_id = source
+            target_row = rename_target_rows.get(tag.parent_id.casefold())
+            if target_row is None or target_row == source_row:
+                # Not contended: either nothing else in this file claims the
+                # vacated id, or the only "claim" is the same row vacating it
+                # (a case-only rename, e.g. id="TAG_1", previous_id="tag_1",
+                # where both casefold to the same key) -- not a different tag.
+                continue
+            self.errors.append(
+                ParentReferencesContendedVacatedIdError(tag.parent_id, position, source_row, new_id, target_row)
+            )
+
     def _build_staging_actions(self, tags: list[TagItem]) -> None:
         """
         Stage any tag whose current external_id is another rename row's
@@ -257,6 +301,11 @@ class TagImportPlan:
         # away from in this same import (see
         # _validate_no_plain_row_targets_a_vacated_id).
         self._validate_no_plain_row_targets_a_vacated_id(tags)
+
+        # Reject a parent_id that names an id contended between a rename
+        # row vacating it and a different rename row claiming it (see
+        # _validate_no_parent_references_a_contended_vacated_id).
+        self._validate_no_parent_references_a_contended_vacated_id(tags)
 
         tags_for_delete = {}
 

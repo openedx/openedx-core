@@ -728,6 +728,62 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert child_tag.parent is not None
         assert child_tag.parent.pk == parent_tag.pk
 
+    def test_import_swap_parent_id_contended_by_swap_rejected(self) -> None:
+        """
+        Regression: a swap (tag_1 <-> tag_3) where two other rows each
+        reference one of the swapped tags' old ids as parent_id (tag_2 ->
+        tag_1, tag_4 -> tag_3). The vacated id "tag_1" is also claimed as
+        "tag_3"'s final id in this same file (and vice versa), so it's
+        ambiguous which physical tag each parent_id means. Must be
+        rejected at the plan step, with nothing in the DB changed.
+        """
+        old_tag_1 = self.taxonomy.tag_set.get(external_id="tag_1")
+        old_tag_2 = self.taxonomy.tag_set.get(external_id="tag_2")
+        old_tag_3 = self.taxonomy.tag_set.get(external_id="tag_3")
+        old_tag_4 = self.taxonomy.tag_set.get(external_id="tag_4")
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_3", "value": "Tag 1", "previous_id": "tag_1"},
+            {"id": "tag_1", "value": "Tag 3", "previous_id": "tag_3"},
+            {"id": "tag_2", "value": "Tag 2", "parent_id": "tag_1"},
+            {"id": "tag_4", "value": "Tag 4", "parent_id": "tag_3"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+            replace=True,
+        )
+        assert not result
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert (
+            "Row 3's parent_id (tag_1) is ambiguous: row 1 renames that id away (to 'tag_3'), "
+            "while row 2 renames a different tag onto 'tag_1' in this same import."
+        ) in log
+        assert (
+            "Row 4's parent_id (tag_3) is ambiguous: row 2 renames that id away (to 'tag_1'), "
+            "while row 1 renames a different tag onto 'tag_3' in this same import."
+        ) in log
+        assert "Traceback" not in log
+
+        for old_tag in (old_tag_1, old_tag_2, old_tag_3, old_tag_4):
+            old_tag.refresh_from_db()
+        assert old_tag_1.external_id == "tag_1"
+        assert old_tag_1.value == "Tag 1"
+        assert old_tag_1.parent is None
+        assert old_tag_2.external_id == "tag_2"
+        assert old_tag_2.value == "Tag 2"
+        assert old_tag_2.parent is not None
+        assert old_tag_2.parent.pk == old_tag_1.pk
+        assert old_tag_3.external_id == "tag_3"
+        assert old_tag_3.value == "Tag 3"
+        assert old_tag_3.parent is None
+        assert old_tag_4.external_id == "tag_4"
+        assert old_tag_4.value == "Tag 4"
+        assert old_tag_4.parent is not None
+        assert old_tag_4.parent.pk == old_tag_3.pk
+
     def test_import_swap_external_ids(self) -> None:
         """
         A 2-tag swap (tag_1 <-> tag_3, both root tags so parent handling
