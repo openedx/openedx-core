@@ -54,8 +54,8 @@ Imagine a course with ``solar-system.svg`` and ``earth.svg`` as shared Asset Com
 
 If that course contains an HTML Component (an ``html`` XBlock) with ``earth.svg`` attached as an asset file, then any reference that XBlock makes to ``/static/earth.svg`` will refer to the local ``earth.svg`` attached to the Component, not to the shared ``earth.svg`` Asset Component used by the overall course. But a reference to ``/static/solar-system.svg`` will use the shared Asset Component from Course Files, since there is no local asset file with that name attached to the HTML Component.
 
-3. References using ``/static/`` URLs are tracked with ``AssetComponentLink``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+3. References using ``/static/`` URLs are tracked as dependencies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 When editing an XBlock/Component such as a Text (HTML) component, course authors can freely copy and paste ``/static/`` references into the HTML/OLX to reference any available shared Asset Components in the course (including ones copied from content libraries). When the author saves their changes, the OLX will be scanned for ``/static/`` references, which can be done unambiguously, unlike the legacy asset reference schemes. As part of saving the new ``ComponentVersion``, the system will create a :class:`PublishableEntityVersionDependency` from the component version to any Asset Components used.
 
@@ -63,7 +63,23 @@ This means the existing side-effect machinery works unchanged: editing a draft A
 
 ⚠️ However, note that on its own, this cannot detect relative references among Asset Components. For example, if an Asset Component ``example.html`` references ``<img src="image.png">``, then there is a dependency between ``example.html`` and ``image.png`` that is not represented by a :class:`PublishableEntityVersionDependency`. We can attempt to reduce the occurrence of this by scanning HTML files for references as well, but that is not going to be particularly reliable.
 
-4. Shared assets become attached assets when linked to another Learning Package
+4. Unresolved references create placeholder Asset Components
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Authors will sometimes save a component that references ``/static/foo.png`` before ``foo.png`` has been uploaded, or after it has been deleted. Rendering is unaffected, since references are resolved by name at render time, but without a :class:`PublishableEntityVersionDependency` the side-effect machinery from decision 3 would not apply once the file is uploaded: the component would not show as having unpublished changes, publishing it would not publish ``foo.png``, and "where is this asset used?" would miss it.
+
+To avoid this, when a ``/static/`` reference does not match any attached asset or Asset Component, the system will create a *placeholder* Asset Component: an ``openedx.v1:asset`` :class:`Component` with the ``component_code`` derived from the referenced filename (per :ref:`openedx-content-adr-0013` decision 7), but with no :class:`ComponentVersion`. The dependency is then created as usual, because :class:`PublishableEntityVersionDependency` references an entity, not a version.
+
+When a file with that name is later uploaded, it becomes the first version of the placeholder rather than a new :class:`Component`, and the normal draft side effects mark every referencing component as having unpublished changes. This also means a never-uploaded file and a deleted Asset Component end up in the same state: an entity with no current draft version, which other component versions still depend on.
+
+Additional rules:
+
+- No placeholder is created if the referencing component has an attached asset file with that name (decision 2).
+- A placeholder is identified by being an ``openedx.v1:asset`` :class:`Component` with no versions at all. Placeholders are excluded from regular Asset Component listings, export, and search indexing.
+- Placeholders that no longer have any dependents (e.g. typos that were later fixed) can be hard-deleted, since they never had any content. The ``on_delete=RESTRICT`` on ``referenced_entity`` ensures a placeholder that is still referenced cannot be deleted by mistake.
+- When a component referencing a placeholder is copied to another Learning Package (decision 5), a placeholder is created in the destination too.
+
+5. Shared assets become attached assets when linked to another Learning Package
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 When an XBlock Component with references to shared Asset Component(s) is pasted/copied from one Learning Package to another, e.g. from a library to a course, or from a library to another library, the shared Asset Component(s) that it references may be converted to attached asset files.
@@ -72,19 +88,19 @@ A new principle that we want to uphold is that **OLX should not change** when a 
 
 When copying a Component with references to shared Asset Components to a new Learning Package, each referenced Asset Component is handled as follows:
 
-- First, if the destination Learning Package already has an Asset Component that is a downstream copy of the same upstream Asset Component (see decision 6), that existing copy is reused.
+- First, if the destination Learning Package already has an Asset Component that is a downstream copy of the same upstream Asset Component (see decision 7), that existing copy is reused.
 - Likewise, if the destination Learning Package already has an Asset Component with identical filename and file hash, it is reused and no Asset Components need to be copied.
 - In both of the above cases, only the main Component needs to be copied, but we still have to create a :class:`PublishableEntityVersionDependency` object to track the relationship.
 - Otherwise, the Asset Component is copied into the course, with appropriate dependency tracking set up unless the course has a conflicting Asset Component with the same filename but different content; in that case, the asset file is converted to become an asset file attached to the Component in question. No changes to the OLX are required.
 
-5. Editors should de-reference full URLs on save
+6. Editors should de-reference full URLs on save
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 In the course of editing courseware, authors may use their browser's "Copy Image URL" to copy the URL of an image and paste it elsewhere, resulting in a full, rewritten URL like ``https://demo.openedx.org/assets/content_libraries/lib:Axim:200/xblock.v1:problem@multi_choice_8/v4/static/images/fig1.png`` ending up in the OLX. If any such URLs are detected, they should be automatically rewritten to the ``/static/`` format.
 
 Note: Only rewrite full URLs that point into the same learning package. Rewriting a URL that points at another course's asset would create a link across packages, which we want to avoid.
 
-6. Versioning follows the library content model
+7. Versioning follows the library content model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 There are two independent layers of versioning, and they work the same way as for library components used in courses today.
@@ -105,12 +121,12 @@ Only *published* library versions are ever copied into a course. Library drafts 
 
 Upstream tracking for Asset Components uses the same platform-level mechanism as components (currently the ``ComponentLink`` model and related sync APIs in ``openedx-platform``). The ``upstream`` model may need adjustment, since an Asset Component is not an XBlock and has no XBlock fields to store ``upstream_version`` in. The details are left to the platform implementation.
 
-7. Backwards compatibility in OLX export
+8. Backwards compatibility in OLX export
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 TODO: document format for assets attached to components.
 
-8. Support for multiple python libraries per course
+9. Support for multiple python libraries per course
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The Problem component (also known as "capa") has support for writing advanced problems that use Python to compute parts of the problem or grade user answers. In particular, it allows authors to provide a library of python functions that will be available for use in any python code used to define a given problem. Currently, this is limited to one library file per course, which must be called ``python_lib.zip``. Once courseware is moved into ``openedx_content``, we should extend the Problem component so that the Python library is a field that can point to any shared asset (e.g. ``/static/alternative_python_lib.zip``), falling back to whichever asset has the filename ``python_lib.zip``. This will provide authors with more flexibility and simplify the process of linking advanced python-based Problems from a library into a course, without breaking backwards compatibility.
@@ -119,6 +135,7 @@ Consequences
 ------------
 
 - Asset usage ("which components use this file?") becomes a simple query over ``PublishableEntityVersionDependency``, rather than a best-effort parse of all course content.
+- The course "Files" page can show a list of "broken references" / "missing files" by querying for placeholder Asset Components (decision 4) that still have dependents, along with the components that reference each one. Deleted Asset Components that are still referenced can be included in the same list.
 - For content using ``/static/...`` references: reruns, clipboard copy/paste, library import and library sync never need to rewrite references in component content.
 - A course's learning package always contains every asset it uses, so it can be exported, backed up and restored in isolation.
 - Every component version snapshots its links, adding a small number of rows per component version for components that use shared assets.
@@ -130,10 +147,10 @@ Consequences
 Rejected Alternatives
 ---------------------
 
-Authors must explicitly create ``AssetComponentLink`` references themselves
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Authors must explicitly link Asset Components themselves
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-We could say that authors must create some explicit ``AssetComponentLink`` references via the UI (e.g. using a file picker) before ``/static/...`` style references in the OLX will work. However, this is unduly burdensome for course authors, compared to the relative simplicity of copying and pasting ``/static/...`` strings, and leaving the system to auto-create (or delete) ``PublishableEntityVersionDependency`` references as needed.
+We could say that authors must explicitly link a component to each Asset Component it uses via the UI (e.g. using a file picker) before ``/static/...`` style references in the OLX will work. However, this is unduly burdensome for course authors, compared to the relative simplicity of copying and pasting ``/static/...`` strings, and leaving the system to auto-create (or delete) ``PublishableEntityVersionDependency`` references as needed.
 
 Linking directly to Asset Components in libraries
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -153,16 +170,14 @@ Placeholders such as ``{{ asset "moon-orbit-illustration/moon-orbit.svg" }}`` ar
 Pinning links to specific Asset Component versions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A ``AssetComponentLink`` could name a specific version of the Asset Component, like a pinned container child. This would stop an Asset Component edit from affecting components that use it, but authors expect that replacing a shared image updates it everywhere in the course. Pinning also creates a different version of the same asset for every component, and requires a new version of every using component each time the Asset Component changes. Controlled updates are already provided one layer up, between a library and a course (decision 6).
+A component version's reference could name a specific version of the Asset Component, like a pinned container child. This would stop an Asset Component edit from affecting components that use it, but authors expect that replacing a shared image updates it everywhere in the course. Pinning also creates a different version of the same asset for every component, and requires a new version of every using component each time the Asset Component changes. Controlled updates are already provided one layer up, between a library and a course (decision 7).
 
 TODOs and open questions
 ------------------------
 
-- Contentstore builds asset-v1 block names by replacing ``/`` with ``_``, which loses information. ``images/a.png`` and ``images_a.png`` produce the same key, so going from key to ``legacy_path`` isn't always 1:1. The ADR should specify how that is resolved.
-- Reconcile the ``.../legacy/example.png`` asset URLs with :ref:`openedx-content-adr-0005`
-- 0013 decision 7 derives component_code from the filename with subdirectories dropped, so migrated nested legacy files will collide on code.
+- Specify how legacy ``asset-v1:`` URLs are resolved: presumably by applying the :ref:`openedx-content-adr-0013` decision 7 normalization to the key's block name (which may contain ``%``) to get the ``component_code``.
 - What happens when an Asset Component that others link to is deleted? (Can we ensure the published Component's old reference still resolves to the Asset Component version it was last linked to?)
 - Referencing a ``private`` Asset Component from learner-facing content should warn.
 - Specify whether syncing a library component also syncs the Asset Components it links to, and what happens if the course edited its copy locally.
 - Export: Files attached to a component need a rule for export to older platforms. The ``locked`` and ``title`` need to go into ``policies/assets.json``. Private static files will have to be in a separate folder outside of ``static/`` and won't be backwards compatible.
-- Figure out if we can also re-use ``AssetComponentLink`` to track references to external Digital Asset Management Systems.
+- Figure out if we can also use the same dependency tracking for references to external Digital Asset Management Systems.

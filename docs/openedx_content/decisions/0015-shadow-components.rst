@@ -94,7 +94,7 @@ Consequences
 
 **The publish state of an XBlock and its attached assets can drift** if a code path publishes one without the other. Since an XBlock and its assets are published by different systems, this cannot be made atomic.
 
-**Exporting a course with Shadow Components to OLX needs a format for attached assets.** This is the same open question as :ref:`openedx-content-adr-0014` decision 7, but it becomes urgent sooner, because every export of a modulestore course that uses Shadow Components must include them.
+**Exporting a course with Shadow Components to OLX needs a format for attached assets.** This is the same open question as :ref:`openedx-content-adr-0014` decision 8, but it becomes urgent sooner, because every export of a modulestore course that uses Shadow Components must include them.
 
 Rejected Alternatives
 ---------------------

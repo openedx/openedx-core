@@ -55,6 +55,8 @@ Within a single Learning Package, Asset Components can use relative references t
 
 This is largely for backwards compatibility, and the main use case (HTML interactives) is better served by attaching all the related files to a single HTML Component.
 
+In order to achieve this, **the asset serving URL scheme from decision 0005** must be updated, so that when serving any component's file assets from a path like ``.../{component_key}/{version}/{filepath}``, if the ``{filepath}`` part does not resolve within the referenced component version, it will fall back to any Asset Component in the learning package that has that file name. For example, an HTML Asset Component accessed via the URL ``.../openedx.v1:asset:page.html/published/page.html`` may reference an image belonging to another Asset Component which would normally have the URL ``.../openedx.v1:asset:image.png/published/image.png`` but in this case may be accessed as ``.../openedx.v1:asset:page.html/published/image.png``.
+
 4. Course Files assets are Asset Components within the run's learning package
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
