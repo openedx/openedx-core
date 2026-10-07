@@ -127,3 +127,10 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
+
+# django-simple-history bakes this setting's value into the db_index it generates for every
+# HistoricalRecords() model's history_date field, so a library that ships committed migrations
+# must set it to whatever its actual consumer uses, or installing those migrations into that
+# consumer's project drifts out of sync with its live model state. openedx-platform (this
+# library's primary consumer) sets this to False in openedx/envs/common.py.
+SIMPLE_HISTORY_DATE_INDEX = False
