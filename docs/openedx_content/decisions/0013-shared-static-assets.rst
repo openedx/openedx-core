@@ -34,14 +34,14 @@ The type is a :class:`ComponentType` with namespace ``openedx.v1`` and name ``as
 
    Throughout this ADR and in related code and documentation, "Asset Component" is always written in full and never shortened to "asset". This matches existing ``openedx_content`` code, where e.g. ``get_redirect_response_for_component_asset()`` uses "asset" for any file attached to a :class:`ComponentVersion`.
 
-"Asset Component" is chosen because "Shared Asset Component" is too long, although that would be clearer. It also matches the names already used for these things elsewhere: the legacy ``asset-v1:...+type@asset+block@...`` keys of the Course Files being migrated, the "assets" APIs behind Studio's "Files" page, and the ``oex-asset:`` reference scheme in :ref:`openedx-content-adr-0014`.
+"Asset Component" is chosen because "Shared Asset Component" is too long, although that would be clearer. It also matches the names already used for these things elsewhere: the legacy ``asset-v1:...+type@asset+block@...`` keys of the Course Files being migrated, and the "assets" APIs behind Studio's "Files" page.
 
 2. Asset Components are uniquely keyed by filename
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Each Asset Component holds only a single file, e.g. ``solar-system.svg``, and within a given learning package (i.e. within a given course or library), each Asset Component's filename must be unique. (This is in contrast to asset files attached to XBlock Components, which allow multiple asset files per Component.)
 
-When assets (of any type) have some relationship to each other and need to be grouped together for organizational purposes, this can be achieve in one of two ways:
+When assets (of any type) have some relationship to each other and need to be grouped together for organizational purposes, this can be achieved in one of two ways:
 
 * By attached all the related asset files to the same XBlock Component; or
 * By organizing the related Asset Components (one file per Asset Component) into a ``Collection``
@@ -77,7 +77,7 @@ All Asset Components (in fact, all PublishableEntities) have a mutable ``title``
 
 For simplicity and backwards compatibility, we will set the ``component_code`` to (almost) the same value as the ``contentstore`` ``path`` value: all characters other than hyphens, underscores, and periods are converted to underscores. (Note: the ``contentstore`` algorithm also allowed ``%`` in the result, which ``component_code`` will not.)
 
-Examples::
+Examples:
 
 * ``image 001.png`` would become code ``image_001.png``
 * ``subfolder/jane & todd.orig.jpeg`` would become code ``subfolder_jane___todd.orig.jpeg``
@@ -126,6 +126,8 @@ Consequences
 **Course Files are now versioned.** Since we're building on :class:`Component`, which has full draft-publish and version history support, all shared files in a course will become versioned and support draft-publish as well. (For initial compatibility, we'll likely only use the published versions and auto-publish new files as soon as they're uploaded, but this can be refined in the future.)
 
 **Replaced files are not deleted**, and old versions of the replaced file will still exist; this follows from the fact that the files are now versioned.
+
+**Asset Components cannot be renamed.** Because the filename *is* the identifier, new files can be uploaded, but renaming a file would break any existing usages as well as possibly require a changing the ``component_code``, so must be disallowed.
 
 **There will be two different ways to use files in course content**: by attaching them directly to XBlock Components, or by uploading them as shared Asset Components. Content libraries already support the former (attached to Components). Note that "locking" assets will only be supported for shared Asset Components, as any public files attached to a ``Component`` that are meant to be accessible to learners will share the same permissions as the ``Component`` they're attached to.
 
