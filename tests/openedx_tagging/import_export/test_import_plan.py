@@ -419,12 +419,49 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         self.assertEqual(self.import_plan.actions[0].name, 'rename_external_id')
         self.assertEqual(self.import_plan.actions[0].tag.id, 'tag_50')
 
+    def test_generate_actions_rename_external_id_case_only_skips_staging(self) -> None:
+        """
+        A case-only rename (id differs from previous_id only in case) must not
+        stage itself via StageTagExternalIdForSwap: there is no other row
+        contending for the id, so the swap is unnecessary and its plan message
+        ("temporarily move tag off its external_id...") would be misleading.
+        """
+        tags = [
+            TagItem(id='TAG_1', value='Tag 1', previous_id='tag_1'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(len(self.import_plan.errors), 0)
+        self.assertEqual(len(self.import_plan.indexed_actions['stage_external_id']), 0)
+        self.assertEqual(len(self.import_plan.indexed_actions['rename_external_id']), 1)
+
     def test_generate_actions_rename_external_id_replace_skips_delete(self) -> None:
         # tag_1 is renamed to tag_50 (previous_id='tag_1'); under replace=True
         # its old id must not be swept up in the delete pass, since it is the
         # same underlying tag, not a removed one.
         tags = [
             TagItem(id='tag_50', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_2', value='Tag 2'),
+            TagItem(id='tag_3', value='Tag 3'),
+            TagItem(id='tag_4', value='Tag 4', parent_id='tag_3'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=True)
+        self.assertEqual(len(self.import_plan.errors), 0)
+        delete_targets = [
+            action.tag.id for action in self.import_plan.actions if action.name == 'delete'
+        ]
+        self.assertNotIn('tag_1', delete_targets)
+
+    def test_generate_actions_rename_external_id_replace_skips_delete_case_different_previous_id(self) -> None:
+        """
+        Regression: previous_id='TAG_1' must still protect the existing
+        tag_1 tag from the replace-mode delete sweep even though it differs
+        from the stored external_id only in case, since external_id is a
+        case-insensitive DB field. Before the fix, the exact-case pop missed
+        this tag, queuing it for deletion and then crashing the rename's own
+        execute() with Tag.DoesNotExist.
+        """
+        tags = [
+            TagItem(id='tag_50', value='Tag 1', previous_id='TAG_1'),
             TagItem(id='tag_2', value='Tag 2'),
             TagItem(id='tag_3', value='Tag 3'),
             TagItem(id='tag_4', value='Tag 4', parent_id='tag_3'),

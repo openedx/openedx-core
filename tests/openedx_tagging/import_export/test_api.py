@@ -504,6 +504,36 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert renamed_tag.value == "Tag 1 Renamed"
         assert not self.taxonomy.tag_set.filter(external_id="tag_1").exists()
 
+    def test_import_rename_external_id_survives_replace_mode_case_different_previous_id(self) -> None:
+        """
+        Regression: replace=True with a previous_id that differs from the
+        stored external_id only in case ("TAG_1" vs "tag_1") must still
+        protect the existing tag from the delete sweep end-to-end. Before
+        the fix, the exact-case pop in generate_actions() missed this tag,
+        the delete sweep queued and removed it, and the rename's own
+        execute() then crashed with Tag.DoesNotExist since the pk it
+        resolved at plan time no longer existed.
+        """
+        old_pk = self.taxonomy.tag_set.get(external_id="tag_1").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "tag_50", "value": "Tag 1 Renamed", "previous_id": "TAG_1"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+            replace=True,
+        )
+        assert result
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+
+        renamed_tag = Tag.objects.get(pk=old_pk)
+        assert renamed_tag.external_id == "tag_50"
+        assert renamed_tag.value == "Tag 1 Renamed"
+        assert not self.taxonomy.tag_set.filter(external_id="tag_1").exists()
+
     def test_import_rename_external_id_previous_id_equals_id_is_noop(self) -> None:
         """
         previous_id equal to id is a no-op: RenameTagExternalId.applies_for

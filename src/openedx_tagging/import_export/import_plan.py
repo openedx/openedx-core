@@ -223,7 +223,8 @@ class TagImportPlan:
             if target_pk is None:
                 continue
             vacated_pks[target_pk] = tag.id
-            if tag.previous_id.casefold() in target_ids:
+            is_case_only_rename = tag.previous_id.casefold() == tag.id.casefold()
+            if not is_case_only_rename and tag.previous_id.casefold() in target_ids:
                 self._build_action(StageTagExternalIdForSwap, tag, target_pk=target_pk)
         self.indexed_actions["_vacated_pks"] = vacated_pks
 
@@ -263,6 +264,9 @@ class TagImportPlan:
             tags_for_delete = {
                 self._get_tag_id(tag): tag for tag in self.taxonomy.tag_set.all()
             }
+            # external_id is case-insensitive in the DB, so a previous_id pop
+            # below must match regardless of case too.
+            delete_keys_by_fold = {key.casefold(): key for key in tags_for_delete}
 
             for tag in tags:
                 # A rename row's `id` is the new target, not confirmation
@@ -273,7 +277,9 @@ class TagImportPlan:
                 if not is_rename and tag.id in tags_for_delete:
                     tags_for_delete.pop(tag.id)
                 if tag.previous_id:
-                    tags_for_delete.pop(tag.previous_id, None)
+                    key = delete_keys_by_fold.get(tag.previous_id.casefold())
+                    if key is not None:
+                        tags_for_delete.pop(key, None)
 
             # Delete all not readed tags
             self._build_delete_actions(tags_for_delete)
