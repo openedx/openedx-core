@@ -15,7 +15,7 @@ from django.utils.translation import gettext_lazy as _
 from organizations.models import Organization
 from simple_history.models import HistoricalRecords
 
-from openedx_catalog.models import CourseRun
+from openedx_catalog.models_api import CourseRun
 from openedx_django_lib.fields import case_insensitive_char_field, immutable_uuid_field
 from openedx_tagging.models import ObjectTag, Tag
 
