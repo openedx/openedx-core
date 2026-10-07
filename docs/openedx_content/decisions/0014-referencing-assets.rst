@@ -23,21 +23,19 @@ Today, course content references assets in one of two ways:
 
 For backwards compatibility, both of these formats must continue to be supported indefinitely.
 
-However, we would ideally want a format which is both portable and unambiguous. The ``/static/`` format is portable but suffers from the challenge that ``/static/`` can occur in many unrelated contexts, so the system has to limit auto-detection to *quoted* URLs like ``"/static/blah"``; but this also means that any reference that is not quoted as expected (e.g. something on its own line in the text or something like ``&quot;/static/...&quot;``) will not be detected.
+Of the two, only the ``/static/`` format is portable, so it is the one we build on. Its weakness is detection: ``/static/`` can occur in many unrelated contexts, so the system currently limits auto-detection to *quoted* URLs like ``"/static/blah"``, which means that any reference that is not quoted as expected (e.g. something on its own line in the text or something like ``&quot;/static/...&quot;``) will not be detected.
 
 Decisions
 ---------
 
-
-
 1. Asset Components can be referenced using the existing ``/static/`` URL format, improved
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When editing an XBlock Component (stored in ``openedx_content``, not modulestore), whether using a visual editor or editing OLX directly, users who want to reference a static asset file (e.g. embed an image) can browse through all files attached to the current component (with the ``/static/`` prefix to indicate they're public), as well as all shared Asset Components in the course (or copied/linked into the course from a library). They can then use the new ``/static/`` path prefix to identify that asset::
+When editing an XBlock Component (stored in ``openedx_content``, not modulestore), whether using a visual editor or editing OLX directly, users who want to reference a static asset file (e.g. embed an image) can browse through all files attached to the current component (with the ``/static/`` prefix to indicate they're public), as well as all shared Asset Components in the course (or copied/linked into the course from a library). They can then use the existing ``/static/`` path prefix to identify that asset::
 
     /static/filename.ext
 
-Examples, for an HTML component wants to use the Asset Component ``moon-orbit.svg``:
+For example, for an HTML component that wants to use the Asset Component ``moon-orbit.svg``:
 
 .. code-block:: html
 
@@ -45,7 +43,9 @@ Examples, for an HTML component wants to use the Asset Component ``moon-orbit.sv
 
 However, the existing "URL rewriting" code for detecting ``/static/x`` references only detects them if they are quoted in either single quotes or double quotes. This does not detect other situations like ``&quot;/static/triangle.png&quot;`` which occurs in the Drag and Drop XBlock's OLX, nor plain text references where ``/static/x`` is on its own line.
 
-To improve this, the updated ``/static/`` detection should detect any occurrence of ``/static/...`` that is not preceded by a word character, hyphen, or underscore.
+To improve this, the updated ``/static/`` detection should detect any occurrence of ``/static/...`` that is not preceded by a word character or hyphen.
+
+TODO: specify where an unquoted reference ends. Legacy paths can contain spaces, parentheses and other punctuation, so ``/static/image 001.png`` is ambiguous unless it is quoted.
 
 2. References prefer component assets over shared Asset Components
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -57,7 +57,7 @@ If that course contains an HTML Component (an ``html`` XBlock) with ``earth.svg`
 3. References using ``/static/`` URLs are tracked as dependencies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When editing an XBlock/Component such as a Text (HTML) component, course authors can freely copy and paste ``/static/`` references into the HTML/OLX to reference any available shared Asset Components in the course (including ones copied from content libraries). When the author saves their changes, the OLX will be scanned for ``/static/`` references, which can be done unambiguously, unlike the legacy asset reference schemes. As part of saving the new ``ComponentVersion``, the system will create a :class:`PublishableEntityVersionDependency` from the component version to any Asset Components used.
+When editing an XBlock/Component such as a Text (HTML) component, course authors can freely copy and paste ``/static/`` references into the HTML/OLX to reference any available shared Asset Components in the course (including ones copied from content libraries). When the author saves their changes, the OLX will be scanned for ``/static/`` references using the improved detection from decision 1, and each reference will be resolved as described in decision 2. As part of saving the new ``ComponentVersion``, the system will create a :class:`PublishableEntityVersionDependency` from the component version to any shared Asset Components used. (References that resolve to the component's own attached files need no dependency.)
 
 This means the existing side-effect machinery works unchanged: editing a draft Asset Component marks every component that uses it as having unpublished changes, and the publish log records the change against those components as well. It also answers "where is this asset used?" with a query instead of by parsing content.
 
@@ -157,15 +157,19 @@ Linking directly to Asset Components in libraries
 
 Letting a course component link to an Asset Component that lives in a library's learning package would avoid copying. It was rejected because it breaks learning package isolation (deleting or un-publishing a library asset would break courses), can't use :class:`PublishableEntityVersionDependency` for side effects, would give courses two different versioning and permission models for assets depending on where they came from, and is inconsistent with how library components are used in courses.
 
-Keeping ``/static/`` with collision checks
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A new ``oex-asset:`` URL scheme
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The smallest change would be to keep ``/static/{path}`` as the only reference format, resolve it through the component's links, and reject links that would create path collisions. This would fix ambiguity, but not detection: ``/static/`` would still be hard to tell apart from platform URLs or incidental content (e.g. a course on HTML with examples that include ``/static/`` but are unrelated to course assets). Rejecting collisions would also prevent legitimate cases, such as two HTML-package Asset Components that each contain an ``index.html``, and adding a file to a linked Asset Component could still change what another reference resolves to.
+An earlier draft of this ADR introduced a new reference format, e.g. ``<img src="oex-asset:moon-orbit.svg">``, along with an ``AssetComponentLink`` model holding a per-component alias for each referenced Asset Component. Unlike ``/static/``, ``oex-asset:`` never occurs in content for any other reason, so it can be detected with no false positives (e.g. from platform URLs, or a course on HTML whose examples include ``/static/``).
 
-Template placeholders instead of a URL scheme
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+It was rejected because it adds cost without removing any: ``/static/`` and ``asset-v1:`` must be supported indefinitely anyway, so the rendering pipeline would have to handle three formats instead of two. Every sanitizer and editor that touches authored content would have to allow the new scheme, and exports would have to rewrite ``oex-asset:`` references back to ``/static/`` so that the tarball can be imported on older Open edX versions. The aliases, which were needed to avoid filename collisions when copying from a library, are instead handled by converting conflicting shared assets to attached assets (decision 5), which works with plain ``/static/`` references.
 
-Placeholders such as ``{{ asset "moon-orbit-illustration/moon-orbit.svg" }}`` are equally easy to detect, but they are not URLs. HTML parsers, WYSIWYG editors and sanitizers mangle them in ``src`` and ``href`` attributes, while a URL-shaped reference survives those tools as long as the scheme is allowed.
+The cost of staying with ``/static/`` is the occasional false positive from the broader detection in decision 1. With placeholder Asset Components (decision 4), a false positive results in an unused placeholder and a spurious "missing file" entry, rather than broken content.
+
+Template placeholders instead of URLs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Placeholders such as ``{{ asset "moon-orbit.svg" }}`` are easy to detect, but they are not URLs. HTML parsers, WYSIWYG editors and sanitizers mangle them in ``src`` and ``href`` attributes, while a URL-shaped reference like ``/static/moon-orbit.svg`` survives those tools.
 
 Pinning links to specific Asset Component versions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

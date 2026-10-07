@@ -77,7 +77,7 @@ All Asset Components (in fact, all PublishableEntities) have a mutable ``title``
 
 ``component_code`` must be unique among all Asset Components in the same :class:`LearningPackage`, and is restricted in what special characters can be used (alphanumeric characters, underscores, hyphens, and periods are allowed but nothing else).
 
-For simplicity and backwards compatibility, we will set the ``component_code`` to (almost) the same value as the ``contentstore`` ``path`` value: all characters other than hyphens, underscores, and periods are converted to underscores. (Note: the ``contentstore`` algorithm also allowed ``%`` in the result, which ``component_code`` will not.)
+For simplicity and backwards compatibility, we will set the ``component_code`` to (almost) the same value as the ``contentstore`` ``path`` value: all characters other than alphanumerics, hyphens, underscores, and periods are converted to underscores. (Note: the ``contentstore`` algorithm also allowed ``%`` in the result, which ``component_code`` will not.)
 
 Examples:
 
