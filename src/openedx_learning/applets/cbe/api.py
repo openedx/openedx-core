@@ -8,10 +8,11 @@ from django.db.models import QuerySet
 from openedx_tagging.api import create_taxonomy
 from openedx_tagging.models import Taxonomy
 
-from .models import CompetencyTaxonomy
+from .models import CompetencyRuleProfile, CompetencyTaxonomy
 
 __all__ = [
     "create_competency_taxonomy",
+    "get_competency_rule_profiles",
     "is_competency_taxonomy",
     "select_competency_taxonomies",
 ]
@@ -41,6 +42,21 @@ def create_competency_taxonomy(  # pylint: disable=too-many-positional-arguments
     )
     assert isinstance(taxonomy, CompetencyTaxonomy)
     return taxonomy
+
+
+def get_competency_rule_profiles() -> QuerySet[CompetencyRuleProfile]:
+    """
+    Return every live CompetencyRuleProfile, in ascending ``id`` order.
+
+    UNSTABLE: the rule profile family is incomplete, so the create, update, and archive entry
+    points still to come may change this function's shape without a deprecation cycle.
+
+    Archived profiles are left out: retirement is archive-only.
+
+    The ordering is part of the contract rather than a cosmetic detail: an unordered queryset
+    gives a paginating caller overlapping and skipped pages.
+    """
+    return CompetencyRuleProfile.objects.filter(archived=False).order_by("id")
 
 
 def is_competency_taxonomy(taxonomy: Taxonomy) -> bool:
