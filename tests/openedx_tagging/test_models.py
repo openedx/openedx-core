@@ -155,6 +155,15 @@ class TestTagTaxonomy(TestTagTaxonomyMixin, TestCase):
         assert not self.taxonomy.read_only
         assert self.read_only_taxonomy.read_only
 
+    def test_archived_defaults_to_false(self) -> None:
+        """
+        Newly created taxonomies and tags are not archived.
+        """
+        taxonomy = Taxonomy.objects.create(name="Fresh Taxonomy", export_id="fresh_taxonomy")
+        tag = Tag.objects.create(taxonomy=taxonomy, value="Fresh Tag")
+        assert taxonomy.archived is False
+        assert tag.archived is False
+
     def test_read_only_taxonomy_tags_immutable(self):
         """
         The tags of a read-only taxonomy cannot be added, edited, or deleted.
@@ -584,6 +593,7 @@ class TestFilteredTagsFreeTextTaxonomy(TestCase):
         assert result1 == result2
 
 
+@ddt.ddt
 class TestObjectTag(TestTagTaxonomyMixin, TestCase):
     """
     Test the ObjectTag model and the related Taxonomy methods and fields.
@@ -597,6 +607,36 @@ class TestObjectTag(TestTagTaxonomyMixin, TestCase):
             taxonomy=self.taxonomy,
             tag=self.tag,
         )
+
+    def test_archived_and_deletion_locked_default_to_false(self) -> None:
+        """
+        Newly created object tags are neither archived nor deletion-locked.
+        """
+        assert self.object_tag.archived is False
+        assert self.object_tag.deletion_locked is False
+
+    @ddt.data(
+        ("archived", "deletion_locked"),
+        ("deletion_locked", "archived"),
+    )
+    @ddt.unpack
+    def test_setting_one_flag_leaves_the_other_and_identity_unchanged(self, flag: str, other_flag: str) -> None:
+        """
+        Setting archived or deletion_locked on its own does not change the other flag or the tag's identity.
+        """
+        expected = {
+            field: getattr(self.object_tag, field)
+            for field in ("object_id", "taxonomy_id", "tag_id", "_value", "_export_id", "is_copied")
+        }
+
+        setattr(self.object_tag, flag, True)
+        self.object_tag.save()
+        self.object_tag.refresh_from_db()
+
+        assert getattr(self.object_tag, flag) is True
+        assert getattr(self.object_tag, other_flag) is False
+        for field, value in expected.items():
+            assert getattr(self.object_tag, field) == value
 
     def test_representations(self):
         assert (
@@ -612,6 +652,16 @@ class TestObjectTag(TestTagTaxonomyMixin, TestCase):
             == repr(copy_tag)
             == "<ObjectTagTestSubclass> object:id:1: Life on Earth=Bacteria"
         )
+
+    def test_cast_copies_archived_and_deletion_locked(self) -> None:
+        """
+        Casting an object tag carries over its archived and deletion_locked flags.
+        """
+        self.object_tag.archived = True
+        self.object_tag.deletion_locked = True
+        copy_tag = ObjectTagTestSubclass.cast(self.object_tag)
+        assert copy_tag.archived is True
+        assert copy_tag.deletion_locked is True
 
     def test_object_tag_export_id(self):
         # ObjectTag's export_id defaults to its taxonomy's export_id

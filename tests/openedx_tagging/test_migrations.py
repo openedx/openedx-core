@@ -1,5 +1,5 @@
 """
-Tests for the 0022_tag_external_id_not_null migration's backfill logic.
+Tests for openedx_tagging migrations, run against existing data.
 
 Uses the `migrator` pytest fixture from django_test_migrations to run the actual
 migration against historical (frozen) model states, the same way it will run against
@@ -11,6 +11,9 @@ import pytest
 
 MIGRATE_FROM = ("oel_tagging", "0021_remove_system_defined_add_read_only")
 MIGRATE_TO = ("oel_tagging", "0022_tag_external_id_not_null")
+
+MIGRATE_0023_FROM = ("oel_tagging", "0022_tag_external_id_not_null")
+MIGRATE_0023_TO = ("oel_tagging", "0023_archived_and_deletion_locked")
 
 
 @pytest.mark.django_db
@@ -98,3 +101,47 @@ def test_reverse_migration_is_a_noop_that_keeps_data(migrator) -> None:
 
     reverted_tag = RevertedTag.objects.get(pk=tag.pk)
     assert reverted_tag.external_id == "Rollback Tag"
+
+
+@pytest.mark.django_db
+def test_archived_and_deletion_locked_default_to_false_for_existing_rows(migrator) -> None:
+    """
+    Rows that exist before 0023 come out with archived and deletion_locked False, and their
+    other fields are untouched.
+    """
+    old_state = migrator.apply_initial_migration(MIGRATE_0023_FROM)
+    Taxonomy = old_state.apps.get_model("oel_tagging", "Taxonomy")
+    Tag = old_state.apps.get_model("oel_tagging", "Tag")
+    ObjectTag = old_state.apps.get_model("oel_tagging", "ObjectTag")
+
+    taxonomy = Taxonomy.objects.create(name="Flags Test", export_id="flags_test")
+    tag = Tag.objects.create(
+        taxonomy=taxonomy, value="Flags Tag", external_id="flags-tag", depth=0, lineage="Flags Tag\t",
+    )
+    # Historical models don't run ObjectTag.__init__, so the cached fields are set explicitly.
+    object_tag = ObjectTag.objects.create(
+        object_id="object:id:1", taxonomy=taxonomy, tag=tag, _export_id="flags_test", _value="Flags Tag",
+    )
+
+    new_state = migrator.apply_tested_migration(MIGRATE_0023_TO)
+    NewTaxonomy = new_state.apps.get_model("oel_tagging", "Taxonomy")
+    NewTag = new_state.apps.get_model("oel_tagging", "Tag")
+    NewObjectTag = new_state.apps.get_model("oel_tagging", "ObjectTag")
+
+    new_taxonomy = NewTaxonomy.objects.get(pk=taxonomy.pk)
+    new_tag = NewTag.objects.get(pk=tag.pk)
+    new_object_tag = NewObjectTag.objects.get(pk=object_tag.pk)
+
+    assert new_taxonomy.archived is False
+    assert new_tag.archived is False
+    assert new_object_tag.archived is False
+    assert new_object_tag.deletion_locked is False
+
+    assert new_taxonomy.export_id == "flags_test"
+    assert new_tag.value == "Flags Tag"
+    assert new_tag.external_id == "flags-tag"
+    assert new_object_tag.object_id == "object:id:1"
+    assert new_object_tag.taxonomy_id == taxonomy.pk
+    assert new_object_tag.tag_id == tag.pk
+    assert new_object_tag._export_id == "flags_test"  # pylint: disable=protected-access
+    assert new_object_tag._value == "Flags Tag"  # pylint: disable=protected-access
