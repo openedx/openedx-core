@@ -1,11 +1,8 @@
 """
 An import-linter contract that flags imports of an isolated app's private modules.
 
-Ported from openedx-platform's ``openedx.testing.importlinter.isolated_apps_contract``
-(as of commit 7e3ed6881c048fb93624100df25380e76eabbcc9), since this library can't
-depend on openedx-platform. Kept dependency-free beyond ``import-linter`` itself so
-it can be copied back and forth between the two without drifting into either one's
-internals.
+Ported from openedx-platform's ``openedx.testing.importlinter.isolated_apps_contract``,
+since this library can't depend on openedx-platform.
 """
 
 from importlinter import Contract, ContractCheck, fields, output
@@ -22,13 +19,10 @@ class IsolatedAppsContract(Contract):
     allowed_modules = fields.ListField(subfield=fields.StringField())
 
     def check(self, graph, verbose):
-        """Find every import of an isolated app's modules from outside that app, skipping allowed modules."""
         forbidden_imports_found = []
-        # Contract._populate_fields() replaces these class-level Field descriptors with
-        # their parsed list[str] values on the instance; pylint can't see that and still
-        # treats them as ListField (not iterable), hence copying through list() here.
-        isolated_apps: list[str] = list(self.isolated_apps)
-        allowed_modules: list[str] = list(self.allowed_modules)
+        # pylint can't tell import-linter replaces these Field descriptors with lists.
+        isolated_apps = list(self.isolated_apps)
+        allowed_modules = list(self.allowed_modules)
 
         for package in isolated_apps:
             output.verbose_print(
@@ -60,7 +54,6 @@ class IsolatedAppsContract(Contract):
         )
 
     def render_broken_contract(self, check):
-        """Print each forbidden import's location and source line."""
         for details in check.metadata['forbidden_imports_found']:
             package = details['package']
             importer = details['importer']
