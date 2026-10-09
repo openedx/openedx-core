@@ -32,7 +32,6 @@ _INVALID_GRADE_PAYLOADS = [
 def test_criterion_archived_defaults_to_false(
     group: CompetencyCriteriaGroup, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile
 ) -> None:
-    """A newly created CompetencyCriterion is not archived unless told otherwise."""
     criterion = CompetencyCriterion.objects.create(
         group=group, object_tag=object_tag, rule_profile=default_rule_profile
     )

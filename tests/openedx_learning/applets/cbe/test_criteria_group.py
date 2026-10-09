@@ -29,7 +29,6 @@ pytestmark = pytest.mark.django_db
 
 
 def test_group_archived_defaults_to_false(tag: Tag) -> None:
-    """A newly created CompetencyCriteriaGroup is not archived unless told otherwise."""
     group = CompetencyCriteriaGroup.objects.create(tag=tag)
     assert group.archived is False
 
