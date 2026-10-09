@@ -473,6 +473,29 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         ]
         self.assertNotIn('tag_1', delete_targets)
 
+    def test_generate_actions_plain_row_replace_skips_delete_case_different_id(self) -> None:
+        """
+        Regression: a plain row (no previous_id) with id='TAG_1' must still
+        protect the existing tag_1 tag from the replace-mode delete sweep
+        even though it differs from the stored external_id only in case.
+        Before the fix, the exact-case `tag.id in tags_for_delete` check
+        missed this tag, queuing it for deletion and then crashing
+        tag_4's own update_parent action (an explicit re-parent onto
+        "tag_1") once tag_1 no longer existed.
+        """
+        tags = [
+            TagItem(id='TAG_1', value='Tag 1'),
+            TagItem(id='tag_2', value='Tag 2', parent_id='tag_1'),
+            TagItem(id='tag_3', value='Tag 3'),
+            TagItem(id='tag_4', value='Tag 4', parent_id='tag_1'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=True)
+        self.assertEqual(len(self.import_plan.errors), 0)
+        delete_targets = [
+            action.tag.id for action in self.import_plan.actions if action.name == 'delete'
+        ]
+        self.assertNotIn('tag_1', delete_targets)
+
     def test_generate_actions_rename_external_id_value_collision_with_create(self) -> None:
         """
         Regression: a value collision between a `RenameTagExternalId` action

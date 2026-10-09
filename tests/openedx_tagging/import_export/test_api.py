@@ -534,6 +534,44 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert renamed_tag.value == "Tag 1 Renamed"
         assert not self.taxonomy.tag_set.filter(external_id="tag_1").exists()
 
+    def test_import_plain_row_replace_survives_case_different_id(self) -> None:
+        """
+        Regression: a plain row (no previous_id) with id="TAG_1" under
+        replace=True must still protect the existing tag_1 tag from the
+        delete sweep end-to-end, even though it differs from the stored
+        external_id only in case. Before the fix, the exact-case
+        `tag.id in tags_for_delete` check missed this tag, the delete
+        sweep removed it, and tag_4's own update_parent action (an
+        explicit re-parent onto "tag_1") then crashed looking up a tag
+        that had already been deleted.
+        """
+        old_pk = self.taxonomy.tag_set.get(external_id="tag_1").pk
+
+        importFile = BytesIO(json.dumps({"tags": [
+            {"id": "TAG_1", "value": "Tag 1"},
+            {"id": "tag_2", "value": "Tag 2", "parent_id": "tag_1"},
+            {"id": "tag_3", "value": "Tag 3"},
+            {"id": "tag_4", "value": "Tag 4", "parent_id": "tag_1"},
+        ]}).encode())
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy,
+            importFile,
+            self.parser_format,
+            replace=True,
+        )
+        log = import_export_api.get_last_import_log(self.taxonomy)
+        assert log == task.log
+        assert "Traceback" not in log
+        assert result
+
+        surviving_tag = Tag.objects.get(pk=old_pk)
+        assert surviving_tag.external_id == "tag_1"
+        assert surviving_tag.value == "Tag 1"
+
+        reparented_tag = self.taxonomy.tag_set.get(external_id="tag_4")
+        assert reparented_tag.parent is not None
+        assert reparented_tag.parent.pk == old_pk
+
     def test_import_rename_external_id_previous_id_equals_id_is_noop(self) -> None:
         """
         previous_id equal to id is a no-op: RenameTagExternalId.applies_for

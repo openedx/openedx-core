@@ -264,8 +264,8 @@ class TagImportPlan:
             tags_for_delete = {
                 self._get_tag_id(tag): tag for tag in self.taxonomy.tag_set.all()
             }
-            # external_id is case-insensitive in the DB, so a previous_id pop
-            # below must match regardless of case too.
+            # external_id is case-insensitive in the DB, so both pops below
+            # must match regardless of case too.
             delete_keys_by_fold = {key.casefold(): key for key in tags_for_delete}
 
             for tag in tags:
@@ -274,8 +274,10 @@ class TagImportPlan:
                 # kept: only `previous_id` protects an existing tag from
                 # this delete sweep in that case.
                 is_rename = bool(tag.previous_id) and tag.id != tag.previous_id
-                if not is_rename and tag.id in tags_for_delete:
-                    tags_for_delete.pop(tag.id)
+                if not is_rename:
+                    key = delete_keys_by_fold.get(tag.id.casefold())
+                    if key is not None:
+                        tags_for_delete.pop(key, None)
                 if tag.previous_id:
                     key = delete_keys_by_fold.get(tag.previous_id.casefold())
                     if key is not None:
