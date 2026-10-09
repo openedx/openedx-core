@@ -112,6 +112,9 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 USE_TZ = True
 
+# See test_settings.py for why this must match openedx-platform.
+SIMPLE_HISTORY_DATE_INDEX = False
+
 # openedx-core required configuration
 OPENEDX_LEARNING = {
     # Custom file storage, though this is better done through Django's

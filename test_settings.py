@@ -128,9 +128,10 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
 
-# django-simple-history bakes this setting's value into the db_index it generates for every
-# HistoricalRecords() model's history_date field, so a library that ships committed migrations
-# must set it to whatever its actual consumer uses, or installing those migrations into that
-# consumer's project drifts out of sync with its live model state. openedx-platform (this
-# library's primary consumer) sets this to False in openedx/envs/common.py.
+# django-simple-history bakes this setting into the history_date field of every
+# HistoricalRecords() model, and therefore into any migration we generate for one.
+# openedx-platform has had this set to False since its 2023 django-simple-history
+# upgrade (openedx/openedx-platform#32880), to avoid adding an index to every
+# historical table in the platform at once. Our migrations run there, so this has
+# to match.
 SIMPLE_HISTORY_DATE_INDEX = False
