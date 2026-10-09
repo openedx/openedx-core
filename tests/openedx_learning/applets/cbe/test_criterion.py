@@ -23,6 +23,22 @@ _INVALID_GRADE_PAYLOADS = [
 
 
 # ---------------------------------------------------------------------------------------------
+# Columns
+
+
+# ---------------------------------------------------------------------------------------------
+
+
+def test_criterion_archived_defaults_to_false(
+    group: CompetencyCriteriaGroup, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile
+) -> None:
+    criterion = CompetencyCriterion.objects.create(
+        group=group, object_tag=object_tag, rule_profile=default_rule_profile
+    )
+    assert criterion.archived is False
+
+
+# ---------------------------------------------------------------------------------------------
 # Either a rule_profile or both overrides. Never both, never neither.
 
 

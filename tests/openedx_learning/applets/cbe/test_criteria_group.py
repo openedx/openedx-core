@@ -22,6 +22,18 @@ pytestmark = pytest.mark.django_db
 
 
 # ---------------------------------------------------------------------------------------------
+# Columns
+
+
+# ---------------------------------------------------------------------------------------------
+
+
+def test_group_archived_defaults_to_false(tag: Tag) -> None:
+    group = CompetencyCriteriaGroup.objects.create(tag=tag)
+    assert group.archived is False
+
+
+# ---------------------------------------------------------------------------------------------
 # Tree shape, and the two constraints ADR-0002 Decision 2 deliberately leaves out
 
 
