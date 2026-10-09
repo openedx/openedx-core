@@ -11,6 +11,8 @@ root_packages =
     openedx_tagging
     openedx_django_lib
     openedx_core
+contract_types =
+    isolated_apps: test_utils.isolated_apps_contract.IsolatedAppsContract
 
 # This is layering between our top-level src folders (mostly Django apps).
 # This should be updated as new Django apps are added.
@@ -76,3 +78,17 @@ layers=
     # to create Learning Packages and manage the draft and publish states for
     # various types of content.
     openedx_content.applets.publishing
+
+# Mirrors openedx-platform's isolated-apps contract (see test_utils/isolated_apps_contract.py):
+# code outside an isolated app may only import its public modules (api, models_api, data,
+# tests). src_layering above only controls which top-level packages may depend on which.
+[importlinter:contract:isolated_apps]
+name = "code outside an isolated app only reaches its public API"
+type = isolated_apps
+isolated_apps =
+    openedx_catalog
+allowed_modules =
+    api
+    models_api
+    data
+    tests
