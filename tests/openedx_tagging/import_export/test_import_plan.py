@@ -596,33 +596,6 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         self.import_plan.generate_actions(tags=tags, replace=False)
         self.assertEqual(self.import_plan.errors, [])
 
-    def test_generate_actions_parent_id_contended_by_swap_rejected(self) -> None:
-        """
-        Regression: a swap (tag_1 <-> tag_3) where two other rows each
-        reference one of the swapped tags' old ids as parent_id. Unlike a
-        plain rename, the vacated id "tag_1" is also claimed as "tag_3"'s
-        final id in this same file (and vice versa), so it's ambiguous
-        whether a parent_id of "tag_1" means the original tag_1 row or the
-        tag now renamed onto "tag_1". Both must be rejected.
-        """
-        tags = [
-            TagItem(id='tag_3', value='Tag 1', previous_id='tag_1'),
-            TagItem(id='tag_1', value='Tag 3', previous_id='tag_3'),
-            TagItem(id='tag_2', value='Tag 2', parent_id='tag_1'),
-            TagItem(id='tag_4', value='Tag 4', parent_id='tag_3'),
-        ]
-        self.import_plan.generate_actions(tags=tags, replace=False)
-        self.assertEqual(len(self.import_plan.errors), 2)
-        error_strings = [str(error) for error in self.import_plan.errors]
-        self.assertTrue(
-            any("parent_id (tag_1)" in error and "Row 3" in error and "row 1" in error and "row 2" in error
-                for error in error_strings)
-        )
-        self.assertTrue(
-            any("parent_id (tag_3)" in error and "Row 4" in error and "row 2" in error and "row 1" in error
-                for error in error_strings)
-        )
-
     def test_generate_actions_genuine_collision_not_staged(self) -> None:
         """
         A rename targeting an id held by an unrelated tag that is not

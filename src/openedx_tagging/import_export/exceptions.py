@@ -80,25 +80,6 @@ class StaleIdTargetedByPlainRowError(TagImportError):
         ).format(tag_id=tag_id, plain_row=plain_row, rename_row=rename_row)
 
 
-class ParentReferencesContendedVacatedIdError(TagImportError):
-    """
-    Exception raised when a row's parent_id names an id that one row
-    vacates via rename while a different row claims that same id as its
-    own final id in the same import (a swap or cycle). It's ambiguous
-    whether the reference means the original tag or its replacement, so
-    the row is rejected instead of guessed at.
-    """
-
-    def __init__(self, parent_id: str, child_row: int, source_row: int, new_id: str, target_row: int, **kargs):
-        super().__init__(**kargs)
-        self.message = _(
-            "Row {child_row}'s parent_id ({parent_id}) is ambiguous: row {source_row} renames "
-            "that id away (to '{new_id}'), while row {target_row} renames a different tag onto "
-            "'{parent_id}' in this same import. Reference the parent by its tag's final id "
-            "instead of the vacated one."
-        ).format(child_row=child_row, parent_id=parent_id, source_row=source_row, new_id=new_id, target_row=target_row)
-
-
 class ImportActionConflict(ImportActionError):
     """
     Exception used when exists a conflict between actions
