@@ -49,9 +49,12 @@ def test_group_logic_operator_accepts_and_or_and_null_regardless_of_child_count(
     childless = CompetencyCriteriaGroup.objects.create(tag=tag, logic_operator=logic_operator)
     assert childless.pk is not None
 
-    parent = CompetencyCriteriaGroup.objects.create(tag=tag, logic_operator=logic_operator)
-    CompetencyCriteriaGroup.objects.create(tag=tag, parent=parent)
-    CompetencyCriteriaGroup.objects.create(tag=tag, parent=parent)
+    # A different tag from `childless`'s: the one-root-per-tag constraint allows only one root group
+    # per tag, and this scenario is about child count, not about tag reuse.
+    other_tag = Tag.objects.create(taxonomy=tag.taxonomy, value=f"{tag.value} (other)")
+    parent = CompetencyCriteriaGroup.objects.create(tag=other_tag, logic_operator=logic_operator)
+    CompetencyCriteriaGroup.objects.create(tag=other_tag, parent=parent)
+    CompetencyCriteriaGroup.objects.create(tag=other_tag, parent=parent)
     parent.refresh_from_db()
     assert parent.logic_operator == logic_operator
     assert CompetencyCriteriaGroup.objects.filter(parent=parent).count() == 2
