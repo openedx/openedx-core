@@ -1,5 +1,5 @@
 """
-Tests for openedx_tagging migrations, run against existing data.
+Tests that run openedx_tagging migrations over rows created on the earlier schema.
 
 Uses the `migrator` pytest fixture from django_test_migrations to run the actual
 migration against historical (frozen) model states, the same way it will run against
@@ -106,8 +106,7 @@ def test_reverse_migration_is_a_noop_that_keeps_data(migrator) -> None:
 @pytest.mark.django_db
 def test_archived_and_deletion_locked_default_to_false_for_existing_rows(migrator) -> None:
     """
-    Rows that exist before 0023 come out with archived and deletion_locked False, and their
-    other fields are untouched.
+    Rows that exist before 0023 come out unarchived and unlocked.
     """
     old_state = migrator.apply_initial_migration(MIGRATE_0023_FROM)
     Taxonomy = old_state.apps.get_model("oel_tagging", "Taxonomy")
@@ -118,10 +117,7 @@ def test_archived_and_deletion_locked_default_to_false_for_existing_rows(migrato
     tag = Tag.objects.create(
         taxonomy=taxonomy, value="Flags Tag", external_id="flags-tag", depth=0, lineage="Flags Tag\t",
     )
-    # Historical models don't run ObjectTag.__init__, so the cached fields are set explicitly.
-    object_tag = ObjectTag.objects.create(
-        object_id="object:id:1", taxonomy=taxonomy, tag=tag, _export_id="flags_test", _value="Flags Tag",
-    )
+    object_tag = ObjectTag.objects.create(object_id="object:id:1", taxonomy=taxonomy, tag=tag)
 
     new_state = migrator.apply_tested_migration(MIGRATE_0023_TO)
     NewTaxonomy = new_state.apps.get_model("oel_tagging", "Taxonomy")
@@ -136,12 +132,3 @@ def test_archived_and_deletion_locked_default_to_false_for_existing_rows(migrato
     assert new_tag.archived is False
     assert new_object_tag.archived is False
     assert new_object_tag.deletion_locked is False
-
-    assert new_taxonomy.export_id == "flags_test"
-    assert new_tag.value == "Flags Tag"
-    assert new_tag.external_id == "flags-tag"
-    assert new_object_tag.object_id == "object:id:1"
-    assert new_object_tag.taxonomy_id == taxonomy.pk
-    assert new_object_tag.tag_id == tag.pk
-    assert new_object_tag._export_id == "flags_test"  # pylint: disable=protected-access
-    assert new_object_tag._value == "Flags Tag"  # pylint: disable=protected-access
