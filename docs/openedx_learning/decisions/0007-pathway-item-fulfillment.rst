@@ -1,4 +1,4 @@
-.. _openedx-learning-adr-0006:
+.. _openedx-learning-adr-0007:
 
 6. Pathways: Mapping Pathway Items to the Things That Fulfill Them
 ==================================================================
@@ -11,7 +11,7 @@ Draft
 Context
 -------
 
-:ref:`openedx-learning-adr-0005` establishes that a Pathway Item is a stable requirement whose fulfillment can change
+:ref:`openedx-learning-adr-0006` establishes that a Pathway Item is a stable requirement whose fulfillment can change
 over time. This ADR describes how we intend to map Items to the things that fulfill them, starting with the only
 fulfillment type in the first release: passing a course.
 
