@@ -88,6 +88,8 @@ Consequences
 
 **Library components with attached assets can be used in modulestore courses without merging their assets into the course's Files.** This removes much of the complexity in today's library-to-course copy and sync code, which has to rename and merge each component's files into the course-wide namespace.
 
+**We can implement dependency tracking for all XBlocks, even those currently in modulestore.** We can detect ``/static/...`` references in regular modulestore XBlocks, and then record which shared Assets are in use using :class:`PublishableEntityVersionDependency`, exactly the same way as we can for XBlocks/Components that are fully stored in ``openedx_content``. Whether and when we should do this is left to decide at implementation time.
+
 **There are temporarily two sources of truth for a single XBlock**: modulestore for its fields, and ``openedx_content`` for its attached assets. Every Studio code path that creates, copies, publishes or deletes blocks needs to update both, and a missed code path will leave orphaned Shadow Components or XBlocks with missing assets. Orphaned Shadow Components are harmless apart from storage, and could be found and cleaned up by a periodic task that compares them to modulestore.
 
 **Code that lists or renders Components must handle Shadow Components.** They must not be treated as renderable XBlocks. Any code that loads a Component's ``block.xml`` must handle it being absent, and any listing of a course's Components (search indexing, tagging, etc.) should exclude Shadow Components.

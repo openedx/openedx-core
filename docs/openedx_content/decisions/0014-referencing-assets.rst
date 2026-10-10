@@ -91,7 +91,7 @@ When copying a Component with references to shared assets to a new Learning Pack
 - First, if the destination Learning Package already has an Asset that is a downstream copy of the same upstream Asset (see decision 7), that existing copy is reused.
 - Likewise, if the destination Learning Package already has an Asset with identical filename and file hash, it is reused and no Assets need to be copied.
 - In both of the above cases, only the main Component needs to be copied, but we still have to create a :class:`PublishableEntityVersionDependency` object to track the relationship.
-- Otherwise, the Asset is copied into the course, with appropriate dependency tracking set up unless the course has a conflicting Asset with the same filename but different content; in that case, the asset file is converted to become an asset file attached to the Component in question. No changes to the OLX are required.
+- Otherwise, the Asset is copied into the course, with appropriate dependency tracking set up unless the course has a conflicting Asset with the same filename but different content; in that case, the asset file is converted to become an asset file attached to the Component in question. No changes to the OLX are required. (Note: if the asset is ``private`` or ``locked``, it may be necessary to show an error instead, as converting it to be attached to the component could erase its permissions.)
 
 6. Editors should de-reference full URLs on save
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

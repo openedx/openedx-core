@@ -1,6 +1,6 @@
 .. _openedx-content-adr-0013:
 
-1.  Shared Static Assets
+13. Shared Static Assets
 ========================
 
 Status
@@ -25,19 +25,21 @@ Decisions
 
 In both courses and libraries, shared/reusable assets (referenced by multiple components, or uploaded directly to a library and not to a particular component) will live in the learning package as instances of a new :class:`Asset` entity. An :class:`Asset` will be a :class:`PublishableEntity` and will be similar to :class:`Component`, except that it won't have a :class:`ComponentType`, won't store OLX, and will only hold a single file (it will only point to a single :class:`Media` file/row).
 
-The usual name for these will be simply "Asset", but they can also be called "shared assets" for more clarity in cases where they may be confused with "Component assets" (the asset files/media attached to :class:`Component`s).
+The usual name for these will be simply "Asset", but they can also be called "shared assets" for more clarity in cases where they may be confused with "Component assets" (the asset files/media attached to Components).
 
 For example, ``syllabus.pdf`` could be an Asset (a "shared asset") that represents a PDF document uploaded to a course's "Files" page, and linked to from various parts of the course content and/or "about" pages.
 
 Because Assets cannot hold more than one file, when several course files have some relationship to each other and need to be grouped together for organizational purposes, this can be achieved in one of two ways:
 
-* By attached all the related files to the same XBlock Component; or
+* By attaching all the related files to the same XBlock Component; or
 * By organizing the related Assets (one file per Asset) into a ``Collection``
 
 2. Assets are uniquely keyed by filename
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Each Asset holds only a single file, e.g. ``solar-system.svg``, and within a given learning package (i.e. within a given course or library), each Asset's filename must be unique. (This is in contrast to asset files attached to XBlock Components, which allow multiple asset files per Component.) The filename is stored directly as a column on the ``Asset`` model, not on ``AssetVersion`` nor the ``Media`` row that any given ``AssetVersion`` points to.
+
+Filenames should be case-sensitive, such that ``fig1.png`` and ``Fig1.png`` are both allowed. For backwards compatibility, the filename is also allowed to contain ``/``, such as ``images/image1.png``. By convention, an Asset's ``entity_ref`` is ``openedx.v1:asset:{filename}``, but nothing should rely on that; look Assets up by ``filename`` using its explicit column.
 
 3. Assets support relative links
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -46,7 +48,7 @@ Within a single Learning Package, Assets can use relative references to each oth
 
 This is largely for backwards compatibility, and the main use case (HTML interactives) is better served by attaching all the related files to a single HTML Component.
 
-In order to achieve this, **the asset serving URL scheme from decision 0005** must be updated, so that when serving any component's file assets from a path like ``.../{component_key}/{version}/{filepath}``, if the ``{filepath}`` part does not resolve within the referenced component version, it will fall back to any Asset in the learning package that has that file name. For example, an HTML Asset accessed via the URL ``.../openedx.v1:asset:page.html/published/page.html`` may reference an image belonging to another Asset which would normally have the URL ``.../openedx.v1:asset:image.png/published/image.png`` but in this case may be accessed as ``.../openedx.v1:asset:page.html/published/image.png``.
+In order to achieve this, **the asset serving URL scheme from decision 0005** must be updated, so that when serving any component's file assets from a path like ``.../{component_key}/{version}/{filepath}``, if the ``{filepath}`` part does not resolve within the referenced component version, it will fall back to any Asset in the learning package that has that file name. For example, an HTML Asset accessed via the URL ``.../openedx.v1:asset:page.html/published/page.html`` may reference an image belonging to another Asset which would normally have the URL ``.../openedx.v1:asset:image.png/published/image.png`` but in this case may be accessed as ``.../openedx.v1:asset:page.html/published/image.png``. This must be implemented carefully to respect permissions such as the ``locked`` and ``private`` flags described below.
 
 4. Course Files are Assets within the run's learning package
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -78,8 +80,8 @@ TODO: it is unclear how we can ensure that a model like ``AssetMetadata`` will b
 
 Open question: do we care about setting ``locked`` in a library context? Not directly, since learners cannot usually access libraries, but authors may wish to specify that e.g. a certain PDF should always be locked in any course where it is used.
 
-8.  Some Assets must be private
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+8. Some Assets must be private
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 One use case for Assets will be the "code library" feature of [CAPA] Problem components, where python code in a centralized ``python_lib.zip`` asset file is available for use in python scripts in all Problem components in a given course. Authors might put grading functions, answer tables, and solution generators in a ``python_lib.zip`` asset file, so it should not be downloadable by learners. In the current platform, this is achieved using a hard-coded rule, optionally bypassed using a temporary waffle flag (``course_assets.allow_download_code_library``, due for removal back in 2025).
 
@@ -91,8 +93,8 @@ For asset files attached to regular XBlock components, this is achieved by file 
 
 For shared Assets, the ``static/`` prefix convention is likely to be too noisy or confusing. Instead, we will implement a ``private`` flag that means "restricted to staff only". Like ``locked``, it will be unversioned and stored as a boolean column on the ``Asset`` table, defaulting to false.
 
-9.  Image metadata will be in separate models
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+9. Image metadata will be in separate models
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 As mentioned in the :class:`Media` docstring, we can use a separate model called ``ImageMedia`` to capture metadata like image dimensions (assuming it can be purely derived from the image byte data itself). We can also use a separate model like ``ImageAssetVersion`` to store *editable* metadata about an image, such as its default alt text and whether or not the image is purely decorative; saving edits of such metadata would create a new version of the Asset.
 
