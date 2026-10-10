@@ -7,7 +7,9 @@ or admin form, so they must not leak internal class or function names.
 """
 from __future__ import annotations
 
-from typing import Literal, TypedDict, get_args
+import operator
+from decimal import Decimal
+from typing import Callable, Literal, TypedDict
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -16,6 +18,7 @@ from django.utils.translation import gettext_lazy as _
 __all__ = [
     "GradeRulePayload",
     "RuleType",
+    "evaluate_rule",
     "validate_rule_payload",
 ]
 
@@ -35,7 +38,15 @@ class RuleType(models.TextChoices):
 
 GradeOperator = Literal["gte", "lte", "eq"]
 
-_GRADE_OPERATORS: frozenset[str] = frozenset(get_args(GradeOperator))
+# The single source of truth for which operators exist: _GRADE_OPERATORS is derived from this
+# map's keys, rather than independently from get_args(GradeOperator), so validate_rule_payload
+# and evaluate_rule can never drift apart on which operators are supported.
+_GRADE_OPERATOR_FUNCS: dict[str, Callable[[Decimal, Decimal], bool]] = {
+    "gte": operator.ge,
+    "lte": operator.le,
+    "eq": operator.eq,
+}
+_GRADE_OPERATORS: frozenset[str] = frozenset(_GRADE_OPERATOR_FUNCS)
 
 
 class GradeRulePayload(TypedDict):
@@ -107,3 +118,23 @@ def validate_rule_payload(rule_type: str, payload: object) -> None:
                 _("Rule type '%(rule_type)s' is not supported yet; only 'Grade' has a defined rule_payload shape.")
                 % {"rule_type": rule_type}
             )
+
+
+def evaluate_rule(rule_type: str, payload: object, fraction: Decimal) -> bool:
+    """
+    Return whether ``fraction`` satisfies ``rule_type``'s ``payload``.
+
+    Validates the payload's shape first (see :func:`validate_rule_payload`); raises
+    ``ValidationError`` and never returns a value when the shape is invalid, or when
+    ``rule_type`` has no defined evaluation yet (today, everything except ``RuleType.GRADE``).
+    """
+    validate_rule_payload(rule_type, payload)
+    if rule_type != RuleType.GRADE:
+        raise ValidationError(
+            _("no evaluator is defined yet for rule type '%(rule_type)s'") % {"rule_type": rule_type}
+        )
+    # validate_rule_payload already confirmed payload is a dict with a Grade payload's exact
+    # keys; this assertion only narrows that fact for mypy, which sees payload as `object`.
+    assert isinstance(payload, dict)
+    threshold = Decimal(str(payload["value"]))
+    return _GRADE_OPERATOR_FUNCS[payload["op"]](fraction, threshold)

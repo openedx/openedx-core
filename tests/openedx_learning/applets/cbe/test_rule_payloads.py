@@ -5,10 +5,19 @@ ADR-0002 Decision 3 defines one payload shape per rule_type. The single supporte
 "Grade", whose payload is {"op": ..., "value": ..., "scale": ...} where op is one of gte, lte or
 eq, value is a fraction from 0.0 to 1.0 rather than a number out of 100, and scale is "percent".
 """
+from decimal import Decimal
+
 import pytest
 from django.core.exceptions import ValidationError
 
-from openedx_learning.applets.cbe.rule_payloads import GradeRulePayload, RuleType, validate_rule_payload
+from openedx_learning.applets.cbe.rule_payloads import (
+    _GRADE_OPERATOR_FUNCS,
+    _GRADE_OPERATORS,
+    GradeRulePayload,
+    RuleType,
+    evaluate_rule,
+    validate_rule_payload,
+)
 
 _GRADE_PAYLOAD: GradeRulePayload = {"op": "gte", "value": 0.8, "scale": "percent"}
 
@@ -128,3 +137,51 @@ def test_every_rule_type_choice_has_a_validation_branch(rule_type: RuleType) -> 
         validate_rule_payload(rule_type, {})
 
     assert "not supported yet" not in " ".join(exc_info.value.messages)
+
+
+@pytest.mark.parametrize(
+    "op, fraction, expected",
+    [
+        pytest.param("gte", Decimal("0.81"), True, id="gte_above"),
+        pytest.param("gte", Decimal("0.8"), True, id="gte_exact_threshold"),
+        pytest.param("gte", Decimal("0.79"), False, id="gte_below"),
+        pytest.param("lte", Decimal("0.8"), True, id="lte_exact_threshold"),
+        pytest.param("lte", Decimal("0.79"), True, id="lte_below"),
+        pytest.param("lte", Decimal("0.81"), False, id="lte_above"),
+        pytest.param("eq", Decimal("0.8"), True, id="eq_exact"),
+        pytest.param("eq", Decimal("0.79"), False, id="eq_not_exact"),
+    ],
+)
+def test_evaluate_rule(op: str, fraction: Decimal, expected: bool) -> None:
+    """
+    evaluate_rule() applies each supported operator correctly, including the exact-threshold case
+    that regresses comparing a Decimal fraction against the float this rule_payload's "value" comes
+    back as from a JSONField: gte 0.8 against exactly Decimal("0.8") must return True, not False.
+    """
+    payload = {**_GRADE_PAYLOAD, "op": op}
+    assert evaluate_rule(RuleType.GRADE, payload, fraction) is expected
+
+
+@pytest.mark.parametrize(
+    "rule_type, payload",
+    [
+        pytest.param("MasteryLevel", {"level": 3}, id="unsupported_rule_type"),
+        pytest.param(RuleType.GRADE, {"op": "startswith", "value": 0.8, "scale": "percent"}, id="unsupported_operator"),
+    ],
+)
+def test_evaluate_rule_raises_for_unappliable_rule(rule_type: str, payload: dict) -> None:
+    """
+    ValidationError propagates out of evaluate_rule() uncaught for an unsupported rule type or
+    operator. validate_rule_payload() itself already has thorough, separate coverage above; this
+    only confirms evaluate_rule() surfaces the same exception, not that the validator is correct.
+    """
+    with pytest.raises(ValidationError):
+        evaluate_rule(rule_type, payload, Decimal("0.8"))
+
+
+def test_grade_operators_frozenset_matches_evaluator_map() -> None:
+    """
+    _GRADE_OPERATORS is derived from _GRADE_OPERATOR_FUNCS's own keys, so the two cannot drift apart:
+    a future operator added to one without the other would fail this test immediately.
+    """
+    assert _GRADE_OPERATORS == frozenset(_GRADE_OPERATOR_FUNCS)
