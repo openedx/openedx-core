@@ -27,6 +27,65 @@ TAXONOMY_MAX_DEPTH = 5
 Lineage = list[str]
 
 
+class TaxonomyQuerySet(models.QuerySet["Taxonomy"]):
+    """
+    QuerySet for :class:`Taxonomy` with an opt-in filter for archived rows.
+
+    The default ``Taxonomy.objects`` manager returns every row, including
+    archived ones. Plain ``Taxonomy.objects`` is the supported way to reach
+    archived taxonomies; code that should hide them calls :meth:`unarchived`.
+    """
+
+    def unarchived(self) -> Self:
+        """
+        Return only taxonomies whose ``archived`` flag is False.
+        """
+        return self.filter(archived=False)
+
+
+class TagQuerySet(models.QuerySet["Tag"]):
+    """
+    QuerySet for :class:`Tag` with an opt-in filter for archived rows.
+
+    The default ``Tag.objects`` manager returns every row, including archived
+    ones. Plain ``Tag.objects`` is the supported way to reach archived tags;
+    code that should hide them calls :meth:`unarchived`.
+    """
+
+    def unarchived(self) -> Self:
+        """
+        Return only tags that are not archived and whose taxonomy is not archived.
+
+        Tags with no taxonomy are kept, so the taxonomy condition is an exclude.
+        """
+        return self.filter(archived=False).exclude(taxonomy__archived=True)
+
+
+class ObjectTagQuerySet(models.QuerySet["ObjectTag"]):
+    """
+    QuerySet for :class:`ObjectTag` with an opt-in filter for archived rows.
+
+    The default ``ObjectTag.objects`` manager returns every row, including
+    archived ones. Plain ``ObjectTag.objects`` is the supported way to reach
+    archived object tags; code that should hide them calls :meth:`unarchived`.
+    """
+
+    def unarchived(self) -> Self:
+        """
+        Return only object tags that are not archived and whose tag, tag's
+        taxonomy, and own taxonomy are not archived.
+
+        The tag and taxonomy are nullable (free text and deleted records), so
+        those conditions are excludes: rows with no tag or taxonomy are kept.
+        """
+        return (
+            self.filter(archived=False)
+            .exclude(tag__archived=True)
+            .exclude(tag__taxonomy__archived=True)
+            .exclude(taxonomy__archived=True)
+        )
+
+
 class Tag(models.Model):
     """
     Represents a single value in a list or tree of values which can be applied to a particular Open edX object.
@@ -88,6 +147,8 @@ class Tag(models.Model):
         default=False,
         help_text=_("Hides this tag from active use by default, without removing it."),
     )
+
+    objects = TagQuerySet.as_manager()
 
     class Meta:
         indexes = [
@@ -151,20 +212,20 @@ class Tag(models.Model):
     @cached_property
     def child_count(self) -> int:
         """
-        How many child tags this tag has in the taxonomy.
+        How many unarchived child tags this tag has in the taxonomy.
         """
         if self.taxonomy and not self.taxonomy.allow_free_text:
-            return self.taxonomy.tag_set.filter(parent=self).count()
+            return self.taxonomy.tag_set.unarchived().filter(parent=self).count()
         return 0
 
     @cached_property
     def descendant_count(self) -> int:
         """
-        How many descendant tags this tag has in the taxonomy.
+        How many unarchived descendant tags this tag has in the taxonomy.
         """
         if self.taxonomy and not self.taxonomy.allow_free_text:
             # depth__gt correctly excludes self; lineage prefix matches all descendants.
-            return self.taxonomy.tag_set.filter(
+            return self.taxonomy.tag_set.unarchived().filter(
                 depth__gt=self.depth,
                 lineage__startswith=self.lineage,
             ).count()
@@ -229,8 +290,9 @@ class Tag(models.Model):
             }
             if depth_delta != 0:
                 update_kwargs["depth"] = F("depth") + depth_delta
-            self.taxonomy.tag_set.filter(  # type: ignore[union-attr]
-                lineage__startswith=old_values["lineage"]
+            Tag.objects.filter(
+                taxonomy=self.taxonomy,
+                lineage__startswith=old_values["lineage"],
             ).exclude(pk=self.pk).update(
                 **update_kwargs
             )
@@ -323,6 +385,8 @@ class Taxonomy(models.Model):
         ),
     )
 
+    objects = TaxonomyQuerySet.as_manager()
+
     class Meta:
         verbose_name_plural = "Taxonomies"
 
@@ -369,6 +433,9 @@ class Taxonomy(models.Model):
 
         Use `excluded_values` to exclude tags with that value (and their parents, if applicable) from the results.
 
+        Archived tags, and every tag of an archived taxonomy, are excluded. For free text taxonomies, values from
+        archived object tags are excluded. Raises Tag.DoesNotExist if `parent_tag_value` is missing or archived.
+
         Note: This is mostly an 'internal' API and generally code outside of openedx_tagging
         should use the APIs in openedx_tagging.api which in turn use this.
         """
@@ -398,6 +465,17 @@ class Taxonomy(models.Model):
         else:
             raise ValueError("Unsupported depth value for get_filtered_tags()")
 
+    def _unarchived_tag_for_value(self, value: str) -> Tag:
+        """
+        Like tag_for_value(), but also raises Tag.DoesNotExist if the tag or this taxonomy is archived.
+
+        Kept separate from tag_for_value() because tagging an object needs to resolve archived tags.
+        """
+        tag = self.tag_for_value(value)
+        if tag.archived or self.archived:
+            raise Tag.DoesNotExist(f"Tag '{value}' is archived or belongs to an archived taxonomy.")
+        return tag
+
     def _get_filtered_tags_free_text(
         self,
         search_term: str | None,
@@ -406,7 +484,7 @@ class Taxonomy(models.Model):
         Implementation of get_filtered_tags() for free text taxonomies.
         """
         assert self.allow_free_text
-        qs: models.QuerySet = self.objecttag_set.all()
+        qs: models.QuerySet = self.objecttag_set.unarchived()
         if search_term:
             qs = qs.filter(_value__icontains=search_term)
         # Rename "_value" to "value"
@@ -435,14 +513,15 @@ class Taxonomy(models.Model):
         """
         # A closed, and possibly hierarchical taxonomy. We're just fetching a single "level" of tags.
         if parent_tag_value:
-            parent_tag = self.tag_for_value(parent_tag_value)
-            qs: models.QuerySet = self.tag_set.filter(parent_id=parent_tag.pk)
+            parent_tag = self._unarchived_tag_for_value(parent_tag_value)
+            qs: models.QuerySet = self.tag_set.unarchived().filter(parent_id=parent_tag.pk)
             # Use parent_tag.value not parent_tag_value because they may differ in case
             qs = qs.annotate(parent_value=Value(parent_tag.value))
         else:
-            qs = self.tag_set.filter(parent=None)
+            qs = self.tag_set.unarchived().filter(parent=None)
             qs = qs.annotate(parent_value=Value(None, output_field=models.CharField()))
-        qs = qs.annotate(child_count=models.Count("children", distinct=True))  # type: ignore[no-redef]
+        child_count = models.Count("children", filter=models.Q(children__archived=False), distinct=True)
+        qs = qs.annotate(child_count=child_count)  # type: ignore[no-redef]
         # Filter by search term:
         if search_term:
             qs = qs.filter(value__icontains=search_term)
@@ -464,13 +543,13 @@ class Taxonomy(models.Model):
         """
         if parent_tag_value:
             # Get a subtree below this tag:
-            main_parent_tag = self.tag_for_value(parent_tag_value)
-            initial_qs = self.tag_set.filter(
+            main_parent_tag = self._unarchived_tag_for_value(parent_tag_value)
+            initial_qs = self.tag_set.unarchived().filter(
                 lineage__startswith=main_parent_tag.lineage,
                 depth__gt=main_parent_tag.depth,
             )
         else:
-            initial_qs = self.tag_set.all()
+            initial_qs = self.tag_set.unarchived()
 
         if search_term:
             # We need to do an additional query to find all the tags that match the search term, then limit the
@@ -569,6 +648,8 @@ class Taxonomy(models.Model):
         """
         Update an existing Tag in Taxonomy and return it. Currently only
         supports updating the Tag's value.
+
+        Raises ValueError if the taxonomy or the tag is archived.
         """
         if self.allow_free_text:
             raise ValueError(
@@ -583,6 +664,8 @@ class Taxonomy(models.Model):
         # Update Tag instance with new value, raises Tag.DoesNotExist if
         # tag doesn't belong to taxonomy
         tag_to_update = self.tag_set.get(value__iexact=tag)
+        if self.archived or tag_to_update.archived:
+            raise ValueError("update_tag() doesn't work for archived taxonomies or tags. They cannot be modified.")
         tag_to_update.value = new_value
         tag_to_update.save()
         return tag_to_update
@@ -746,6 +829,8 @@ class ObjectTag(models.Model):
             " a delete archives it instead of removing it."
         ),
     )
+
+    objects = ObjectTagQuerySet.as_manager()
 
     class Meta:
         indexes = [

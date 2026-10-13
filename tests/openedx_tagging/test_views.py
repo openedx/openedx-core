@@ -246,6 +246,27 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
             assert not taxonomy["can_delete_taxonomy"]
             assert not taxonomy["can_tag_object"]
 
+    def test_list_taxonomy_excludes_archived(self) -> None:
+        api.create_taxonomy(name="Active taxonomy")
+        archived = api.create_taxonomy(name="Archived taxonomy")
+        Taxonomy.objects.filter(pk=archived.pk).update(archived=True)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.get(TAXONOMY_LIST_URL)
+        assert response.status_code == status.HTTP_200_OK
+        assert [t["name"] for t in response.data["results"]] == ["Active taxonomy"]
+
+    def test_list_taxonomy_tags_count_excludes_archived(self) -> None:
+        taxonomy = api.create_taxonomy(name="Taxonomy with archived tags")
+        for i in range(3):
+            Tag.objects.create(taxonomy=taxonomy, value=f"Tag {i}")
+        Tag.objects.filter(taxonomy=taxonomy, value="Tag 0").update(archived=True)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.get(TAXONOMY_LIST_URL)
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["results"][0]["tags_count"] == 2
+
     def test_list_invalid_page(self) -> None:
         url = TAXONOMY_LIST_URL
 
@@ -299,6 +320,14 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
         response = self.client.get(url)
         assert response.status_code == status.HTTP_200_OK
         assert response.data["read_only"] is True
+
+    def test_detail_taxonomy_archived_404(self) -> None:
+        taxonomy = api.create_taxonomy(name="Archived taxonomy")
+        Taxonomy.objects.filter(pk=taxonomy.pk).update(archived=True)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.get(TAXONOMY_DETAIL_URL.format(pk=taxonomy.pk))
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_detail_taxonomy_404(self) -> None:
         url = TAXONOMY_DETAIL_URL.format(pk=123123)
@@ -491,6 +520,17 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
         assert response.data["name"] == "new name"
         assert response.data["read_only"] == (not read_only)
 
+    def test_update_taxonomy_archived(self):
+        taxonomy = api.create_taxonomy(name="Archived taxonomy")
+        Taxonomy.objects.filter(pk=taxonomy.pk).update(archived=True)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.put(TAXONOMY_DETAIL_URL.format(pk=taxonomy.pk), {"name": "new name"}, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "This taxonomy is archived and cannot be edited." in str(response.data)
+        taxonomy.refresh_from_db()
+        assert taxonomy.name == "Archived taxonomy"
+
     def test_update_taxonomy_404(self):
         url = TAXONOMY_DETAIL_URL.format(pk=123123)
 
@@ -549,6 +589,17 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
         assert response.status_code == status.HTTP_200_OK
         assert response.data["read_only"] == (not read_only)
 
+    def test_patch_taxonomy_archived(self):
+        taxonomy = api.create_taxonomy(name="Archived taxonomy")
+        Taxonomy.objects.filter(pk=taxonomy.pk).update(archived=True)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.patch(TAXONOMY_DETAIL_URL.format(pk=taxonomy.pk), {"name": "new name"}, format="json")
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "This taxonomy is archived and cannot be edited." in str(response.data)
+        taxonomy.refresh_from_db()
+        assert taxonomy.name == "Archived taxonomy"
+
     def test_patch_taxonomy_404(self):
         url = TAXONOMY_DETAIL_URL.format(pk=123123)
 
@@ -584,6 +635,15 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
 
         self.client.force_authenticate(user=self.staff)
         response = self.client.delete(url)
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_export_taxonomy_archived_404(self):
+        taxonomy = api.create_taxonomy(name="Archived taxonomy")
+        api.add_tag_to_taxonomy(taxonomy=taxonomy, tag="Tag 1")
+        Taxonomy.objects.filter(pk=taxonomy.pk).update(archived=True)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.get(TAXONOMY_EXPORT_URL.format(pk=taxonomy.pk), {"output_format": "json"})
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
     @ddt.data(
@@ -880,6 +940,17 @@ class TestObjectTagViewSet(TestTagTaxonomyMixin, APITestCase):
         assert len(response.data[object_id]["taxonomies"]) == 1
         assert response.data[object_id]["taxonomies"][0]["can_tag_object"] == expected_perm
         assert response.data[object_id]["taxonomies"][0]["tags"] == sort_test_applied_result
+
+    def test_retrieve_object_tags_excludes_archived(self):
+        object_id = "abc"
+        api.tag_object(object_id=object_id, taxonomy=self.taxonomy, tags=["Mammalia", "Fungi"])
+        ObjectTag.objects.filter(object_id=object_id, _value="Fungi").update(archived=True)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.get(OBJECT_TAGS_RETRIEVE_URL.format(object_id=object_id))
+        assert response.status_code == status.HTTP_200_OK
+        tags = response.data[object_id]["taxonomies"][0]["tags"]
+        assert [tag["value"] for tag in tags] == ["Mammalia"]
 
     def test_retrieve_object_tags_unauthorized(self):
         """
@@ -1319,6 +1390,16 @@ class TestObjectTagCountsViewSet(TestTagTaxonomyMixin, APITestCase):
                 "course07-unit01-problem01.1": 3,
                 "course07-unit02-problem02.2": 2,
             }
+
+    def test_get_counts_excludes_archived(self):
+        api.tag_object(object_id="course01-problem01", taxonomy=self.free_text_taxonomy, tags=["a", "b"])
+        ObjectTag.objects.filter(object_id="course01-problem01", _value="b").update(archived=True)
+
+        url = OBJECT_TAG_COUNTS_URL.format(object_id_pattern="course01-*")
+        with self.assertNumQueries(1):
+            result = self.client.get(url)
+        assert result.status_code == status.HTTP_200_OK
+        assert result.data == {"course01-problem01": 1}
 
     def test_get_counts_invalid_spec(self):
         """
@@ -1790,6 +1871,37 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
             "  Tag 118 (Tag 0) (children: 1)",
             "    Tag 119 (Tag 118) (children: 0)",
         ]
+
+    def test_list_excludes_archived_tag(self):
+        self.client.force_authenticate(user=self.staff)
+        Tag.objects.filter(taxonomy=self.small_taxonomy, value="Fungi").update(archived=True)
+
+        response = self.client.get(f"{self.small_taxonomy_url}?parent_tag=Eukaryota")
+        assert response.status_code == status.HTTP_200_OK
+        values = [tag["value"] for tag in response.data["results"]]
+        assert "Fungi" not in values
+        assert "Plantae" in values
+
+    def test_list_archived_parent_tag_404(self):
+        self.client.force_authenticate(user=self.staff)
+        Tag.objects.filter(taxonomy=self.small_taxonomy, value="Chordata").update(archived=True)
+
+        response = self.client.get(f"{self.small_taxonomy_url}?parent_tag=Chordata")
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        response = self.client.get(f"{self.small_taxonomy_url}?parent_tag=Chordata&full_depth_threshold=1000")
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_list_archived_taxonomy_404(self):
+        self.client.force_authenticate(user=self.staff)
+        Taxonomy.objects.filter(pk=self.small_taxonomy.pk).update(archived=True)
+        assert not self.small_taxonomy.tag_set.filter(archived=True).exists()  # Only the taxonomy is archived
+
+        response = self.client.get(self.small_taxonomy_url)
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        response = self.client.get(f"{self.small_taxonomy_url}?search_term=eu")
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        response = self.client.get(f"{self.small_taxonomy_url}?parent_tag=Eukaryota")
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_get_children(self):
         self._build_large_taxonomy()
@@ -2422,6 +2534,19 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         self.assertEqual(object_tag_2.value, updated_tag_value)
         object_tag_3.refresh_from_db()
         self.assertEqual(object_tag_3.value, updated_tag_value)
+
+    def test_update_tag_in_taxonomy_archived_tag(self):
+        self.client.force_authenticate(user=self.staff)
+        fungi = Tag.objects.get(taxonomy=self.small_taxonomy, value="Fungi")
+        Tag.objects.filter(pk=fungi.pk).update(archived=True)
+
+        response = self.client.put(
+            self.small_taxonomy_url, {"tag": "Fungi", "updated_tag_value": "Mushrooms"}, format="json"
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        fungi.refresh_from_db()
+        assert fungi.value == "Fungi"
 
     def test_update_tag_in_taxonomy_with_invalid_tag(self):
         self.client.force_authenticate(user=self.staff)

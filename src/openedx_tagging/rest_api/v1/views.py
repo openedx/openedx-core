@@ -232,12 +232,21 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
         """
         Return the requested taxonomy object, if the user has appropriate
         permissions.
+
+        Archived taxonomies are not found, except for the write actions, which must resolve them so that
+        update can reject them with an explanation and destroy keeps its behavior for archived taxonomies.
         """
         pk = int(self.kwargs["pk"])
-        taxonomy = get_taxonomy(pk)
+        is_edit = self.action in ("update", "partial_update")
+        if is_edit or self.action == "destroy":
+            taxonomy = Taxonomy.objects.filter(pk=pk).first()
+        else:
+            taxonomy = get_taxonomy(pk)
         if not taxonomy:
             raise Http404("Taxonomy not found")
         self.check_object_permissions(self.request, taxonomy)
+        if is_edit and taxonomy.archived:
+            raise ValidationError("This taxonomy is archived and cannot be edited.")
 
         return taxonomy
 
@@ -256,7 +265,7 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
         enabled = query_params.data.get("enabled", None)
 
         qs = get_taxonomies(enabled)
-        qs = qs.annotate(tags_count=models.Count("tag", distinct=True))
+        qs = qs.annotate(tags_count=models.Count("tag", filter=models.Q(tag__archived=False), distinct=True))
         return qs
 
     def perform_create(self, serializer) -> None:
@@ -860,11 +869,14 @@ class TaxonomyTagsView(TaggingExceptionHandlerMixin, ListAPIView, RetrieveUpdate
         else:
             depth = 1  # Otherwise (default), load a single level of results only.
 
-        results = taxonomy.get_filtered_tags(
-            parent_tag_value=parent_tag_value,
-            search_term=search_term,
-            depth=depth,
-        )
+        try:
+            results = taxonomy.get_filtered_tags(
+                parent_tag_value=parent_tag_value,
+                search_term=search_term,
+                depth=depth,
+            )
+        except TagDoesNotExist as e:
+            raise Http404("Parent tag not found") from e
         if depth == 1:
             # We're already returning just a single level. It will be paginated normally.
             if include_counts:

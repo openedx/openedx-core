@@ -139,6 +139,82 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
             "  Protista (children: 0)",
         ]
 
+    def test_get_tags_excludes_archived(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value__in=["Fungi", "Cnidaria"]).update(archived=True)
+        values = [row["value"] for row in tagging_api.get_tags(self.taxonomy)]
+        assert "Fungi" not in values
+        assert "Cnidaria" not in values
+        assert "Plantae" in values
+        # The tags are still in the database, and parents no longer count them as children:
+        assert self.taxonomy.tag_set.filter(value="Fungi").exists()
+        assert "Eukaryota (children: 4)" in pretty_format_tags(tagging_api.get_tags(self.taxonomy), parent=False)
+
+    def test_get_root_tags_excludes_archived(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Archaea").update(archived=True)
+        assert pretty_format_tags(tagging_api.get_root_tags(self.taxonomy), parent=False) == [
+            'Bacteria (children: 2)',
+            'Eukaryota (children: 5)',
+        ]
+
+    def test_get_children_tags_excludes_archived(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Cnidaria").update(archived=True)
+        values = [row["value"] for row in tagging_api.get_children_tags(self.taxonomy, "Animalia")]
+        assert values == ["Arthropoda", "Chordata", "Ctenophora", "Gastrotrich", "Placozoa", "Porifera"]
+        # The parent's own child count doesn't include the archived child either:
+        children = pretty_format_tags(tagging_api.get_children_tags(self.taxonomy, "Eukaryota"), parent=False)
+        assert "  Animalia (children: 6)" in children
+
+    def test_get_children_tags_archived_parent(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Chordata").update(archived=True)
+        with self.assertRaises(Tag.DoesNotExist):
+            tagging_api.get_children_tags(self.taxonomy, "Chordata")
+        with self.assertRaises(Tag.DoesNotExist):  # The full-depth query behaves the same way
+            self.taxonomy.get_filtered_tags(parent_tag_value="Chordata")
+
+    def test_search_tags_excludes_archived(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Eubacteria").update(archived=True)
+        result = tagging_api.search_tags(self.taxonomy, search_term='eU')
+        assert pretty_format_tags(result, parent=False) == [
+            'Archaea (children: 1)',
+            '  Euryarchaeida (children: 0)',
+            'Eukaryota (children: 0)',
+        ]
+
+    def test_search_tags_exclude_object_ignores_archived_object_tag(self) -> None:
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["Fungi"])
+        values = [row["value"] for row in tagging_api.search_tags(self.taxonomy, "Fungi", exclude_object_id="obj1")]
+        assert values == []  # Applied to the object, so it is excluded from its autocomplete
+        ObjectTag.objects.filter(object_id="obj1").update(archived=True)
+        values = [row["value"] for row in tagging_api.search_tags(self.taxonomy, "Fungi", exclude_object_id="obj1")]
+        assert "Fungi" in values  # The ancestor "Eukaryota" is included too
+
+    def test_archived_taxonomy_hides_its_tags(self) -> None:
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        self.taxonomy.refresh_from_db()
+        assert not list(tagging_api.get_tags(self.taxonomy))
+        assert not list(tagging_api.get_root_tags(self.taxonomy))
+        assert not list(tagging_api.search_tags(self.taxonomy, search_term='eU'))
+        with self.assertRaises(Tag.DoesNotExist):
+            tagging_api.get_children_tags(self.taxonomy, "Animalia")
+
+    def test_get_taxonomy_excludes_archived(self) -> None:
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        assert tagging_api.get_taxonomy(self.taxonomy.pk) is None
+
+    def test_get_taxonomy_by_export_id_excludes_archived(self) -> None:
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        assert tagging_api.get_taxonomy_by_export_id("life_on_earth") is None
+
+    def test_get_taxonomies_excludes_archived(self) -> None:
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        assert self.taxonomy not in tagging_api.get_taxonomies(enabled=None)
+        assert self.taxonomy not in tagging_api.get_taxonomies()
+
+    def test_get_tags_free_text_excludes_archived(self) -> None:
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.free_text_taxonomy, tags=["keep", "hide"])
+        ObjectTag.objects.filter(taxonomy=self.free_text_taxonomy, _value="hide").update(archived=True)
+        assert [row["value"] for row in tagging_api.get_tags(self.free_text_taxonomy)] == ["keep"]
+
     def test_get_tags_system(self) -> None:
         assert pretty_format_tags(tagging_api.get_tags(self.read_only_taxonomy), parent=False) == [
             "System Tag 1 (children: 0)",
@@ -932,6 +1008,97 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
         assert tagging_api.get_object_tag_counts("object_*") == {obj1: 1, obj2: 2}
         tagging_api.add_tag_to_taxonomy(self.taxonomy, "DPANN", parent_tag_value="Archaea")
         assert tagging_api.get_object_tag_counts("object_*") == {obj1: 2, obj2: 2}
+
+    def test_get_object_tag_counts_excludes_archived(self) -> None:
+        obj1, obj2 = "object_id1", "object_id2"
+        tagging_api.tag_object(object_id=obj1, taxonomy=self.taxonomy, tags=["DPANN"])
+        tagging_api.tag_object(object_id=obj2, taxonomy=self.taxonomy, tags=["Chordata"])
+        ObjectTag.objects.filter(object_id=obj1).update(archived=True)  # obj1's only association
+
+        with self.assertNumQueries(1):
+            assert tagging_api.get_object_tag_counts("object_*") == {obj2: 1}
+        with self.assertNumQueries(1):
+            assert tagging_api.get_object_tag_counts("object_*", count_implicit=True) == {obj2: 3}
+
+    def test_add_usage_counts_excludes_archived(self) -> None:
+        self.taxonomy.allow_multiple = True
+        self.taxonomy.save()
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["DPANN"])
+        tagging_api.tag_object(object_id="obj2", taxonomy=self.taxonomy, tags=["DPANN"])
+        ObjectTag.objects.filter(object_id="obj2").update(archived=True)
+
+        tag_data = tagging_api.get_children_tags(self.taxonomy, "Archaea")
+        with self.assertNumQueries(2):  # One for the tag data and one for the usage counts
+            result = tagging_api.add_usage_counts(self.taxonomy, tag_data)
+        assert {row["value"]: row["usage_count"] for row in result} == {
+            "DPANN": 1,
+            "Euryarchaeida": 0,
+            "Proteoarchaeota": 0,
+        }
+
+    def test_add_usage_counts_archived_only_association_is_zero(self) -> None:
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["DPANN"])  # DPANN's only association
+        ObjectTag.objects.filter(object_id="obj1").update(archived=True)
+
+        tag_data = tagging_api.get_children_tags(self.taxonomy, "Archaea")
+        with self.assertNumQueries(2):  # One for the tag data and one for the usage counts
+            result = tagging_api.add_usage_counts(self.taxonomy, tag_data)
+        assert {row["value"]: row["usage_count"] for row in result}["DPANN"] == 0
+
+    def test_get_object_tags_excludes_archived_object_tag(self) -> None:
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["DPANN"])
+        ObjectTag.objects.filter(object_id="obj1").update(archived=True)
+        assert not tagging_api.get_object_tags("obj1").exists()
+
+    def test_get_object_tags_excludes_archived_tag(self) -> None:
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["DPANN"])
+        Tag.objects.filter(taxonomy=self.taxonomy, value="DPANN").update(archived=True)
+        assert not ObjectTag.objects.get(object_id="obj1").archived  # Only the tag is archived
+        assert not tagging_api.get_object_tags("obj1").exists()
+
+    def test_get_object_tags_excludes_archived_taxonomy(self) -> None:
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["DPANN"])
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        assert not ObjectTag.objects.get(object_id="obj1").archived  # Neither the association...
+        assert not get_tag("DPANN").archived  # ...nor the tag is archived
+        assert not tagging_api.get_object_tags("obj1").exists()
+
+    def test_archived_records_still_resolve_through_foreign_keys(self) -> None:
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["DPANN"])
+        Tag.objects.filter(taxonomy=self.taxonomy, value="DPANN").update(archived=True)
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        object_tag = ObjectTag.objects.get(object_id="obj1")
+        assert object_tag.tag is not None
+        assert object_tag.tag.archived
+        assert object_tag.taxonomy is not None
+        assert object_tag.taxonomy.archived
+        assert object_tag.value == "DPANN"
+
+    def test_default_managers_include_archived(self) -> None:
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["DPANN"])
+        tag = get_tag("DPANN")
+        Tag.objects.filter(pk=tag.pk).update(archived=True)
+        Taxonomy.objects.filter(pk=self.read_only_taxonomy.pk).update(archived=True)
+        ObjectTag.objects.filter(object_id="obj1").update(archived=True)
+        assert Tag.objects.filter(pk=tag.pk).exists()
+        assert not Tag.objects.unarchived().filter(pk=tag.pk).exists()
+        assert Taxonomy.objects.filter(pk=self.read_only_taxonomy.pk).exists()
+        assert not Taxonomy.objects.unarchived().filter(pk=self.read_only_taxonomy.pk).exists()
+        assert ObjectTag.objects.filter(object_id="obj1").exists()
+        assert not ObjectTag.objects.unarchived().filter(object_id="obj1").exists()
+
+    def test_update_tag_in_taxonomy_archived_tag(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Fungi").update(archived=True)
+        with self.assertRaisesRegex(ValueError, "archived"):
+            tagging_api.update_tag_in_taxonomy(self.taxonomy, "Fungi", "Mushrooms")
+        assert get_tag("Fungi").value == "Fungi"
+
+    def test_update_tag_in_taxonomy_archived_taxonomy(self) -> None:
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        self.taxonomy.refresh_from_db()
+        with self.assertRaisesRegex(ValueError, "archived"):
+            tagging_api.update_tag_in_taxonomy(self.taxonomy, "Fungi", "Mushrooms")
+        assert get_tag("Fungi").value == "Fungi"
 
     def test_copy_tags(self) -> None:
         obj1 = "object_id1"

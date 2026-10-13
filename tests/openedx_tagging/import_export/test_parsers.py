@@ -11,7 +11,7 @@ from django.test.testcases import TestCase
 
 from openedx_tagging.import_export.exceptions import InvalidJSONField, TagParserError
 from openedx_tagging.import_export.parsers import CSVParser, JSONParser, Parser, ParserFormat, get_parser
-from openedx_tagging.models import Taxonomy
+from openedx_tagging.models import Tag, Taxonomy
 
 from .mixins import TestImportExportMixin
 
@@ -218,6 +218,20 @@ class TestJSONParser(TestImportExportMixin, TestCase):
             if tag.get("parent_id"):
                 assert tag.get("parent_id") == taxonomy_tag.parent.external_id
 
+    def test_export_data_omits_archived_tag(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_4").update(archived=True)
+        tags = json.loads(JSONParser.export(self.taxonomy)).get("tags")
+        assert [tag["id"] for tag in tags] == ["tag_1", "tag_2", "tag_3"]
+
+    def test_export_data_omits_children_of_archived_tag(self) -> None:
+        tag_2 = Tag.objects.get(taxonomy=self.taxonomy, external_id="tag_2")
+        Tag.objects.create(taxonomy=self.taxonomy, value="Tag 5", external_id="tag_5", parent=tag_2)
+        Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_1").update(archived=True)
+        # The unarchived descendants of the archived tag_1 are omitted too, so no parent_id dangles.
+        tags = json.loads(JSONParser.export(self.taxonomy)).get("tags")
+        assert [tag["id"] for tag in tags] == ["tag_3", "tag_4"]
+        assert tags[1]["parent_id"] == "tag_3"
+
     def test_import_with_export_output(self) -> None:
         output = JSONParser.export(self.taxonomy)
         json_file = BytesIO(output.encode())
@@ -397,6 +411,21 @@ class TestCSVParser(TestImportExportMixin, TestCase):
                 tags[index].index,
                 index + CSVParser.inital_row
             )
+
+    def test_export_data_omits_archived_tag(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_4").update(archived=True)
+        tags, errors = CSVParser.parse_import(BytesIO(CSVParser.export(self.taxonomy).encode()))
+        assert not errors
+        assert [tag.id for tag in tags] == ["tag_1", "tag_2", "tag_3"]
+
+    def test_export_data_omits_children_of_archived_tag(self) -> None:
+        tag_2 = Tag.objects.get(taxonomy=self.taxonomy, external_id="tag_2")
+        Tag.objects.create(taxonomy=self.taxonomy, value="Tag 5", external_id="tag_5", parent=tag_2)
+        Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_1").update(archived=True)
+        # The unarchived descendants of the archived tag_1 are omitted too, so no parent_id dangles.
+        tags, errors = CSVParser.parse_import(BytesIO(CSVParser.export(self.taxonomy).encode()))
+        assert not errors
+        assert [(tag.id, tag.parent_id) for tag in tags] == [("tag_3", None), ("tag_4", "tag_3")]
 
     def test_import_with_export_output(self) -> None:
         output = CSVParser.export(self.taxonomy)
