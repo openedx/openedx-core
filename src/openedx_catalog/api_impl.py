@@ -25,6 +25,10 @@ __all__ = [
     "create_course_run_for_modulestore_course_with",
     "delete_course_run",
     "get_pathway_category",
+    "get_pathway_categories",
+    "create_pathway_category",
+    "update_pathway_category",
+    "delete_pathway_category",
     "get_catalog_pathway",
     "get_catalog_pathways",
     "create_catalog_pathway",
@@ -277,6 +281,75 @@ def get_pathway_category(category_code: str) -> PathwayCategory:
     ⚠️ Does not check permissions.
     """
     return PathwayCategory.objects.get(category_code=category_code)
+
+
+def _pathway_category(category: PathwayCategory | str) -> PathwayCategory:
+    """
+    Resolve a `PathwayCategory` given either as an instance or by its code.
+    """
+    if isinstance(category, PathwayCategory):
+        return category
+    return get_pathway_category(category)
+
+
+def get_pathway_categories() -> QuerySet[PathwayCategory]:
+    """
+    List all pathway categories, ordered by title, e.g. for a picker shown when creating a catalog pathway.
+
+    ⚠️ Does not check permissions.
+    """
+    return PathwayCategory.objects.all()
+
+
+def create_pathway_category(*, category_code: str, title: str, title_plural: str = "") -> PathwayCategory:
+    """
+    Create a `PathwayCategory`.
+
+    The ``category_code`` can't be changed later, so pick one that stays accurate if the ``title`` is reworded. Leave
+    ``title_plural`` blank unless the title doesn't pluralize by appending "s" (see `PathwayCategory.title_plural`).
+
+    ⚠️ Does not check permissions.
+    """
+    return PathwayCategory.objects.create(category_code=category_code, title=title, title_plural=title_plural)
+
+
+def update_pathway_category(
+    category: PathwayCategory | str,
+    *,
+    title: str | None = None,
+    title_plural: str | None = None,
+) -> None:
+    """
+    Update a `PathwayCategory`, given as an instance or by its code. Pass `None` for a field to leave it unchanged.
+
+    Pass ``title_plural=""`` to go back to deriving the plural from the title. The ``category_code`` can't be changed,
+    because it's what code and imports key off.
+
+    ⚠️ Does not check permissions.
+    """
+    pc = _pathway_category(category)
+    update_fields = []
+    for field_name, value in (
+        ("title", title),
+        ("title_plural", title_plural),
+    ):
+        if value is not None:
+            setattr(pc, field_name, value)
+            update_fields.append(field_name)
+    if update_fields:
+        pc.save(update_fields=update_fields)
+
+
+def delete_pathway_category(category: PathwayCategory | str) -> None:
+    """
+    Delete a `PathwayCategory`, given as an instance or by its code.
+
+    This fails with a `ProtectedError` while any catalog pathway uses it; move those pathways to another category first
+    with `update_catalog_pathway`.
+
+    ⚠️ Does not check permissions.
+    """
+    _pathway_category(category).delete()
 
 
 def _catalog_pathways() -> QuerySet[CatalogPathway]:

@@ -9,6 +9,7 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import ProtectedError
+from django.db.utils import IntegrityError
 from freezegun import freeze_time
 from organizations.api import ensure_organization  # type: ignore[import]
 
@@ -29,7 +30,7 @@ def _org1() -> None:
 @pytest.fixture(name="category")
 def _category() -> PathwayCategory:
     """The category created by the initial migration"""
-    return PathwayCategory.objects.get(category_code="pathway")
+    return catalog_api.get_pathway_category("pathway")
 
 
 @pytest.fixture(name="data_science")
@@ -52,15 +53,75 @@ def _learner():
 
 def test_get_pathway_category() -> None:
     """Categories are looked up by their stable code, not by the learner-facing name."""
-    masters = PathwayCategory.objects.create(category_code="masters-degree", title="Master's Degree")
+    masters = catalog_api.create_pathway_category(category_code="masters-degree", title="Master's Degree")
     assert catalog_api.get_pathway_category("masters-degree") == masters
     with pytest.raises(PathwayCategory.DoesNotExist):
         catalog_api.get_pathway_category("Master's Degree")
 
 
+def test_get_pathway_categories(category) -> None:
+    """All categories, ordered by title, including the one created by the initial migration."""
+    masters = catalog_api.create_pathway_category(category_code="masters-degree", title="Master's Degree")
+    assert list(catalog_api.get_pathway_categories()) == [masters, category]
+
+
+def test_create_pathway_category() -> None:
+    created = catalog_api.create_pathway_category(category_code="class", title="Class", title_plural="Classes")
+    category = catalog_api.get_pathway_category("class")
+    assert category == created
+    assert (category.title, category.get_title_plural()) == ("Class", "Classes")
+
+
+def test_create_pathway_category_with_a_taken_code() -> None:
+    """Codes are case-insensitively unique, so the initial "pathway" code can't be reused in any case."""
+    with pytest.raises(IntegrityError), transaction.atomic():
+        catalog_api.create_pathway_category(category_code="Pathway", title="Another Pathway")
+
+
+def test_update_pathway_category() -> None:
+    """Only the fields passed are changed, and an empty plural goes back to deriving it from the title."""
+    catalog_api.create_pathway_category(category_code="class", title="Class")
+
+    catalog_api.update_pathway_category("class", title_plural="Classes")
+    category = catalog_api.get_pathway_category("class")
+    assert (category.title, category.get_title_plural()) == ("Class", "Classes")
+
+    catalog_api.update_pathway_category(category, title="Program", title_plural="")
+    category = catalog_api.get_pathway_category("class")
+    assert (category.title, category.get_title_plural()) == ("Program", "Programs")
+
+
+def test_update_pathway_category_with_nothing_to_change(django_assert_num_queries) -> None:
+    """Passing no fields is a no-op that doesn't touch the database."""
+    category = catalog_api.create_pathway_category(category_code="class", title="Class")
+    with django_assert_num_queries(0):
+        catalog_api.update_pathway_category(category)
+
+
+def test_delete_pathway_category() -> None:
+    """The category may be given as an instance or by its code."""
+    catalog_api.create_pathway_category(category_code="class", title="Class")
+    catalog_api.delete_pathway_category("class")
+    catalog_api.delete_pathway_category(catalog_api.get_pathway_category("pathway"))
+    assert not catalog_api.get_pathway_categories().exists()
+    with pytest.raises(PathwayCategory.DoesNotExist):
+        catalog_api.delete_pathway_category("class")
+
+
+def test_delete_pathway_category_in_use(data_science, category) -> None:
+    """A category in use can't be deleted until its pathways are moved to another one."""
+    with pytest.raises(ProtectedError), transaction.atomic():
+        catalog_api.delete_pathway_category(category)
+
+    masters = catalog_api.create_pathway_category(category_code="masters-degree", title="Master's Degree")
+    catalog_api.update_catalog_pathway(data_science, category=masters)
+    catalog_api.delete_pathway_category(category)
+    assert list(catalog_api.get_pathway_categories()) == [masters]
+
+
 def test_create_catalog_pathway(org1) -> None:
     """Operators can add categories of their own, and a blank title falls back to the code."""
-    masters = PathwayCategory.objects.create(category_code="masters-degree", title="Master's Degree")
+    masters = catalog_api.create_pathway_category(category_code="masters-degree", title="Master's Degree")
     pathway = catalog_api.create_catalog_pathway(org_code="Org1", pathway_code="CompSci", category=masters)
     assert pathway.category == masters
     assert pathway.title == "CompSci"
@@ -79,7 +140,7 @@ def test_get_catalog_pathway(data_science) -> None:
 def _three_pathways(org1, category) -> tuple[CatalogPathway, CatalogPathway, CatalogPathway]:
     """Create three catalog pathways across two orgs and two categories, a day apart, oldest first."""
     ensure_organization("Org2")
-    masters = PathwayCategory.objects.create(category_code="masters-degree", title="Master's Degree")
+    masters = catalog_api.create_pathway_category(category_code="masters-degree", title="Master's Degree")
     with freeze_time(datetime(2026, 1, 1, tzinfo=timezone.utc)):
         data_science = catalog_api.create_catalog_pathway(
             org_code="Org1", pathway_code="DataScience", category=category
@@ -131,7 +192,7 @@ def test_get_catalog_pathway_includes_org_and_category(three_pathways, django_as
 
 def test_update_catalog_pathway_by_id_and_category(data_science) -> None:
     """The pathway may be given by ID, and the category can be changed like any other catalog field."""
-    masters = PathwayCategory.objects.create(category_code="masters-degree", title="Master's Degree")
+    masters = catalog_api.create_pathway_category(category_code="masters-degree", title="Master's Degree")
     catalog_api.update_catalog_pathway(data_science.id, category=masters)
     assert catalog_api.get_catalog_pathway(pk=data_science.id).category == masters
 
