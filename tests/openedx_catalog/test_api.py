@@ -266,7 +266,7 @@ def test_create_course_run_for_modulestore_course_with_existing_org_different_ca
     # Verify that a warning was logged. We actually get two warnings - one from the API and one from model.clean():
     assert caplog.record_tuples == [
         (
-            "openedx_catalog.api_impl",
+            "openedx_catalog.api_impl.courses",
             logging.WARN,
             'The course with ID "course-v1:NewOrg+Test+2026" does not match its Organization.short_name "nEWoRG"',
         ),
@@ -348,7 +348,7 @@ def test_create_course_run_for_modulestore_course_run_that_exists(caplog: pytest
     # Verify that a warning was logged:
     assert caplog.record_tuples == [
         (
-            "openedx_catalog.api_impl",
+            "openedx_catalog.api_impl.courses",
             logging.WARN,
             'Expected to create CourseRun for "course-v1:NewOrg+Test+2026" but it already existed.',
         ),
