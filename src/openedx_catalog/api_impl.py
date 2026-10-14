@@ -12,7 +12,6 @@ from organizations.api import ensure_organization  # type: ignore[import]
 from organizations.api import exceptions as org_exceptions
 
 from .models import CatalogCourse, CatalogPathway, CourseRun, PathwayCategory, PathwayEnrollment
-from .models.pathway_category import DEFAULT_PATHWAY_CATEGORY_CODE
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +24,6 @@ __all__ = [
     "sync_course_run_details",
     "create_course_run_for_modulestore_course_with",
     "delete_course_run",
-    "get_default_pathway_category",
     "get_pathway_category",
     "get_catalog_pathway",
     "get_catalog_pathways",
@@ -272,26 +270,6 @@ def delete_course_run(course_key: CourseKey) -> None:
 # half; creating and versioning the *definition* of a Pathway is done through `openedx_learning.api`.
 
 
-def get_default_pathway_category() -> PathwayCategory:
-    """
-    Get the default `PathwayCategory`: the one `create_catalog_pathway` uses when it isn't given a category.
-
-    Rather than falling back to the word "Pathway" in code, the initial migration ships a database row with that title,
-    so that operators can rename it or add categories of their own without a code change (see the openedx_learning
-    ADR 0007). Renaming it keeps it the default, because only its ``title`` changes; its ``category_code`` can't.
-
-    Nothing ever creates this category except that migration. If an operator has deleted it, this raises
-    `PathwayCategory.DoesNotExist`, and catalog pathways have to be given a category explicitly.
-    """
-    try:
-        return PathwayCategory.objects.get(category_code=DEFAULT_PATHWAY_CATEGORY_CODE)
-    except PathwayCategory.DoesNotExist as exc:
-        raise PathwayCategory.DoesNotExist(
-            f'The default pathway category ("{DEFAULT_PATHWAY_CATEGORY_CODE}") has been deleted, so catalog pathways '
-            "must be given a category explicitly."
-        ) from exc
-
-
 def get_pathway_category(category_code: str) -> PathwayCategory:
     """
     Get a `PathwayCategory` by its stable code.
@@ -375,23 +353,21 @@ def create_catalog_pathway(
     *,
     org_code: str,
     pathway_code: str,
+    category: PathwayCategory,
     title: str = "",
-    category: PathwayCategory | None = None,
     description: str = "",
 ) -> CatalogPathway:
     """
     Create a `CatalogPathway`.
 
-    The `Organization` identified by `org_code` must already exist. Pass `category=None` to use the default category,
-    which raises `PathwayCategory.DoesNotExist` if an operator has deleted it (see `get_default_pathway_category`).
+    The `Organization` identified by `org_code` must already exist. The category is always required: there is no
+    default, so a UI that wants to preselect one decides which itself.
 
     This creates only the catalog half of a Pathway. Use `openedx_learning.api` to create the versioned content that
     implements it.
 
     ⚠️ Does not check permissions.
     """
-    if category is None:
-        category = get_default_pathway_category()
     pathway = CatalogPathway(pathway_code=pathway_code, title=title, category=category, description=description)
     pathway.org_code = org_code  # Resolves the Organization by short_name; raises Organization.DoesNotExist.
     pathway.save()

@@ -18,7 +18,6 @@ from organizations.api import ensure_organization  # type: ignore[import]
 from organizations.models import Organization  # type: ignore[import]
 
 from openedx_catalog.models import CatalogPathway, PathwayCategory, PathwayEnrollment
-from openedx_catalog.models.pathway_category import DEFAULT_PATHWAY_CATEGORY_CODE, DEFAULT_PATHWAY_CATEGORY_TITLE
 
 User = get_user_model()
 
@@ -39,8 +38,8 @@ def _org2() -> None:
 
 @pytest.fixture(name="category")
 def _category() -> PathwayCategory:
-    """The category shipped by the initial migration, which operators may rename and translate like any other"""
-    return PathwayCategory.objects.get(category_code=DEFAULT_PATHWAY_CATEGORY_CODE)
+    """The category created by the initial migration, which operators may rename like any other"""
+    return PathwayCategory.objects.get(category_code="pathway")
 
 
 @pytest.fixture(name="data_science")
@@ -58,20 +57,16 @@ def _learner():
 # PathwayCategory
 
 
-def test_default_category_is_shipped() -> None:
+def test_initial_category_is_created() -> None:
     """
-    The default category is a database row, not a fallback in code, so that operators can rename it without a code
-    change (ADR 0007, decision 2).
+    The initial migration creates a "Pathway" category, so that a new instance has one to pick. It's a database row
+    rather than a fallback in code, so operators can rename it without a code change (ADR 0007, decision 2).
     """
-    category = PathwayCategory.objects.get(category_code=DEFAULT_PATHWAY_CATEGORY_CODE)
-    assert category.title == DEFAULT_PATHWAY_CATEGORY_TITLE
+    assert PathwayCategory.objects.get(category_code="pathway").title == "Pathway"
 
 
 def test_category_is_required(org1) -> None:
-    """
-    The model has no default category. Picking the shipped one when the caller doesn't choose is up to the API
-    (`create_catalog_pathway`) and the admin add form, so a direct save without one fails.
-    """
+    """There is no default category, so a pathway can't be saved without one."""
     with pytest.raises(IntegrityError), transaction.atomic():
         CatalogPathway.objects.create(org_code="Org1", pathway_code="NoCategory")
 
@@ -95,10 +90,9 @@ def test_category_in_use_cannot_be_deleted(data_science) -> None:
         data_science.category.delete()
 
 
-def test_category_string_representation() -> None:
+def test_category_string_representation(category) -> None:
     """The string representation of a category is its title."""
-    category = PathwayCategory.objects.get(category_code=DEFAULT_PATHWAY_CATEGORY_CODE)
-    assert str(category) == DEFAULT_PATHWAY_CATEGORY_TITLE
+    assert str(category) == "Pathway"
 
 
 def test_title_plural_defaults_to_title_with_an_s(category) -> None:

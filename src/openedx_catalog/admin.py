@@ -13,7 +13,6 @@ from django.urls import reverse
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 
-from .api import get_default_pathway_category
 from .models import CatalogCourse, CatalogPathway, CourseRun, PathwayCategory, PathwayEnrollment
 
 if TYPE_CHECKING:
@@ -170,17 +169,6 @@ class CatalogPathwayAdmin(admin.ModelAdmin):
         if obj:  # editing an existing object
             return ("org", "pathway_code")
         return tuple()
-
-    def get_changeform_initial_data(self, request) -> dict[str, str | list[str]]:
-        """Preselect the default category on the add form, if the operator hasn't deleted it."""
-        initial = super().get_changeform_initial_data(request)
-        if "category" not in initial:
-            try:
-                # Initial data is typed like query parameters, as strings; the form compares the pk as a string anyway.
-                initial["category"] = str(get_default_pathway_category().pk)
-            except PathwayCategory.DoesNotExist:
-                pass
-        return initial
 
     @admin.display(description="Organization", ordering="org__short_name")
     def org_display(self, obj: CatalogPathway) -> str:

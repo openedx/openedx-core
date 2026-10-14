@@ -16,9 +16,6 @@ log = logging.getLogger(__name__)
 # Make 'length' available for CHECK constraints. OK if this is called multiple times.
 models.CharField.register_lookup(Length)
 
-DEFAULT_PATHWAY_CATEGORY_CODE = "pathway"
-DEFAULT_PATHWAY_CATEGORY_TITLE = "Pathway"
-
 
 class PathwayCategory(models.Model):
     """
@@ -29,7 +26,7 @@ class PathwayCategory(models.Model):
     relabelling is a learner-facing concern of the catalog side only.
 
     The ``category_code`` is the stable identifier that code and imports may key off. The ``title`` is what learners
-    see, and operators are free to change it - including on the default category shipped by the initial migration.
+    see, and operators are free to change it.
 
     Where learners see several pathways of a category together ("3 Master's Degrees"), use `get_title_plural`.
 

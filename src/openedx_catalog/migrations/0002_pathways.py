@@ -20,25 +20,20 @@ from django.db import migrations, models
 import openedx_django_lib.fields
 import openedx_django_lib.validators
 
-# These values are duplicated from openedx_catalog.models.pathway_category rather than imported, because a migration
-# should represent a point-in-time transformation and must not change if those constants later do.
-DEFAULT_CATEGORY_CODE = "pathway"
-DEFAULT_CATEGORY_TITLE = "Pathway"
 
-
-def create_default_pathway_category(apps, schema_editor):
-    """Create the default category."""
+def create_initial_pathway_category(apps, schema_editor):
+    """Create the initial category."""
     PathwayCategory = apps.get_model("openedx_catalog", "PathwayCategory")
     PathwayCategory.objects.get_or_create(
-        category_code=DEFAULT_CATEGORY_CODE,
-        defaults={"title": DEFAULT_CATEGORY_TITLE},
+        category_code="pathway",
+        defaults={"title": "Pathway"},
     )
 
 
-def delete_default_pathway_category(apps, schema_editor):
-    """Remove the default category on reverse."""
+def delete_initial_pathway_category(apps, schema_editor):
+    """Remove the initial category on reverse."""
     PathwayCategory = apps.get_model("openedx_catalog", "PathwayCategory")
-    PathwayCategory.objects.filter(category_code=DEFAULT_CATEGORY_CODE).delete()
+    PathwayCategory.objects.filter(category_code="pathway").delete()
 
 
 class Migration(migrations.Migration):
@@ -118,8 +113,8 @@ class Migration(migrations.Migration):
             },
         ),
         migrations.RunPython(
-            create_default_pathway_category,
-            reverse_code=delete_default_pathway_category,
+            create_initial_pathway_category,
+            reverse_code=delete_initial_pathway_category,
         ),
         migrations.CreateModel(
             name="CatalogPathway",

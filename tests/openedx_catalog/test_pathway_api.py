@@ -14,7 +14,6 @@ from organizations.api import ensure_organization  # type: ignore[import]
 
 from openedx_catalog import api as catalog_api
 from openedx_catalog.models import CatalogPathway, PathwayCategory
-from openedx_catalog.models.pathway_category import DEFAULT_PATHWAY_CATEGORY_CODE
 
 User = get_user_model()
 
@@ -27,12 +26,19 @@ def _org1() -> None:
     ensure_organization("Org1")
 
 
+@pytest.fixture(name="category")
+def _category() -> PathwayCategory:
+    """The category created by the initial migration"""
+    return PathwayCategory.objects.get(category_code="pathway")
+
+
 @pytest.fixture(name="data_science")
-def _data_science(org1) -> CatalogPathway:
+def _data_science(org1, category) -> CatalogPathway:
     """Create a CatalogPathway for use in these tests"""
     return catalog_api.create_catalog_pathway(
         org_code="Org1",
         pathway_code="DataScience",
+        category=category,
         title="Data Science Professional Certificate",
         description="Learn data science.",
     )
@@ -44,10 +50,6 @@ def _learner():
     return User.objects.create(username="learner", email="learner@example.com")
 
 
-def test_get_default_pathway_category() -> None:
-    assert catalog_api.get_default_pathway_category().category_code == DEFAULT_PATHWAY_CATEGORY_CODE
-
-
 def test_get_pathway_category() -> None:
     """Categories are looked up by their stable code, not by the learner-facing name."""
     masters = PathwayCategory.objects.create(category_code="masters-degree", title="Master's Degree")
@@ -56,54 +58,12 @@ def test_get_pathway_category() -> None:
         catalog_api.get_pathway_category("Master's Degree")
 
 
-def test_create_with_default_category(org1) -> None:
-    """Omitting the category picks the shipped default, and a blank title falls back to the code."""
-    pathway = catalog_api.create_catalog_pathway(org_code="Org1", pathway_code="CompSci")
-    assert pathway.category.category_code == DEFAULT_PATHWAY_CATEGORY_CODE
-    assert pathway.title == "CompSci"
-
-
-def test_renamed_default_category_stays_the_default(org1) -> None:
-    """
-    Renaming the default changes what learners see, and nothing else. The code stays put, so it stays the default and
-    nothing recreates a "Pathway" category.
-    """
-    default = catalog_api.get_default_pathway_category()
-    default.title = "Program"
-    default.save()
-
-    pathway = catalog_api.create_catalog_pathway(org_code="Org1", pathway_code="Renamed")
-    assert pathway.category == default
-    assert pathway.category.title == "Program"
-    assert PathwayCategory.objects.count() == 1
-
-
-def test_deleted_default_category_is_not_recreated(org1) -> None:
-    """
-    Operators may delete the shipped category, e.g. after setting up their own. It stays deleted, and pathways then
-    need a category picked explicitly.
-    """
-    catalog_api.get_default_pathway_category().delete()
-    programs = PathwayCategory.objects.create(category_code="programs", title="Program")
-
-    with pytest.raises(PathwayCategory.DoesNotExist):
-        catalog_api.create_catalog_pathway(org_code="Org1", pathway_code="NoCategory")
-    assert not PathwayCategory.objects.filter(category_code=DEFAULT_PATHWAY_CATEGORY_CODE).exists()
-
-    pathway = catalog_api.create_catalog_pathway(org_code="Org1", pathway_code="WithCategory", category=programs)
-    assert pathway.category == programs
-
-
-def test_create_with_explicit_category(org1) -> None:
-    """Operators can add categories of their own; the default is only a default."""
+def test_create_catalog_pathway(org1) -> None:
+    """Operators can add categories of their own, and a blank title falls back to the code."""
     masters = PathwayCategory.objects.create(category_code="masters-degree", title="Master's Degree")
-    pathway = catalog_api.create_catalog_pathway(
-        org_code="Org1",
-        pathway_code="CompSci",
-        title="Computer Science",
-        category=masters,
-    )
+    pathway = catalog_api.create_catalog_pathway(org_code="Org1", pathway_code="CompSci", category=masters)
     assert pathway.category == masters
+    assert pathway.title == "CompSci"
 
 
 def test_get_catalog_pathway(data_science) -> None:
@@ -116,12 +76,14 @@ def test_get_catalog_pathway(data_science) -> None:
 
 
 @pytest.fixture(name="three_pathways")
-def _three_pathways(org1) -> tuple[CatalogPathway, CatalogPathway, CatalogPathway]:
+def _three_pathways(org1, category) -> tuple[CatalogPathway, CatalogPathway, CatalogPathway]:
     """Create three catalog pathways across two orgs and two categories, a day apart, oldest first."""
     ensure_organization("Org2")
     masters = PathwayCategory.objects.create(category_code="masters-degree", title="Master's Degree")
     with freeze_time(datetime(2026, 1, 1, tzinfo=timezone.utc)):
-        data_science = catalog_api.create_catalog_pathway(org_code="Org1", pathway_code="DataScience")
+        data_science = catalog_api.create_catalog_pathway(
+            org_code="Org1", pathway_code="DataScience", category=category
+        )
     with freeze_time(datetime(2026, 1, 2, tzinfo=timezone.utc)):
         comp_sci = catalog_api.create_catalog_pathway(org_code="Org1", pathway_code="CompSci", category=masters)
     with freeze_time(datetime(2026, 1, 3, tzinfo=timezone.utc)):
@@ -141,7 +103,7 @@ def test_get_catalog_pathways_by_org_and_category(three_pathways) -> None:
     assert list(catalog_api.get_catalog_pathways(org_code="Org1")) == [comp_sci, data_science]
     assert list(catalog_api.get_catalog_pathways(category_code="masters-degree")) == [history, comp_sci]
     assert list(catalog_api.get_catalog_pathways(org_code="Org1", category_code="masters-degree")) == [comp_sci]
-    assert list(catalog_api.get_catalog_pathways(category_code=DEFAULT_PATHWAY_CATEGORY_CODE)) == [data_science]
+    assert list(catalog_api.get_catalog_pathways(category_code="pathway")) == [data_science]
     assert not catalog_api.get_catalog_pathways(org_code="NoSuchOrg").exists()
     assert not catalog_api.get_catalog_pathways(category_code="no-such-category").exists()
 
