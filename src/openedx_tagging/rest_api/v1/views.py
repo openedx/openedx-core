@@ -809,11 +809,17 @@ class TaxonomyTagsView(TaggingExceptionHandlerMixin, ListAPIView, RetrieveUpdate
         """
         Get the taxonomy from `pk` or raise 404.
 
+        Archived taxonomies are not found, except for PUT and PATCH, which must resolve them so that
+        the tag update is rejected with an explanation instead of a 404.
+
         The current taxonomy is cached in the view.
         """
         if not self._taxonomy:
             taxonomy_id = self.kwargs.get("pk")
-            taxonomy = get_taxonomy(int(taxonomy_id)) if taxonomy_id else None
+            if taxonomy_id and self.request.method in ("PUT", "PATCH"):
+                taxonomy = Taxonomy.objects.filter(pk=int(taxonomy_id)).first()
+            else:
+                taxonomy = get_taxonomy(int(taxonomy_id)) if taxonomy_id else None
             if not taxonomy:
                 raise Http404("Taxonomy not found")
             self.check_object_permissions(self.request, taxonomy)

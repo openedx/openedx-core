@@ -2548,6 +2548,28 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         fungi.refresh_from_db()
         assert fungi.value == "Fungi"
 
+    def test_update_tag_in_taxonomy_archived_taxonomy(self):
+        self.client.force_authenticate(user=self.staff)
+        fungi = Tag.objects.get(taxonomy=self.small_taxonomy, value="Fungi")
+        Taxonomy.objects.filter(pk=self.small_taxonomy.pk).update(archived=True)  # The tag itself stays unarchived
+
+        update_data = {"tag": "Fungi", "updated_tag_value": "Mushrooms"}
+        for method in (self.client.put, self.client.patch):
+            response = method(self.small_taxonomy_url, update_data, format="json")
+            assert response.status_code == status.HTTP_400_BAD_REQUEST
+            assert "archived" in response.content.decode()
+            fungi.refresh_from_db()
+            assert fungi.value == "Fungi"
+
+    def test_create_tag_in_archived_taxonomy_404(self):
+        self.client.force_authenticate(user=self.staff)
+        Taxonomy.objects.filter(pk=self.small_taxonomy.pk).update(archived=True)
+        tag_count = self.small_taxonomy.tag_set.count()
+
+        response = self.client.post(self.small_taxonomy_url, {"tag": "New Tag"}, format="json")
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert self.small_taxonomy.tag_set.count() == tag_count
+
     def test_update_tag_in_taxonomy_with_invalid_tag(self):
         self.client.force_authenticate(user=self.staff)
         updated_tag_value = "Updated Tag"
