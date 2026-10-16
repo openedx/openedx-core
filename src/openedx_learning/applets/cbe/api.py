@@ -3,6 +3,8 @@ Public API for Competency-Based Education (CBE).
 """
 from __future__ import annotations
 
+from typing import Iterable
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import QuerySet
@@ -12,7 +14,7 @@ from opaque_keys.edx.keys import UsageKey
 
 from openedx_catalog.api import get_course_run
 from openedx_catalog.models_api import CourseRun
-from openedx_tagging.api import create_taxonomy, get_object_tags, tag_object
+from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags, get_object_tags, tag_object
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
 from .models import (
@@ -28,6 +30,7 @@ __all__ = [
     "create_competency_criterion",
     "create_competency_taxonomy",
     "get_competency_rule_profiles",
+    "get_courses_with_relative_criteria",
     "is_competency_taxonomy",
     "resolve_competency_tag",
     "resolve_supplied_leaf_group",
@@ -173,6 +176,52 @@ def resolve_supplied_leaf_group(group_id: int, tag: Tag, course_run: CourseRun) 
     return group
 
 
+def get_courses_with_relative_criteria(tag_ids: Iterable[int]) -> dict[CourseRun, Tag]:
+    """
+    Return every course already blocked for one of ``tag_ids`` by an existing CompetencyCriterion.
+
+    Maps each conflicting CourseRun to the lowest-id tag (of ``tag_ids``) with a criterion there.
+    """
+    groups: QuerySet[CompetencyCriteriaGroup, CompetencyCriteriaGroup] = (
+        CompetencyCriteriaGroup.objects.filter(tag_id__in=tag_ids, criteria__isnull=False)
+        .select_related("tag", "parent__course")
+        .distinct()
+        .order_by("tag_id")
+    )
+    result: dict[CourseRun, Tag] = {}
+    for group in groups:
+        # criteria__isnull=False guarantees every row here is a leaf with a course-level parent.
+        assert group.parent is not None
+        assert group.parent.course is not None
+        result.setdefault(group.parent.course, group.tag)
+    return result
+
+
+def _validate_containment(group: CompetencyCriteriaGroup, course: CourseRun) -> None:
+    """
+    Raise ValidationError (keyed "tag_id") if ``group.tag`` conflicts with an existing criterion.
+
+    A conflict is a taxonomy ancestor or descendant of ``group.tag`` that already has a
+    CompetencyCriterion in ``course``.
+    """
+    tag = group.tag
+    relative_ids = (
+        set(get_ancestor_tags(tag).values_list("id", flat=True))
+        | set(get_descendant_tags(tag).values_list("id", flat=True))
+    )
+    if not relative_ids:
+        return
+    conflicts = get_courses_with_relative_criteria(relative_ids)
+    if course in conflicts:
+        conflicting_tag = conflicts[course]
+        raise ValidationError({
+            "tag_id": _(
+                "Tag '{tag_value}' already has a criterion in course {course_key}, and is a taxonomy "
+                "ancestor or descendant of this criterion's tag."
+            ).format(tag_value=conflicting_tag.value, course_key=course.course_key),
+        })
+
+
 def create_competency_criterion(
     group: CompetencyCriteriaGroup,
     object_id: str,
@@ -185,7 +234,6 @@ def create_competency_criterion(
 
     UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
     and archive behavior may change this function's shape without a deprecation cycle.
-
     ``tag_object()`` replaces an object's full tag list for a taxonomy rather than appending, so
     this reads the object's existing tags first and unions in the new one, rather than silently
     dropping a sibling competency's tag under the same taxonomy. Raises ValidationError (keyed
@@ -197,35 +245,52 @@ def create_competency_criterion(
     all three fields null. Course- and organization-scoped profiles are not resolved here, since
     a criterion is authored at taxonomy scope.
     """
-    tag = group.tag
-    # tag.taxonomy_id is nullable at the model level; already guaranteed set by the caller.
-    assert tag.taxonomy_id is not None
-    existing_values = [existing_tag.value for existing_tag in get_object_tags(object_id, taxonomy_id=tag.taxonomy_id)]
-    if tag.value not in existing_values:
-        existing_values.append(tag.value)
-    try:
-        tag_object(object_id, tag.taxonomy, existing_values)
-    except ValueError as exc:
-        raise ValidationError({"object_id": str(exc)}) from exc
-    object_tag = ObjectTag.objects.get(object_id=object_id, taxonomy_id=tag.taxonomy_id, tag_id=tag.id)
+    with transaction.atomic():
+        tag = group.tag
+        # tag.taxonomy_id is nullable at the model level; already guaranteed set by the caller.
+        assert tag.taxonomy_id is not None
+        try:
+            object_course = get_course_run(UsageKey.from_string(object_id).course_key)
+        except InvalidKeyError as exc:
+            raise ValidationError({"object_id": _("object_id is not a valid usage key.")}) from exc
+        except CourseRun.DoesNotExist as exc:
+            raise ValidationError({"object_id": _("No course run matches object_id's course.")}) from exc
+        # Without this lock, two concurrent creates could both pass the containment check below.
+        CourseRun.objects.select_for_update().get(pk=object_course.id)
 
-    if rule_profile_id is None and rule_type_override is None and rule_payload_override is None:
-        live = CompetencyRuleProfile.objects.filter(archived=False, organization__isnull=True, course__isnull=True)
-        # CompetencyTaxonomy shares its pk with its parent Taxonomy row.
-        profile = live.filter(competency_taxonomy_id=tag.taxonomy_id).first() or live.get(
-            competency_taxonomy__isnull=True
+        assert group.parent is not None
+        assert group.parent.course is not None
+        if object_course != group.parent.course:
+            raise ValidationError({"object_id": _("object_id's course must match group's course.")})
+
+        _validate_containment(group, group.parent.course)
+
+        existing_values = [
+            existing_tag.value for existing_tag in get_object_tags(object_id, taxonomy_id=tag.taxonomy_id)
+        ]
+        if tag.value not in existing_values:
+            existing_values.append(tag.value)
+        try:
+            tag_object(object_id, tag.taxonomy, existing_values)
+        except ValueError as exc:
+            raise ValidationError({"object_id": str(exc)}) from exc
+        object_tag = ObjectTag.objects.get(object_id=object_id, taxonomy_id=tag.taxonomy_id, tag_id=tag.id)
+
+        if rule_profile_id is None and rule_type_override is None and rule_payload_override is None:
+            live = CompetencyRuleProfile.objects.filter(archived=False, organization__isnull=True, course__isnull=True)
+            # CompetencyTaxonomy shares its pk with its parent Taxonomy row.
+            profile = live.filter(competency_taxonomy_id=tag.taxonomy_id).first() or live.get(
+                competency_taxonomy__isnull=True
+            )
+            rule_profile_id = profile.id
+
+        return CompetencyCriterion.objects.create(
+            group=group,
+            object_tag=object_tag,
+            rule_profile_id=rule_profile_id,
+            rule_type_override=rule_type_override,
+            rule_payload_override=rule_payload_override,
         )
-        rule_profile_id = profile.id
-
-    # Parent-competency dominance/containment validation belongs here, before creation.
-
-    return CompetencyCriterion.objects.create(
-        group=group,
-        object_tag=object_tag,
-        rule_profile_id=rule_profile_id,
-        rule_type_override=rule_type_override,
-        rule_payload_override=rule_payload_override,
-    )
 
 
 def _reject_duplicate_criterion(tag: Tag, object_id: str, group_id: int | None) -> None:

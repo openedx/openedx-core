@@ -169,6 +169,30 @@ def get_children_tags(
     return taxonomy.get_filtered_tags(parent_tag_value=parent_tag_value, depth=1)
 
 
+def get_ancestor_tags(tag: Tag) -> QuerySet[Tag]:
+    """
+    Return every ancestor of ``tag`` (its parent, grandparent, ... up to the root).
+
+    Returns an empty queryset if ``tag``'s taxonomy is unset or allows free text, since
+    free-text tags have no taxonomy-defined hierarchy.
+    """
+    if tag.taxonomy is None or tag.taxonomy.allow_free_text:
+        return Tag.objects.none()
+    return Tag.objects.filter(taxonomy=tag.taxonomy, value__in=tag.get_lineage()[:-1])
+
+
+def get_descendant_tags(tag: Tag) -> QuerySet[Tag]:
+    """
+    Return every descendant of ``tag`` at any depth, excluding ``tag`` itself.
+
+    Returns an empty queryset if ``tag``'s taxonomy is unset or allows free text, since
+    free-text tags have no taxonomy-defined hierarchy.
+    """
+    if tag.taxonomy is None or tag.taxonomy.allow_free_text:
+        return Tag.objects.none()
+    return Tag.objects.filter(taxonomy=tag.taxonomy, depth__gt=tag.depth, lineage__startswith=tag.lineage)
+
+
 def resync_object_tags(object_tags: QuerySet | None = None) -> int:
     """
     Reconciles ObjectTag entries with any changes made to their associated taxonomies and tags.

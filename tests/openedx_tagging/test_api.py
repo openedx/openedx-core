@@ -209,6 +209,56 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
         """
         assert not list(tagging_api.get_children_tags(self.read_only_taxonomy, self.read_only_taxonomy_tag.value))
 
+    def test_get_ancestor_tags(self) -> None:
+        """
+        get_ancestor_tags() returns every ancestor of a multi-level tag, up to the root.
+        """
+        eukaryota = get_tag("Eukaryota")
+        result = {tag.value for tag in tagging_api.get_ancestor_tags(self.mammalia)}
+        assert result == {eukaryota.value, self.animalia.value, self.chordata.value}
+
+    def test_get_ancestor_tags_root_has_no_ancestors(self) -> None:
+        """
+        A root tag (no parent) has no ancestors.
+        """
+        assert not list(tagging_api.get_ancestor_tags(self.archaea))
+
+    def test_get_ancestor_tags_free_text_taxonomy(self) -> None:
+        """
+        A tag on a free-text-enabled taxonomy has no taxonomy-defined hierarchy to walk.
+        """
+        tag = Tag.objects.create(taxonomy=self.free_text_taxonomy, value="some_tag")
+        assert not list(tagging_api.get_ancestor_tags(tag))
+
+    def test_get_descendant_tags(self) -> None:
+        """
+        get_descendant_tags() returns every descendant at any depth, including grandchildren.
+        """
+        result = {tag.value for tag in tagging_api.get_descendant_tags(self.animalia)}
+        assert result == {
+            "Arthropoda",
+            self.chordata.value,
+            self.mammalia.value,  # A grandchild of Animalia (via Chordata), not just a direct child.
+            "Cnidaria",
+            "Ctenophora",
+            "Gastrotrich",
+            "Placozoa",
+            "Porifera",
+        }
+
+    def test_get_descendant_tags_leaf_has_no_descendants(self) -> None:
+        """
+        A leaf tag (no children) has no descendants.
+        """
+        assert not list(tagging_api.get_descendant_tags(self.mammalia))
+
+    def test_get_descendant_tags_free_text_taxonomy(self) -> None:
+        """
+        A tag on a free-text-enabled taxonomy has no taxonomy-defined hierarchy to walk.
+        """
+        tag = Tag.objects.create(taxonomy=self.free_text_taxonomy, value="some_tag")
+        assert not list(tagging_api.get_descendant_tags(tag))
+
     def test_resync_object_tags(self) -> None:
         self.taxonomy.allow_multiple = True
         self.taxonomy.save()

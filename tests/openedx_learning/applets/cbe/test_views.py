@@ -81,6 +81,11 @@ def make_course_run(organization: Organization, course_code: str, run_code: str)
     return CourseRun.objects.create(catalog_course=catalog_course, run_code=run_code)
 
 
+def make_tag(taxonomy: CompetencyTaxonomy, value: str, parent: Tag | None = None) -> Tag:
+    """Create a Tag on `taxonomy`, optionally under `parent`, for taxonomy-hierarchy tests."""
+    return Tag.objects.create(taxonomy=taxonomy, value=value, parent=parent)
+
+
 # What migration 0005 seeds the system default with. Asserted verbatim rather than imported, so
 # that a change to the seed surfaces here as a failing contract instead of passing silently.
 SEEDED_GRADE_PAYLOAD = {"op": "gte", "value": 0.8, "scale": "percent"}
@@ -804,3 +809,116 @@ def test_tag_refused_at_the_object_tag_limit_is_400_and_creates_nothing(
     assert "Cannot add more than 1 tags" in str(response.data["object_id"])
     assert not CompetencyCriterion.objects.exists()
     assert not CompetencyCriteriaGroup.objects.exists()
+
+
+def test_descendant_is_rejected_when_its_ancestor_already_has_a_criterion_in_the_same_course(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun,
+) -> None:
+    """A tag is rejected when its taxonomy ancestor already has a criterion in the same course."""
+    parent = make_tag(competency_taxonomy, "S1 Parent")
+    child = make_tag(competency_taxonomy, "S1 Child", parent=parent)
+    first = user_client.post(
+        criterion_create_url(parent.id), {"object_id": usage_key(course_run, "p1")}, format="json",
+    )
+    assert first.status_code == status.HTTP_201_CREATED
+
+    response = user_client.post(
+        criterion_create_url(child.id), {"object_id": usage_key(course_run, "p2")}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert parent.value in str(response.data["tag_id"])
+    assert str(course_run.course_key) in str(response.data["tag_id"])
+
+
+def test_ancestor_is_rejected_when_a_descendant_already_has_a_criterion_in_the_same_course(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun,
+) -> None:
+    """A tag is rejected when one of its taxonomy descendants already has a criterion in the same course."""
+    parent = make_tag(competency_taxonomy, "S2 Parent")
+    child = make_tag(competency_taxonomy, "S2 Child", parent=parent)
+    first = user_client.post(
+        criterion_create_url(child.id), {"object_id": usage_key(course_run, "p1")}, format="json",
+    )
+    assert first.status_code == status.HTTP_201_CREATED
+
+    response = user_client.post(
+        criterion_create_url(parent.id), {"object_id": usage_key(course_run, "p2")}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert child.value in str(response.data["tag_id"])
+    assert str(course_run.course_key) in str(response.data["tag_id"])
+
+
+def test_multi_level_ancestor_conflict_names_the_actual_conflicting_tag(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun,
+) -> None:
+    """
+    A conflict several levels up the taxonomy is rejected, and the response names the real
+    conflicting tag (the grandparent), not just any ancestor.
+    """
+    grandparent = make_tag(competency_taxonomy, "S3 Grandparent")
+    parent = make_tag(competency_taxonomy, "S3 Parent", parent=grandparent)
+    child = make_tag(competency_taxonomy, "S3 Child", parent=parent)
+    first = user_client.post(
+        criterion_create_url(grandparent.id), {"object_id": usage_key(course_run, "p1")}, format="json",
+    )
+    assert first.status_code == status.HTTP_201_CREATED
+
+    response = user_client.post(
+        criterion_create_url(child.id), {"object_id": usage_key(course_run, "p2")}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert grandparent.value in str(response.data["tag_id"])
+    assert str(course_run.course_key) in str(response.data["tag_id"])
+
+
+def test_sibling_tags_are_allowed(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun,
+) -> None:
+    """Sibling tags, sharing a parent but neither one the other's ancestor, are both allowed."""
+    parent = make_tag(competency_taxonomy, "S4 Parent")
+    sibling_a = make_tag(competency_taxonomy, "S4 Sibling A", parent=parent)
+    sibling_b = make_tag(competency_taxonomy, "S4 Sibling B", parent=parent)
+    first = user_client.post(
+        criterion_create_url(sibling_a.id), {"object_id": usage_key(course_run, "p1")}, format="json",
+    )
+    assert first.status_code == status.HTTP_201_CREATED
+
+    response = user_client.post(
+        criterion_create_url(sibling_b.id), {"object_id": usage_key(course_run, "p2")}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+
+
+def test_hierarchically_related_tags_scoped_to_different_courses_are_allowed(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, organization: Organization,
+) -> None:
+    """An ancestor/descendant pair is allowed when each criterion is scoped to a different course."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    parent = make_tag(competency_taxonomy, "S5 Parent")
+    child = make_tag(competency_taxonomy, "S5 Child", parent=parent)
+    first = user_client.post(criterion_create_url(parent.id), {"object_id": usage_key(course_run, "p1")}, format="json")
+    assert first.status_code == status.HTTP_201_CREATED
+
+    response = user_client.post(
+        criterion_create_url(child.id), {"object_id": usage_key(other_course_run, "p1")}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+
+
+def test_the_same_tag_with_two_different_criteria_in_the_same_course_is_allowed(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun,
+) -> None:
+    """A repeat criterion for the same tag in the same course stays allowed."""
+    tag = make_tag(competency_taxonomy, "S6 Tag")
+    first = user_client.post(criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p1")}, format="json")
+    assert first.status_code == status.HTTP_201_CREATED
+
+    response = user_client.post(criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p2")}, format="json")
+
+    assert response.status_code == status.HTTP_201_CREATED
