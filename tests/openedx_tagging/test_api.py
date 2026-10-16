@@ -1452,7 +1452,8 @@ class TestDeletionLock(TestTagTaxonomyMixin, TestCase):
 
     def test_lock_multiple_ids_in_one_call(self) -> None:
         object_tags = [self._tag("obj1"), self._tag("obj2"), self._tag("obj3", "Fungi")]
-        with self.assertNumQueries(2):
+        # One UPDATE, plus the SAVEPOINT and RELEASE that atomic() emits inside a TestCase transaction.
+        with self.assertNumQueries(3):
             tagging_api.lock_object_tags_for_deletion([object_tag.pk for object_tag in object_tags])
         assert all(self._is_locked(object_tag) for object_tag in object_tags)
 

@@ -632,15 +632,15 @@ def lock_object_tags_for_deletion(object_tag_ids: int | Iterable[int]) -> None:
     to ``True``; no other field is changed.
 
     :param object_tag_ids: The primary key of one ObjectTag, or an iterable of primary keys.
-    :raises ObjectTag.DoesNotExist: If any given id does not resolve to an ObjectTag. This is raised before any write,
-        so either every given ObjectTag is locked or none is.
+    :raises ObjectTag.DoesNotExist: If any given id does not resolve to an ObjectTag, including one deleted
+        concurrently. The update is rolled back, so either every given ObjectTag is locked or none is.
     """
     ids = {object_tag_ids} if isinstance(object_tag_ids, int) else set(object_tag_ids)
-    found = set(ObjectTag.objects.filter(pk__in=ids).values_list("pk", flat=True))
-    missing = ids - found
-    if missing:
-        raise ObjectTag.DoesNotExist(f"ObjectTag ids not found: {sorted(missing)}")
-    ObjectTag.objects.filter(pk__in=ids).update(deletion_locked=True)
+    with transaction.atomic():
+        updated = ObjectTag.objects.filter(pk__in=ids).update(deletion_locked=True)
+        if updated != len(ids):
+            found = set(ObjectTag.objects.filter(pk__in=ids).values_list("pk", flat=True))
+            raise ObjectTag.DoesNotExist(f"ObjectTag ids not found: {sorted(ids - found)}")
 
 
 def get_tags_locked_for_deletion(tag_ids: Iterable[int]) -> set[int]:
