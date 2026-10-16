@@ -13,6 +13,7 @@ are stored in this app.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from enum import Enum
 from typing import Any, cast
 
@@ -621,6 +622,53 @@ def unmark_copied_tags(object_id: str) -> None:
     Update copied object tags on the given object to mark them as "not copied".
     """
     ObjectTag.objects.filter(object_id=object_id).update(is_copied=False)
+
+
+def lock_object_tags_for_deletion(object_tag_ids: int | Iterable[int]) -> None:
+    """
+    Mark ObjectTags as locked against deletion.
+
+    A deletion lock records that an association must be preserved. This function only sets ``ObjectTag.deletion_locked``
+    to ``True``; no other field is changed.
+
+    :param object_tag_ids: The primary key of one ObjectTag, or an iterable of primary keys.
+    :raises ObjectTag.DoesNotExist: If any given id does not resolve to an ObjectTag. This is raised before any write,
+        so either every given ObjectTag is locked or none is.
+    """
+    ids = {object_tag_ids} if isinstance(object_tag_ids, int) else set(object_tag_ids)
+    found = set(ObjectTag.objects.filter(pk__in=ids).values_list("pk", flat=True))
+    missing = ids - found
+    if missing:
+        raise ObjectTag.DoesNotExist(f"ObjectTag ids not found: {sorted(missing)}")
+    ObjectTag.objects.filter(pk__in=ids).update(deletion_locked=True)
+
+
+def get_tags_locked_for_deletion(tag_ids: Iterable[int]) -> set[int]:
+    """
+    Find which of the given tags have a deletion-locked association directly on them.
+
+    :param tag_ids: The ids of the tags to check.
+    :return: The subset of ``tag_ids`` that have at least one deletion-locked ObjectTag. Ids that are unknown or have
+        no locked association are omitted.
+
+    Archived associations count, because an archived but locked association still anchors learner history.
+    """
+    ids = set(tag_ids)
+    locked = ObjectTag.objects.filter(tag_id__in=ids, deletion_locked=True)
+    return set(locked.values_list("tag_id", flat=True).distinct())
+
+
+def is_taxonomy_locked_for_deletion(taxonomy_id: int) -> bool:
+    """
+    Check whether any deletion-locked association belongs to the given taxonomy.
+
+    :param taxonomy_id: The id of the taxonomy to check.
+    :return: ``True`` if any deletion-locked ObjectTag in the taxonomy exists, free-text associations included.
+        ``False`` otherwise, including for an unknown id.
+
+    Archived associations count, because an archived but locked association still anchors learner history.
+    """
+    return ObjectTag.objects.filter(taxonomy_id=taxonomy_id, deletion_locked=True).exists()
 
 
 def add_usage_counts(taxonomy: Taxonomy, tag_data: TagDataQuerySet) -> TagDataQuerySet:

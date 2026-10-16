@@ -1423,3 +1423,101 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
         with self.assertRaisesRegex(ValueError, "archived"):
             tagging_api.add_tag_to_taxonomy(self.taxonomy, "New tag", parent_tag_value="Animalia")
         assert self.taxonomy.tag_set.count() == tag_count
+
+
+class TestDeletionLock(TestTagTaxonomyMixin, TestCase):
+    """
+    Tests for the deletion-lock API functions.
+    """
+
+    def _tag(self, object_id: str, value: str = "Mammalia", taxonomy: Taxonomy | None = None) -> ObjectTag:
+        taxonomy = taxonomy or self.taxonomy
+        tagging_api.tag_object(object_id=object_id, taxonomy=taxonomy, tags=[value])
+        return ObjectTag.objects.get(object_id=object_id, taxonomy=taxonomy)
+
+    def _is_locked(self, object_tag: ObjectTag) -> bool:
+        return ObjectTag.objects.get(pk=object_tag.pk).deletion_locked
+
+    def test_lock_single_id(self) -> None:
+        object_tag = self._tag("obj1")
+        assert not self._is_locked(object_tag)
+        tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        assert self._is_locked(object_tag)
+
+    def test_lock_is_idempotent(self) -> None:
+        object_tag = self._tag("obj1")
+        tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        assert self._is_locked(object_tag)
+
+    def test_lock_multiple_ids_in_one_call(self) -> None:
+        object_tags = [self._tag("obj1"), self._tag("obj2"), self._tag("obj3", "Fungi")]
+        with self.assertNumQueries(2):
+            tagging_api.lock_object_tags_for_deletion([object_tag.pk for object_tag in object_tags])
+        assert all(self._is_locked(object_tag) for object_tag in object_tags)
+
+    def test_lock_with_missing_id_raises_and_locks_nothing(self) -> None:
+        valid_tags = [self._tag("obj1"), self._tag("obj2")]
+        missing_id = max(object_tag.pk for object_tag in valid_tags) + 1000
+        with pytest.raises(ObjectTag.DoesNotExist, match=str(missing_id)):
+            tagging_api.lock_object_tags_for_deletion([*(object_tag.pk for object_tag in valid_tags), missing_id])
+        assert not any(self._is_locked(object_tag) for object_tag in valid_tags)
+
+    def test_lock_changes_only_deletion_locked(self) -> None:
+        object_tag = self._tag("obj1")
+        ObjectTag.objects.filter(pk=object_tag.pk).update(archived=True)
+        fields = ("archived", "object_id", "taxonomy_id", "tag_id", "_value")
+        before = ObjectTag.objects.filter(pk=object_tag.pk).values(*fields).get()
+        tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        after = ObjectTag.objects.filter(pk=object_tag.pk).values(*fields).get()
+        assert after == before
+        assert after["archived"] is True
+        assert self._is_locked(object_tag)
+
+    def test_get_tags_locked_returns_only_locked_tags(self) -> None:
+        tagging_api.lock_object_tags_for_deletion(self._tag("obj1", "Mammalia").pk)
+        self._tag("obj2", "Fungi")
+        tag_ids = [self.mammalia.pk, get_tag("Fungi").pk]
+        with self.assertNumQueries(1):
+            result = tagging_api.get_tags_locked_for_deletion(tag_ids)
+        assert result == {self.mammalia.pk}
+
+    def test_get_tags_locked_query_count_for_whole_taxonomy(self) -> None:
+        locked_values = ["Mammalia", "Fungi", "Archaea"]
+        for index, value in enumerate(locked_values):
+            tagging_api.lock_object_tags_for_deletion(self._tag(f"obj{index}", value).pk)
+        all_tag_ids = list(Tag.objects.filter(taxonomy=self.taxonomy).values_list("pk", flat=True))
+        assert len(all_tag_ids) > len(locked_values)
+        with self.assertNumQueries(1):
+            result = tagging_api.get_tags_locked_for_deletion(all_tag_ids)
+        assert result == {get_tag(value).pk for value in locked_values}
+
+    def test_taxonomy_locked_once_an_association_is_locked(self) -> None:
+        object_tag = self._tag("obj1", "Mammalia")
+        assert not tagging_api.is_taxonomy_locked_for_deletion(self.taxonomy.pk)
+        tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        assert tagging_api.is_taxonomy_locked_for_deletion(self.taxonomy.pk)
+
+    def test_taxonomy_lock_does_not_lock_a_different_taxonomy(self) -> None:
+        tagging_api.lock_object_tags_for_deletion(self._tag("obj1", "Mammalia").pk)
+        assert not tagging_api.is_taxonomy_locked_for_deletion(self.read_only_taxonomy.pk)
+
+    def test_taxonomy_locked_by_free_text_association(self) -> None:
+        object_tag = self._tag("obj1", "my own words", taxonomy=self.free_text_taxonomy)
+        assert object_tag.tag is None
+        assert not tagging_api.is_taxonomy_locked_for_deletion(self.free_text_taxonomy.pk)
+        tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        assert tagging_api.is_taxonomy_locked_for_deletion(self.free_text_taxonomy.pk)
+
+    def test_archived_locked_association_still_counts(self) -> None:
+        """
+        An archived but locked association still counts for both readers.
+
+        This guards against adding ``.unarchived()`` to the readers, which would hide associations that anchor
+        learner history.
+        """
+        object_tag = self._tag("obj1")
+        tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        ObjectTag.objects.filter(pk=object_tag.pk).update(archived=True)
+        assert tagging_api.get_tags_locked_for_deletion([self.mammalia.pk]) == {self.mammalia.pk}
+        assert tagging_api.is_taxonomy_locked_for_deletion(self.taxonomy.pk)
