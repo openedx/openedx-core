@@ -11,6 +11,7 @@ from openedx_catalog.models import CatalogCourse, CourseRun
 from openedx_learning.api import (
     associate_competency_criterion,
     create_competency_taxonomy,
+    get_competency_criteria_tree,
     get_competency_rule_profiles,
     is_competency_taxonomy,
     resolve_supplied_leaf_group,
@@ -26,7 +27,7 @@ from openedx_learning.models import (
     LogicOperator,
     RuleType,
 )
-from openedx_tagging.models import Tag, Taxonomy
+from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
 pytestmark = pytest.mark.django_db
 
@@ -510,3 +511,134 @@ def test_associate_competency_criterion_rolls_back_newly_created_groups_when_cri
         associate_competency_criterion(tag_id=tag.id, object_id=object_id)
 
     assert not CompetencyCriteriaGroup.objects.filter(tag=tag).exists()
+
+
+# ==============================================================================================
+# get_competency_criteria_tree
+# ==============================================================================================
+
+
+def test_get_competency_criteria_tree_is_empty_when_no_groups_exist_yet(tag: Tag) -> None:
+    """A competency with no CompetencyCriteriaGroup rows at all returns two empty lists."""
+    tree = get_competency_criteria_tree(tag.id)
+
+    assert not tree.groups
+    assert not tree.criteria
+
+
+def test_get_competency_criteria_tree_returns_the_full_hierarchy_and_its_leaf_criterion(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A root, its course-level child, and a leaf under it, plus the leaf's one criterion, all come back."""
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+
+    tree = get_competency_criteria_tree(tag.id)
+
+    returned_groups_by_id = {group.id: group for group in tree.groups}
+    assert set(returned_groups_by_id) == {root.id, course_level.id, leaf.id}
+    assert returned_groups_by_id[root.id].parent_id is None
+    assert returned_groups_by_id[root.id].course_id is None
+    assert returned_groups_by_id[course_level.id].parent_id == root.id
+    assert returned_groups_by_id[leaf.id].parent_id == course_level.id
+    assert [c.id for c in tree.criteria] == [criterion.id]
+    assert tree.criteria[0].group_id == leaf.id
+
+
+def test_get_competency_criteria_tree_excludes_an_archived_group_and_its_archived_criterion(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An archived leaf group and an archived criterion under it are both left out."""
+    live_leaf = _create_leaf_group(tag, course_run)
+    live_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "live"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    live_criterion = CompetencyCriterion.objects.create(
+        group=live_leaf, object_tag=live_object_tag, rule_profile=default_rule_profile,
+    )
+    archived_leaf = _create_leaf_group(tag, course_run)
+    archived_leaf.archived = True
+    archived_leaf.save()
+    archived_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "archived"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    archived_criterion = CompetencyCriterion.objects.create(
+        group=archived_leaf, object_tag=archived_object_tag, rule_profile=default_rule_profile, archived=True,
+    )
+
+    tree = get_competency_criteria_tree(tag.id)
+
+    returned_group_ids = {group.id for group in tree.groups}
+    returned_criterion_ids = {criterion.id for criterion in tree.criteria}
+    assert live_leaf.id in returned_group_ids
+    assert archived_leaf.id not in returned_group_ids
+    assert live_criterion.id in returned_criterion_ids
+    assert archived_criterion.id not in returned_criterion_ids
+
+
+def test_get_competency_criteria_tree_combines_groups_and_criteria_from_every_course_unscoped(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Two course-level groups under one root, each with its own leaf and criterion, both come back together."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf1 = _create_leaf_group(tag, course_run)
+    leaf2 = _create_leaf_group(tag, other_course_run)
+    object_tag1 = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    object_tag2 = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    criterion1 = CompetencyCriterion.objects.create(
+        group=leaf1, object_tag=object_tag1, rule_profile=default_rule_profile,
+    )
+    criterion2 = CompetencyCriterion.objects.create(
+        group=leaf2, object_tag=object_tag2, rule_profile=default_rule_profile,
+    )
+
+    course_level1 = leaf1.parent
+    course_level2 = leaf2.parent
+    assert course_level1 is not None
+    assert course_level2 is not None
+    root1 = course_level1.parent
+    root2 = course_level2.parent
+    assert root1 is not None
+    assert root2 is not None
+
+    tree = get_competency_criteria_tree(tag.id)
+
+    assert course_level1.id != course_level2.id, "the two leaves should sit under different course-level groups"
+    assert root1.id == root2.id, "both course-level groups should share one root"
+    assert {group.id for group in tree.groups} == {
+        root1.id, course_level1.id, leaf1.id, course_level2.id, leaf2.id,
+    }
+    assert {criterion.id for criterion in tree.criteria} == {criterion1.id, criterion2.id}
+
+
+def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile, django_assert_num_queries,
+) -> None:
+    """
+    Reading several groups and criteria costs a fixed two queries, not one per row.
+
+    Pins the select_related("course")/select_related("object_tag") calls in
+    get_competency_criteria_tree(): dropping either would still pass every other test in this
+    module (the rows returned would be identical), since select_related only changes how many
+    queries fetch them, not which rows come back.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    for i in range(3):
+        object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, f"p{i}"), taxonomy=tag.taxonomy, tag=tag)
+        CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+
+    with django_assert_num_queries(2):
+        tree = get_competency_criteria_tree(tag.id)
+        for group in tree.groups:
+            _ = group.course  # accessing the select_related'd relation must not add a query
+        for criterion in tree.criteria:
+            _ = criterion.object_tag

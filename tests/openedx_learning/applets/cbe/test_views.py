@@ -804,3 +804,164 @@ def test_tag_refused_at_the_object_tag_limit_is_400_and_creates_nothing(
     assert "Cannot add more than 1 tags" in str(response.data["object_id"])
     assert not CompetencyCriterion.objects.exists()
     assert not CompetencyCriteriaGroup.objects.exists()
+
+
+# ==============================================================================================
+# CompetencyCriteriaTreeView (#681)
+# ==============================================================================================
+
+
+def criteria_tree_url(tag_id: int) -> str:
+    """Return the criteria-tree endpoint's path for `tag_id`, resolved through the URL name."""
+    return reverse("cbe:criteria-tree", kwargs={"tag_id": tag_id})
+
+
+def test_full_tree_response_shape(
+    user_client: APIClient,
+    tag: Tag,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A permitted caller reads the full tree: every group and the leaf's criterion, complete enough to act on."""
+    leaf = _create_leaf_group(tag, course_run)
+    object_id = usage_key(course_run, "p1")
+    object_tag = ObjectTag.objects.create(object_id=object_id, taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+
+    response = user_client.get(criteria_tree_url(tag.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    groups_by_id = {group["id"]: group for group in response.data["groups"]}
+    assert set(groups_by_id) == {leaf.id, course_level.id, root.id}
+    assert groups_by_id[root.id]["parent_id"] is None
+    assert groups_by_id[root.id]["course_key"] is None
+    assert groups_by_id[course_level.id]["parent_id"] == root.id
+    assert groups_by_id[leaf.id]["parent_id"] == course_level.id
+    assert len(response.data["criteria"]) == 1
+    criterion_data = response.data["criteria"][0]
+    assert criterion_data["id"] == criterion.id
+    assert criterion_data["group_id"] == leaf.id
+    assert criterion_data["object_tag_id"] == object_tag.id
+    assert criterion_data["object_id"] == object_id
+    assert criterion_data["rule_profile_id"] == default_rule_profile.id
+    assert criterion_data["rule_type_override"] is None
+    assert criterion_data["rule_payload_override"] is None
+
+
+def test_full_tree_combines_multiple_courses_in_one_unscoped_response(
+    user_client: APIClient,
+    tag: Tag,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A GET request for one competency returns every course's groups and criteria together,
+    with no course_id or date-window scoping parameter to narrow the request.
+    """
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf1 = _create_leaf_group(tag, course_run)
+    leaf2 = _create_leaf_group(tag, other_course_run)
+    object_tag1 = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    object_tag2 = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    criterion1 = CompetencyCriterion.objects.create(
+        group=leaf1, object_tag=object_tag1, rule_profile=default_rule_profile,
+    )
+    criterion2 = CompetencyCriterion.objects.create(
+        group=leaf2, object_tag=object_tag2, rule_profile=default_rule_profile,
+    )
+    course_level1 = leaf1.parent
+    course_level2 = leaf2.parent
+    assert course_level1 is not None
+    assert course_level2 is not None
+    root = course_level1.parent
+    assert root is not None
+    assert course_level2.parent_id == root.id
+
+    response = user_client.get(criteria_tree_url(tag.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    returned_group_ids = {group["id"] for group in response.data["groups"]}
+    assert returned_group_ids == {root.id, course_level1.id, leaf1.id, course_level2.id, leaf2.id}
+    assert {c["id"] for c in response.data["criteria"]} == {criterion1.id, criterion2.id}
+
+
+def test_empty_tree_is_200_with_two_empty_arrays(user_client: APIClient, tag: Tag) -> None:
+    """A tag with no CompetencyCriteriaGroup rows yet is a valid 200 with two empty arrays, not a 404."""
+    response = user_client.get(criteria_tree_url(tag.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["groups"] == []
+    assert response.data["criteria"] == []
+
+
+def test_archived_group_and_criterion_are_excluded(
+    user_client: APIClient,
+    tag: Tag,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An archived leaf group and an archived criterion under it are left out of the response."""
+    live_leaf = _create_leaf_group(tag, course_run)
+    live_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "live"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    live_criterion = CompetencyCriterion.objects.create(
+        group=live_leaf, object_tag=live_object_tag, rule_profile=default_rule_profile,
+    )
+    archived_leaf = _create_leaf_group(tag, course_run)
+    archived_leaf.archived = True
+    archived_leaf.save()
+    archived_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "archived"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    CompetencyCriterion.objects.create(
+        group=archived_leaf, object_tag=archived_object_tag, rule_profile=default_rule_profile, archived=True,
+    )
+
+    response = user_client.get(criteria_tree_url(tag.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    returned_group_ids = {group["id"] for group in response.data["groups"]}
+    assert live_leaf.id in returned_group_ids
+    assert archived_leaf.id not in returned_group_ids
+    assert [c["id"] for c in response.data["criteria"]] == [live_criterion.id]
+
+
+def test_unknown_tag_id_404s(user_client: APIClient) -> None:
+    """An unresolvable tag_id 404s."""
+    response = user_client.get(criteria_tree_url(999999))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_tag_not_on_a_competency_taxonomy_404s(user_client: APIClient) -> None:
+    """A tag_id that resolves to a real Tag, but not one on a CompetencyTaxonomy, 404s."""
+    plain_taxonomy = Taxonomy.objects.create(name="Plain Tags", export_id="plain-v1")
+    plain_tag = Tag.objects.create(taxonomy=plain_taxonomy, value="Not A Competency")
+
+    response = user_client.get(criteria_tree_url(plain_tag.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_no_view_access_to_the_taxonomy_is_403(api_client: APIClient, user, tag: Tag) -> None:
+    """A non-staff caller may not read the tree of a competency on a disabled taxonomy."""
+    taxonomy = tag.taxonomy
+    assert taxonomy is not None
+    taxonomy.enabled = False
+    taxonomy.save()
+    api_client.force_authenticate(user=user)
+
+    response = api_client.get(criteria_tree_url(tag.id))
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN

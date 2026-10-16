@@ -8,7 +8,7 @@ from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import UsageKey
 from rest_framework import serializers
 
-from ...models import CompetencyCriterion, CompetencyRuleProfile, LogicOperator
+from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile, LogicOperator
 
 
 class CompetencyRuleProfileSerializer(serializers.ModelSerializer):
@@ -99,3 +99,41 @@ class CompetencyCriterionSerializer(serializers.ModelSerializer):
         except InvalidKeyError as exc:
             raise serializers.ValidationError(_("object_id is not a valid usage key.")) from exc
         return value
+
+
+class CompetencyCriteriaGroupSerializer(serializers.ModelSerializer):
+    """
+    Read-only representation of a CompetencyCriteriaGroup, for the criteria-tree read endpoint.
+
+    course_key uses a CharField with a dotted source instead of SlugRelatedField, since
+    CourseRun.course_key is an opaque-keys field that the JSON renderer can't serialize directly;
+    CharField.to_representation() calls str() on it instead, and returns None cleanly when
+    `course` itself is null.
+    """
+
+    course_key = serializers.CharField(source="course.course_key", read_only=True, allow_null=True)
+
+    class Meta:
+        model = CompetencyCriteriaGroup
+        fields = ["id", "parent_id", "tag_id", "course_key", "name", "ordering", "logic_operator", "archived"]
+
+
+class CompetencyCriterionReadSerializer(serializers.ModelSerializer):
+    """
+    Read-only representation of a CompetencyCriterion, for the criteria-tree read endpoint.
+
+    A separate serializer from CompetencyCriterionSerializer (#665's create-request serializer),
+    not an added field on it: that serializer's `object_id` is write_only, and giving it a dotted
+    source to double as this endpoint's output would silently break the create endpoint, since a
+    dotted source on a writable field changes where to_internal_value() places the value in
+    validated_data.
+    """
+
+    object_id = serializers.CharField(source="object_tag.object_id", read_only=True)
+
+    class Meta:
+        model = CompetencyCriterion
+        fields = [
+            "id", "group_id", "object_tag_id", "object_id",
+            "rule_profile_id", "rule_type_override", "rule_payload_override",
+        ]

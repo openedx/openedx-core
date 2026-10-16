@@ -3,6 +3,8 @@ Public API for Competency-Based Education (CBE).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import QuerySet
@@ -27,6 +29,7 @@ __all__ = [
     "associate_competency_criterion",
     "create_competency_criterion",
     "create_competency_taxonomy",
+    "get_competency_criteria_tree",
     "get_competency_rule_profiles",
     "is_competency_taxonomy",
     "resolve_competency_tag",
@@ -114,6 +117,30 @@ def resolve_competency_tag(tag_id: int) -> Tag:
     if tag.taxonomy is None or not is_competency_taxonomy(tag.taxonomy):
         raise Tag.DoesNotExist("Tag is not on a CompetencyTaxonomy.")
     return tag
+
+
+@dataclass
+class CompetencyCriteriaTree:
+    """The full non-archived CompetencyCriteriaGroup tree and CompetencyCriterion leaves for one competency."""
+
+    groups: list[CompetencyCriteriaGroup]
+    criteria: list[CompetencyCriterion]
+
+
+def get_competency_criteria_tree(tag_id: int) -> CompetencyCriteriaTree:
+    """
+    Return every non-archived CompetencyCriteriaGroup and CompetencyCriterion for competency `tag_id`.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
+    behavior may change this function's shape without a deprecation cycle.
+    """
+    groups = list(
+        CompetencyCriteriaGroup.objects.filter(tag_id=tag_id, archived=False).select_related("course")
+    )
+    criteria = list(
+        CompetencyCriterion.objects.filter(group__in=groups, archived=False).select_related("object_tag")
+    )
+    return CompetencyCriteriaTree(groups=groups, criteria=criteria)
 
 
 def _create_leaf_group(
