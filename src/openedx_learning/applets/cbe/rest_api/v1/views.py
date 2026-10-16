@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import QuerySet
+from django.shortcuts import get_object_or_404
 from edx_rest_framework_extensions.auth.jwt.authentication import JwtAuthentication  # type: ignore[import]
 from edx_rest_framework_extensions.auth.session.authentication import (  # type: ignore[import]
     SessionAuthenticationAllowInactiveUser,
@@ -19,8 +20,13 @@ from rest_framework.viewsets import GenericViewSet
 from openedx_tagging.models import Tag
 from openedx_tagging.rules import ObjectTagPermissionItem
 
-from ...api import associate_competency_criterion, get_competency_rule_profiles, resolve_competency_tag
-from ...models import CompetencyCriteriaGroup, CompetencyRuleProfile
+from ...api import (
+    associate_competency_criterion,
+    delete_competency_criterion,
+    get_competency_rule_profiles,
+    resolve_competency_tag,
+)
+from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile
 from ..paginators import CompetencyRuleProfilePagination
 from .permissions import CompetencyRuleProfilePermissions
 from .serializers import CompetencyCriterionSerializer, CompetencyRuleProfileSerializer
@@ -104,3 +110,37 @@ class CompetencyCriterionCreateView(generics.CreateAPIView):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
         return Response(self.get_serializer(criterion).data, status=status.HTTP_201_CREATED)
+
+
+class CompetencyCriterionDeleteView(generics.GenericAPIView):
+    """
+    DELETE-only. Remove a CompetencyCriterion: hard-delete, or archive if learner status exists.
+
+    Does not call self.check_object_permissions(): oel_tagging.can_tag_object is checked inline
+    with a manual ``has_perm()`` call, the same pattern CompetencyCriterionCreateView uses.
+    """
+
+    serializer_class = CompetencyCriterionSerializer
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, *args, **kwargs):
+        """
+        Resolve the criterion scoped to both path segments, check permission, then delegate to the public API.
+
+        Scoped by tag_id rather than a specific group_id, matching CompetencyCriterionCreateView's
+        own URL convention; a group-scoped delete is a separate ticket's concern (direct group
+        deletion/archival). The lookup deliberately does not filter `archived=False`, so a repeat
+        DELETE against an already-archived row still resolves (200), and a mismatched tag_id or a
+        nonexistent criterion_id both 404 the same way, via this one get_object_or_404 call.
+        """
+        criterion = get_object_or_404(
+            CompetencyCriterion, pk=self.kwargs["criterion_id"], group__tag_id=self.kwargs["tag_id"],
+        )
+        perm_obj = ObjectTagPermissionItem(
+            taxonomy=criterion.group.tag.taxonomy, object_id=criterion.object_tag.object_id,
+        )
+        if not request.user.has_perm("oel_tagging.can_tag_object", perm_obj):
+            raise PermissionDenied()
+        result = delete_competency_criterion(criterion.id)
+        return Response({"id": result.id, "archived": result.archived}, status=status.HTTP_200_OK)
