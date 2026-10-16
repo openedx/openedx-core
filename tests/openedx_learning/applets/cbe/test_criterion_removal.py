@@ -1,7 +1,9 @@
 """Tests for delete_competency_criterion() and its ancestor-cascade helper, _cascade_from_group()."""
 from datetime import datetime
+from unittest import mock
 
 import pytest
+from django.db import IntegrityError
 
 from openedx_learning.api import delete_competency_criterion
 from openedx_learning.models import (
@@ -67,6 +69,52 @@ def test_archive_path_leaves_the_row_and_its_object_tag_in_place(
     )
 
     result = delete_competency_criterion(criterion.id)
+
+    assert result.archived is True
+    criterion.refresh_from_db()
+    assert criterion.archived is True
+    assert ObjectTag.objects.filter(id=object_tag.id).exists()
+
+
+def test_status_committed_after_the_check_falls_back_to_archive(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    A status row that appears between the status check and the delete makes the PROTECT foreign
+    key refuse the delete; the attempt rolls back and the criterion is archived instead, with
+    nothing removed along the way.
+    """
+    group = CompetencyCriteriaGroup.objects.create(tag=tag)
+    criterion = _make_criterion(group, object_tag, default_rule_profile)
+    real_delete = CompetencyCriterion.delete
+
+    def _delete_after_a_status_appears(self, *args, **kwargs):
+        StudentCompetencyCriterionStatus.objects.create(
+            user=user, criterion=self, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+        )
+        return real_delete(self, *args, **kwargs)
+
+    with mock.patch.object(CompetencyCriterion, "delete", autospec=True, side_effect=_delete_after_a_status_appears):
+        result = delete_competency_criterion(criterion.id)
+
+    assert result.id == criterion.id
+    assert result.archived is True
+    criterion.refresh_from_db()
+    assert criterion.archived is True
+    group.refresh_from_db()
+    assert group.archived is True
+    assert ObjectTag.objects.filter(id=object_tag.id).exists()
+
+
+def test_integrity_error_on_the_delete_falls_back_to_archive(
+    tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A backend that reports the PROTECT violation as an IntegrityError gets the same archive fallback."""
+    group = CompetencyCriteriaGroup.objects.create(tag=tag)
+    criterion = _make_criterion(group, object_tag, default_rule_profile)
+
+    with mock.patch.object(CompetencyCriterion, "delete", autospec=True, side_effect=IntegrityError):
+        result = delete_competency_criterion(criterion.id)
 
     assert result.archived is True
     criterion.refresh_from_db()

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from django.core.exceptions import ValidationError
-from django.db import transaction
-from django.db.models import QuerySet
+from django.db import IntegrityError, transaction
+from django.db.models import ProtectedError, QuerySet
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import UsageKey
@@ -392,6 +392,13 @@ def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete",
         _cascade_from_group(parent, next_event)
 
 
+def _archive_criterion(criterion: CompetencyCriterion) -> None:
+    """Archive ``criterion`` in place and cascade the archive to any ancestor left with no live children."""
+    criterion.archived = True
+    criterion.save()
+    _cascade_from_group(criterion.group, "archive")
+
+
 def delete_competency_criterion(criterion_id: int) -> CriterionDeletionResult:
     """
     Hard-delete `criterion_id`, or archive it if a learner status row already references it.
@@ -406,13 +413,19 @@ def delete_competency_criterion(criterion_id: int) -> CriterionDeletionResult:
     cascaded in turn: hard-deleted if it carries no group-level status of its own, archived
     otherwise. See ADR-0002 Decision 2.
 
+    If the hard delete is refused because a learner status row appeared concurrently, the whole
+    attempt rolls back and the criterion is archived instead, so the result reports archived=True.
+
     Raises CompetencyCriterion.DoesNotExist if no such criterion exists.
     """
-    criterion = CompetencyCriterion.objects.get(pk=criterion_id)
-
-    has_status = StudentCompetencyCriterionStatus.objects.filter(criterion_id=criterion_id).exists()
-    if not has_status:
+    try:
         with transaction.atomic():
+            # The lock makes a concurrent status insert for this criterion wait for this transaction,
+            # since inserting a row that references a locked row blocks on MySQL and PostgreSQL.
+            criterion = CompetencyCriterion.objects.select_for_update().get(pk=criterion_id)
+            if StudentCompetencyCriterionStatus.objects.filter(criterion_id=criterion_id).exists():
+                _archive_criterion(criterion)
+                return CriterionDeletionResult(id=criterion_id, archived=True)
             group = criterion.group
             object_tag = criterion.object_tag
             criterion.delete()
@@ -423,9 +436,11 @@ def delete_competency_criterion(criterion_id: int) -> CriterionDeletionResult:
                 ]
                 tag_object(object_tag.object_id, group.tag.taxonomy, existing_values)
             _cascade_from_group(group, "delete")
-        return CriterionDeletionResult(id=criterion_id, archived=False)
-
-    criterion.archived = True
-    criterion.save()
-    _cascade_from_group(criterion.group, "archive")
-    return CriterionDeletionResult(id=criterion_id, archived=True)
+            return CriterionDeletionResult(id=criterion_id, archived=False)
+    except (ProtectedError, IntegrityError):
+        # The status foreign keys are on_delete=PROTECT: a status row for this criterion or one of
+        # its ancestor groups, committed after the check above, refuses the delete. The transaction
+        # has rolled back, so nothing was removed; archive instead.
+        with transaction.atomic():
+            _archive_criterion(CompetencyCriterion.objects.select_for_update().get(pk=criterion_id))
+        return CriterionDeletionResult(id=criterion_id, archived=True)
