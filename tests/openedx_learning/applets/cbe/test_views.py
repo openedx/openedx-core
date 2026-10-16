@@ -4,13 +4,13 @@ Tests for the CBE REST API views.
 Fixtures live in this directory's conftest.py. Several scenarios here create rule profile rows
 directly rather than through a live call, because no create or archive endpoint exists yet.
 """
-from typing import Generator
+from typing import Any, Generator
 
 import pytest
 import rules
 from django.urls import reverse
 from opaque_keys import InvalidKeyError
-from opaque_keys.edx.keys import UsageKey
+from opaque_keys.edx.keys import CourseKey, UsageKey
 from organizations.models import Organization
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -35,18 +35,22 @@ pytestmark = pytest.mark.django_db
 # checking"): real Studio-role logic lives only in openedx-platform, never in this repo. Following
 # tests/openedx_tagging/test_views.py's TestObjectTagViewSet.setUp() precedent, this override
 # simulates a permitted caller for every object_id except ones carrying this marker. Like the
-# platform's rule, it also denies an object_id that isn't a parseable usage key.
+# platform's rule, it also denies an object_id that is neither a parseable usage key nor a course key.
 UNAUTHORIZED_MARKER = "unauthorized"
 
 
 @pytest.fixture(autouse=True)
 def _allow_object_level_tagging() -> Generator[None, None, None]:
-    """Let an ordinary authenticated user tag any usage key except one carrying UNAUTHORIZED_MARKER."""
+    """Let an ordinary authenticated user tag any usage or course key except one carrying UNAUTHORIZED_MARKER."""
     def _predicate(_user, object_id: str) -> bool:
         try:
             UsageKey.from_string(object_id)
         except InvalidKeyError:
-            return False
+            try:
+                # The bulk-update endpoint checks permission against the group's course key.
+                CourseKey.from_string(object_id)
+            except InvalidKeyError:
+                return False
         return UNAUTHORIZED_MARKER not in object_id
 
     perm = "oel_tagging.change_objecttag_objectid"
@@ -804,3 +808,276 @@ def test_tag_refused_at_the_object_tag_limit_is_400_and_creates_nothing(
     assert "Cannot add more than 1 tags" in str(response.data["object_id"])
     assert not CompetencyCriterion.objects.exists()
     assert not CompetencyCriteriaGroup.objects.exists()
+
+
+# ==============================================================================================
+# CompetencyCriterionBulkUpdateView (#759)
+# ==============================================================================================
+
+NEW_PAYLOAD = {"op": "gte", "value": 0.75, "scale": "percent"}
+NEW_RULE: dict[str, Any] = {"rule_type_override": "Grade", "rule_payload_override": NEW_PAYLOAD}
+CRITERION_FIELDS = {"id", "group_id", "rule_profile_id", "rule_type_override", "rule_payload_override", "object_tag_id"}
+
+
+def bulk_update_url(group_id: int) -> str:
+    """Return the bulk-update endpoint's path for `group_id`, resolved through the URL name."""
+    return reverse("cbe:criterion-bulk-update", kwargs={"group_id": group_id})
+
+
+def make_criterion(leaf: CompetencyCriteriaGroup, block_id: str, **rule) -> CompetencyCriterion:
+    """Create a criterion on `leaf` for a fresh object in its course, with `rule` as its rule columns."""
+    assert leaf.parent is not None and leaf.parent.course is not None
+    object_tag = ObjectTag.objects.create(
+        object_id=usage_key(leaf.parent.course, block_id), taxonomy=leaf.tag.taxonomy, tag=leaf.tag,
+    )
+    return CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, **rule)
+
+
+@pytest.fixture(name="leaf")
+def _leaf(tag: Tag, course_run: CourseRun) -> CompetencyCriteriaGroup:
+    """A leaf group under `tag` and `course_run`. Only a leaf group holds criteria."""
+    return _create_leaf_group(tag, course_run)
+
+
+@pytest.fixture(name="batch")
+def _batch(
+    leaf: CompetencyCriteriaGroup, default_rule_profile: CompetencyRuleProfile
+) -> tuple[CompetencyCriterion, CompetencyCriterion]:
+    """Two criteria on `leaf` with different rule sources: one follows the default, one has an override."""
+    return (
+        make_criterion(leaf, "p1", rule_profile=default_rule_profile),
+        make_criterion(
+            leaf, "p2", rule_type_override=RuleType.GRADE, rule_payload_override=dict(FIXTURE_GRADE_PAYLOAD),
+        ),
+    )
+
+
+def stored_rules(criteria) -> list[tuple]:
+    """Return each criterion's three rule columns as stored, to prove a refused request changed nothing."""
+    rows = []
+    for criterion in criteria:
+        criterion.refresh_from_db()
+        rows.append((criterion.rule_profile_id, criterion.rule_type_override, criterion.rule_payload_override))
+    return rows
+
+
+def test_bulk_update_resolves_to_the_documented_path() -> None:
+    """The bulk-update route sits under the group whose criteria it edits."""
+    assert bulk_update_url(7) == "/api/cbe/v1/criteria-groups/7/criteria/bulk-update/"
+
+
+def test_bulk_update_with_rule_values_echoes_every_criterion_as_stored(
+    user_client: APIClient, batch: tuple[CompetencyCriterion, CompetencyCriterion], leaf: CompetencyCriteriaGroup,
+) -> None:
+    """Every named criterion comes back, in request order, carrying the values and no profile."""
+    ids = [batch[1].id, batch[0].id]
+
+    response = user_client.patch(bulk_update_url(leaf.id), {"criterion_ids": ids, **NEW_RULE}, format="json")
+
+    assert response.status_code == status.HTTP_200_OK
+    assert [row["id"] for row in response.data] == ids
+    for row in response.data:
+        assert set(row.keys()) == CRITERION_FIELDS
+        assert row["group_id"] == leaf.id
+        assert (row["rule_profile_id"], row["rule_type_override"], row["rule_payload_override"]) == (
+            None, "Grade", NEW_PAYLOAD,
+        )
+
+
+def test_bulk_update_with_a_named_profile_echoes_every_criterion_following_it(
+    user_client: APIClient,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Every named criterion comes back following the profile, with no values of its own."""
+    ids = [criterion.id for criterion in batch]
+
+    response = user_client.patch(
+        bulk_update_url(leaf.id), {"criterion_ids": ids, "rule_profile_id": default_rule_profile.id}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert [row["id"] for row in response.data] == ids
+    for row in response.data:
+        assert (row["rule_profile_id"], row["rule_type_override"], row["rule_payload_override"]) == (
+            default_rule_profile.id, None, None,
+        )
+
+
+def test_bulk_update_with_values_matching_the_default_reports_the_default(
+    user_client: APIClient,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Values equal to the applicable default are reported as following it, not as an override."""
+    body = {
+        "criterion_ids": [criterion.id for criterion in batch],
+        "rule_type_override": "Grade",
+        "rule_payload_override": SEEDED_GRADE_PAYLOAD,
+    }
+
+    response = user_client.patch(bulk_update_url(leaf.id), body, format="json")
+
+    assert response.status_code == status.HTTP_200_OK
+    assert {row["rule_profile_id"] for row in response.data} == {default_rule_profile.id}
+    assert {row["rule_payload_override"] for row in response.data} == {None}
+
+
+@pytest.mark.parametrize(
+    "case, error_key",
+    [
+        ("empty id list", "criterion_ids"),
+        ("duplicate id", "criterion_ids"),
+        ("ids not a list", "criterion_ids"),
+        ("both rule forms", "rule_profile_id"),
+        ("neither rule form", "__all__"),
+        ("rule type without payload", "rule_type_override"),
+        ("payload without rule type", "rule_payload_override"),
+        ("unknown profile", "rule_profile_id"),
+        ("archived profile", "rule_profile_id"),
+        ("unsupported comparison", "__all__"),
+        ("threshold out of range", "__all__"),
+        ("unimplemented rule type", "rule_type_override"),
+        ("unrecognized key", "group_id"),
+    ],
+)
+def test_bulk_update_rejects_a_malformed_body_with_400(  # pylint: disable=too-many-positional-arguments
+    case: str,
+    error_key: str,
+    user_client: APIClient,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """Each malformed body is a 400 naming the offending field, and no criterion changes."""
+    first, second = batch
+    ids = [first.id, second.id]
+    archived = make_profile(competency_taxonomy=competency_taxonomy, archived=True)
+    bodies: dict[str, dict[str, Any]] = {
+        "empty id list": {"criterion_ids": [], **NEW_RULE},
+        "duplicate id": {"criterion_ids": [first.id, first.id], **NEW_RULE},
+        "ids not a list": {"criterion_ids": first.id, **NEW_RULE},
+        "both rule forms": {"criterion_ids": ids, "rule_profile_id": default_rule_profile.id, **NEW_RULE},
+        "neither rule form": {"criterion_ids": ids},
+        "rule type without payload": {"criterion_ids": ids, "rule_type_override": "Grade"},
+        "payload without rule type": {"criterion_ids": ids, "rule_payload_override": NEW_PAYLOAD},
+        "unknown profile": {"criterion_ids": ids, "rule_profile_id": 999999},
+        "archived profile": {"criterion_ids": ids, "rule_profile_id": archived.id},
+        "unsupported comparison": {
+            "criterion_ids": ids, **NEW_RULE, "rule_payload_override": {**NEW_PAYLOAD, "op": "gt"},
+        },
+        "threshold out of range": {
+            "criterion_ids": ids, **NEW_RULE, "rule_payload_override": {**NEW_PAYLOAD, "value": 75},
+        },
+        "unimplemented rule type": {"criterion_ids": ids, **NEW_RULE, "rule_type_override": "Completion"},
+        # A criterion's group is fixed; this endpoint has no field that could move one.
+        "unrecognized key": {"criterion_ids": ids, **NEW_RULE, "group_id": leaf.id},
+    }
+    before = stored_rules(batch)
+
+    response = user_client.patch(bulk_update_url(leaf.id), bodies[case], format="json")
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert error_key in response.data
+    assert stored_rules(batch) == before
+
+
+def test_bulk_update_on_a_group_that_is_not_a_leaf_is_400(
+    user_client: APIClient, batch: tuple[CompetencyCriterion, CompetencyCriterion], leaf: CompetencyCriteriaGroup,
+) -> None:
+    """A course-level group holds no criteria of its own, so it cannot be addressed here."""
+    assert leaf.parent is not None
+
+    response = user_client.patch(
+        bulk_update_url(leaf.parent.id), {"criterion_ids": [batch[0].id], **NEW_RULE}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "group_id" in response.data
+
+
+@pytest.mark.parametrize("stray", ["from another group", "nonexistent"])
+def test_bulk_update_naming_a_criterion_outside_the_group_is_404(  # pylint: disable=too-many-positional-arguments
+    stray: str,
+    user_client: APIClient,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    tag: Tag,
+    course_run: CourseRun,
+) -> None:
+    """One id outside the group fails the whole batch with a 404, and nothing changes."""
+    if stray == "from another group":
+        stray_id = make_criterion(_create_leaf_group(tag, course_run), "p3", **NEW_RULE).id
+    else:
+        stray_id = 999999
+    before = stored_rules(batch)
+
+    response = user_client.patch(
+        bulk_update_url(leaf.id), {"criterion_ids": [batch[0].id, stray_id], **NEW_RULE}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+    assert stored_rules(batch) == before
+
+
+def test_bulk_update_on_a_group_that_does_not_exist_is_404(
+    user_client: APIClient, batch: tuple[CompetencyCriterion, CompetencyCriterion],
+) -> None:
+    """An unknown group id in the URL is a missing resource."""
+    response = user_client.patch(bulk_update_url(999999), {"criterion_ids": [batch[0].id], **NEW_RULE}, format="json")
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_bulk_update_naming_an_archived_criterion_is_409(
+    user_client: APIClient,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """One archived criterion refuses the whole batch with a 409 naming it, and nothing changes."""
+    archived = make_criterion(leaf, "p3", rule_profile=default_rule_profile, archived=True)
+    criteria = [batch[0], archived, batch[1]]
+    before = stored_rules(criteria)
+
+    response = user_client.patch(
+        bulk_update_url(leaf.id), {"criterion_ids": [c.id for c in criteria], **NEW_RULE}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert str(archived.id) in response.data["detail"]
+    assert stored_rules(criteria) == before
+
+
+def test_bulk_update_without_permission_on_the_groups_course_is_403(
+    user_client: APIClient, tag: Tag, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A caller who may not tag objects in the group's course is refused, and nothing changes."""
+    unauthorized_course = make_course_run(organization, UNAUTHORIZED_MARKER, "Fall2026")
+    leaf = _create_leaf_group(tag, unauthorized_course)
+    criterion = make_criterion(leaf, "p1", rule_profile=default_rule_profile)
+
+    response = user_client.patch(bulk_update_url(leaf.id), {"criterion_ids": [criterion.id], **NEW_RULE}, format="json")
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert stored_rules([criterion]) == [(default_rule_profile.id, None, None)]
+
+
+def test_bulk_update_from_an_unidentified_caller_is_401(
+    api_client: APIClient, batch: tuple[CompetencyCriterion, CompetencyCriterion], leaf: CompetencyCriteriaGroup,
+) -> None:
+    """A caller the system cannot identify is refused before anything is read."""
+    response = api_client.patch(bulk_update_url(leaf.id), {"criterion_ids": [batch[0].id], **NEW_RULE}, format="json")
+
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+@pytest.mark.parametrize("method", ["get", "put", "post", "delete"])
+def test_bulk_update_offers_only_patch(method: str, user_client: APIClient, leaf: CompetencyCriteriaGroup) -> None:
+    """Every method other than PATCH is refused as not allowed."""
+    response = getattr(user_client, method)(bulk_update_url(leaf.id), {}, format="json")
+
+    assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED

@@ -3,7 +3,7 @@ Public API for Competency-Based Education (CBE).
 """
 from __future__ import annotations
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
 from django.db import transaction
 from django.db.models import QuerySet
 from django.utils.translation import gettext_lazy as _
@@ -14,6 +14,7 @@ from openedx_catalog.api import get_course_run
 from openedx_catalog.models_api import CourseRun
 from openedx_tagging.api import create_taxonomy, get_object_tags, tag_object
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
+from openedx_tagging.rules import ObjectTagPermissionItem, UserType
 
 from .models import (
     CompetencyCriteriaGroup,
@@ -24,7 +25,9 @@ from .models import (
 )
 
 __all__ = [
+    "CompetencyCriterionArchivedError",
     "associate_competency_criterion",
+    "bulk_update_competency_criteria",
     "create_competency_criterion",
     "create_competency_taxonomy",
     "get_competency_rule_profiles",
@@ -33,6 +36,16 @@ __all__ = [
     "resolve_supplied_leaf_group",
     "select_competency_taxonomies",
 ]
+
+
+class CompetencyCriterionArchivedError(Exception):
+    """
+    Raised when a request would edit a CompetencyCriterion that has been archived.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
+    and archive behavior may change this exception, or when it is raised, without a deprecation
+    cycle.
+    """
 
 
 def create_competency_taxonomy(  # pylint: disable=too-many-positional-arguments
@@ -345,3 +358,180 @@ def associate_competency_criterion(
             rule_type_override=rule_type_override,
             rule_payload_override=rule_payload_override,
         )
+
+
+def _get_system_default_rule_profile() -> CompetencyRuleProfile | None:
+    """
+    Return the system-default profile, or None once it has been archived.
+    """
+    return CompetencyRuleProfile.objects.filter(
+        organization__isnull=True,
+        course__isnull=True,
+        competency_taxonomy__isnull=True,
+        archived=False,
+    ).first()
+
+
+def _resolve_applicable_rule_profile(
+    criterion: CompetencyCriterion,  # pylint: disable=unused-argument
+    system_default: CompetencyRuleProfile | None,
+) -> CompetencyRuleProfile | None:
+    """
+    Return the profile ADR-0002 Decision 4's assignment table gives ``criterion``, or None.
+
+    A stand-in for the shared resolution helper #679 owns. Only the system default exists in this
+    phase, so every criterion resolves to ``system_default``, which the caller looks up once per
+    batch so a large batch costs no extra queries. Callers still ask per criterion: once scoped
+    profiles exist, two criteria in the same group need not resolve to the same one.
+    """
+    return system_default
+
+
+def _validate_rule_source(
+    rule_profile_id: int | None,
+    rule_type_override: str | None,
+    rule_payload_override: dict | None,
+) -> None:
+    """
+    Validate the one rule source a bulk update applies.
+
+    Runs the create path's rule-field checks, then also refuses a request naming no rule source: a
+    bulk update has no applicable-profile fallback, and ADR-0002 Decision 4 allows a criterion no
+    other state. Override values are validated once for the whole batch through the model's own
+    ``full_clean()``, so the payload contract has no second copy here. Raises ValidationError keyed
+    by the REST field names.
+    """
+    _validate_rule_fields(rule_profile_id, rule_type_override, rule_payload_override)
+    if rule_profile_id is not None:
+        return
+    # _validate_rule_fields has already refused half a pair, so one override being None means both are.
+    if rule_type_override is None:
+        raise ValidationError(
+            {NON_FIELD_ERRORS: _("Supply rule_profile_id, or both rule_type_override and rule_payload_override.")}
+        )
+    CompetencyCriterion(
+        rule_type_override=rule_type_override,
+        rule_payload_override=rule_payload_override,
+    ).full_clean(exclude=["group", "object_tag", "rule_profile"], validate_unique=False, validate_constraints=False)
+
+
+def _apply_rule_source(
+    criterion: CompetencyCriterion,
+    rule_profile_id: int | None,
+    rule_type_override: str | None,
+    rule_payload_override: dict | None,
+    user: UserType,
+    *,
+    system_default: CompetencyRuleProfile | None,
+) -> None:
+    """
+    Point ``criterion`` at ``rule_profile_id``, or give it the override values, saving only if that changes it.
+
+    Override values that exactly match the criterion's applicable profile reassign it to that
+    profile instead. All three rule columns are written in one save, so the criterion's new history
+    row never records both a profile and overrides, or neither.
+    """
+    if rule_profile_id is None:
+        applicable = _resolve_applicable_rule_profile(criterion, system_default)
+        # Compares the parsed rule, never stored JSON text, so key order and formatting don't matter.
+        if (
+            applicable is not None
+            and applicable.rule_type == rule_type_override
+            and applicable.rule_payload == rule_payload_override
+        ):
+            rule_profile_id = applicable.id
+
+    target: tuple[int | None, str | None, dict | None]
+    if rule_profile_id is not None:
+        target, change_reason = (rule_profile_id, None, None), "Reassigned to rule profile"
+    else:
+        target, change_reason = (None, rule_type_override, rule_payload_override), "Rule values set"
+    if (criterion.rule_profile_id, criterion.rule_type_override, criterion.rule_payload_override) == target:
+        return
+
+    criterion.rule_profile_id, criterion.rule_type_override, criterion.rule_payload_override = target
+    # Set on the instance so attribution doesn't depend on simple_history's request middleware.
+    criterion._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    criterion._change_reason = change_reason  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    # Never QuerySet.update(): it skips post_save, so simple_history would record nothing.
+    criterion.save(update_fields=["rule_profile", "rule_type_override", "rule_payload_override"])
+
+
+def bulk_update_competency_criteria(
+    criterion_ids: list[int],
+    group_id: int,
+    *,
+    rule_profile_id: int | None = None,
+    rule_type_override: str | None = None,
+    rule_payload_override: dict | None = None,
+    user: UserType,
+) -> list[CompetencyCriterion]:
+    """
+    Apply one rule source to every criterion ``criterion_ids`` names in one leaf group, atomically.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
+    and archive behavior may change this function's shape without a deprecation cycle.
+
+    Supply either ``rule_profile_id`` or both override values; each criterion's three rule columns
+    are then rewritten together, so a profile clears any overrides and overrides clear any profile.
+    Learner status is never touched.
+
+    Returns the named criteria in request order. Raises PermissionDenied if ``user`` fails
+    ``oel_tagging.can_tag_object`` for the group's taxonomy and course,
+    CompetencyCriteriaGroup.DoesNotExist if the group doesn't exist, CompetencyCriterion.DoesNotExist
+    if any named id isn't a criterion of that group, and ValidationError, keyed by the REST field
+    names, for a non-leaf group, an empty or repeated id list, or an invalid rule source. Raises
+    CompetencyCriterionArchivedError if any named criterion is archived.
+    """
+    with transaction.atomic():
+        group = CompetencyCriteriaGroup.objects.select_related("tag__taxonomy", "parent__course").get(
+            pk=group_id
+        )
+        # Criteria hang only off leaf groups, and a leaf's course is on its course-level parent.
+        if group.parent is None or group.course_id is not None or group.parent.course is None:
+            raise ValidationError({"group_id": _("group_id must reference a leaf CompetencyCriteriaGroup.")})
+        # A group's tag is always a competency tag, so its taxonomy is always set.
+        assert group.tag.taxonomy is not None
+        perm_obj = ObjectTagPermissionItem(taxonomy=group.tag.taxonomy, object_id=str(group.parent.course.course_key))
+        if not user.has_perm("oel_tagging.can_tag_object", perm_obj):
+            raise PermissionDenied
+
+        if not criterion_ids:
+            raise ValidationError({"criterion_ids": _("criterion_ids must name at least one criterion.")})
+        if len(set(criterion_ids)) != len(criterion_ids):
+            raise ValidationError({"criterion_ids": _("criterion_ids must not name the same criterion twice.")})
+        _validate_rule_source(rule_profile_id, rule_type_override, rule_payload_override)
+
+        # Locked so a concurrent archive can't slip in after the archived check, and so a concurrent
+        # identical request waits and then sees nothing to change instead of writing a second history row.
+        criteria_by_id = CompetencyCriterion.objects.select_for_update().filter(group=group).in_bulk(criterion_ids)
+        missing_ids = [criterion_id for criterion_id in criterion_ids if criterion_id not in criteria_by_id]
+        if missing_ids:
+            raise CompetencyCriterion.DoesNotExist(
+                _("Not criteria of this group: {criterion_ids}.").format(
+                    criterion_ids=", ".join(str(criterion_id) for criterion_id in missing_ids)
+                )
+            )
+
+        # One archived criterion refuses the whole batch: ADR 0002 Decision 4 closes archived criteria to authoring.
+        archived_ids = [criterion_id for criterion_id in criterion_ids if criteria_by_id[criterion_id].archived]
+        if archived_ids:
+            raise CompetencyCriterionArchivedError(
+                _("Archived criteria cannot be edited: {criterion_ids}.").format(
+                    criterion_ids=", ".join(str(criterion_id) for criterion_id in archived_ids)
+                )
+            )
+
+        # Looked up once for the whole batch, and only when override values need comparing against it.
+        system_default = _get_system_default_rule_profile() if rule_profile_id is None else None
+        criteria = [criteria_by_id[criterion_id] for criterion_id in criterion_ids]
+        for criterion in criteria:
+            _apply_rule_source(
+                criterion,
+                rule_profile_id,
+                rule_type_override,
+                rule_payload_override,
+                user,
+                system_default=system_default,
+            )
+        return criteria

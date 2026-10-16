@@ -1,15 +1,25 @@
 """
 Tests for the CBE public API surface (openedx_learning.api).
 """
+from collections.abc import Iterator
+from typing import Any
 
 import pytest
-from django.core.exceptions import ValidationError
+import rules
+from django.apps import apps
+from django.contrib.auth.models import User as UserType  # pylint: disable=imported-auth-user
+from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
+from django.db import connection
 from django.db.utils import IntegrityError
+from django.test.utils import CaptureQueriesContext
 from organizations.models import Organization
+from rules.permissions import permissions as rule_permissions
 
 from openedx_catalog.models import CatalogCourse, CourseRun
 from openedx_learning.api import (
+    CompetencyCriterionArchivedError,
     associate_competency_criterion,
+    bulk_update_competency_criteria,
     create_competency_taxonomy,
     get_competency_rule_profiles,
     is_competency_taxonomy,
@@ -25,8 +35,11 @@ from openedx_learning.models import (
     CompetencyTaxonomy,
     LogicOperator,
     RuleType,
+    StudentCompetencyCriteriaGroupStatus,
+    StudentCompetencyCriterionStatus,
+    StudentCompetencyStatus,
 )
-from openedx_tagging.models import Tag, Taxonomy
+from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
 pytestmark = pytest.mark.django_db
 
@@ -510,3 +523,489 @@ def test_associate_competency_criterion_rolls_back_newly_created_groups_when_cri
         associate_competency_criterion(tag_id=tag.id, object_id=object_id)
 
     assert not CompetencyCriteriaGroup.objects.filter(tag=tag).exists()
+
+
+# ==============================================================================================
+# bulk_update_competency_criteria (#759)
+# ==============================================================================================
+
+# Migration 0005's seeded system-default rule, written as the override values a caller would submit.
+SEEDED_RULE: dict[str, Any] = {"rule_type_override": RuleType.GRADE, "rule_payload_override": GRADE_PAYLOAD}
+# The threshold most tests apply, distinct from the seeded default so it stays an override.
+NEW_PAYLOAD = {"op": "gte", "value": 0.75, "scale": "percent"}
+NEW_RULE: dict[str, Any] = {"rule_type_override": RuleType.GRADE, "rule_payload_override": NEW_PAYLOAD}
+# A starting override that neither of the above matches.
+OLD_PAYLOAD = {"op": "lte", "value": 0.5, "scale": "percent"}
+
+CHANGE_OBJECTTAG_OBJECTID = "oel_tagging.change_objecttag_objectid"
+
+
+@pytest.fixture(name="checked_object_ids", autouse=True)
+def _checked_object_ids() -> Iterator[list[str]]:
+    """
+    Let any user tag any object, recording each object_id checked; restore the real rule afterwards.
+
+    openedx_tagging denies change_objecttag_objectid to everyone and leaves the real Studio-role
+    check to openedx-platform, so these tests substitute a permissive one.
+    """
+    original = rule_permissions[CHANGE_OBJECTTAG_OBJECTID]
+    checked: list[str] = []
+
+    def _predicate(_user: UserType, object_id: str) -> bool:
+        checked.append(object_id)
+        return True
+
+    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, _predicate)
+    yield checked
+    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, original)
+
+
+@pytest.fixture(name="leaf")
+def _leaf(tag: Tag, course_run: CourseRun) -> CompetencyCriteriaGroup:
+    """A leaf group under `tag` and `course_run`. Only a leaf group holds criteria."""
+    return _create_leaf_group(tag, course_run)
+
+
+def make_criterion(leaf: CompetencyCriteriaGroup, block_id: str, **rule) -> CompetencyCriterion:
+    """Create a criterion on `leaf` for a fresh object in its course, with `rule` as its rule columns."""
+    assert leaf.parent is not None and leaf.parent.course is not None
+    object_tag = ObjectTag.objects.create(
+        object_id=usage_key(leaf.parent.course, block_id), taxonomy=leaf.tag.taxonomy, tag=leaf.tag,
+    )
+    return CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, **rule)
+
+
+@pytest.fixture(name="batch")
+def _batch(
+    leaf: CompetencyCriteriaGroup, default_rule_profile: CompetencyRuleProfile
+) -> tuple[CompetencyCriterion, CompetencyCriterion]:
+    """Two criteria on `leaf` with different rule sources: one follows the default, one has an override."""
+    return (
+        make_criterion(leaf, "p1", rule_profile=default_rule_profile),
+        make_criterion(leaf, "p2", rule_type_override=RuleType.GRADE, rule_payload_override=OLD_PAYLOAD),
+    )
+
+
+def rule_state(criterion: CompetencyCriterion) -> tuple:
+    """Return `criterion`'s three rule columns as stored."""
+    criterion.refresh_from_db()
+    return (criterion.rule_profile_id, criterion.rule_type_override, criterion.rule_payload_override)
+
+
+def history_of(criterion: CompetencyCriterion):
+    """
+    Return `criterion`'s history rows, newest first.
+
+    Looked up through the app registry, as the model tests do, because simple_history's `.history`
+    descriptor has no type stubs.
+    """
+    historical_criterion = apps.get_model("openedx_learning", "HistoricalCompetencyCriterion")
+    return historical_criterion.objects.filter(id=criterion.pk).order_by("-history_date", "-history_id")
+
+
+def snapshot(criteria) -> dict[int, tuple]:
+    """Record each criterion's stored rule and history length, to prove a refused call changed nothing."""
+    return {criterion.id: (rule_state(criterion), history_of(criterion).count()) for criterion in criteria}
+
+
+def test_bulk_update_gives_every_criterion_the_rule_values_whatever_its_starting_source(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion], leaf: CompetencyCriteriaGroup, user: UserType,
+) -> None:
+    """Rule values replace a profile link and an existing override alike, and the result keeps request order."""
+    on_profile, on_override = batch
+
+    result = bulk_update_competency_criteria([on_override.id, on_profile.id], leaf.id, user=user, **NEW_RULE)
+
+    assert [criterion.id for criterion in result] == [on_override.id, on_profile.id]
+    for criterion in batch:
+        assert rule_state(criterion) == (None, RuleType.GRADE, NEW_PAYLOAD)
+
+
+@pytest.mark.parametrize("named", ["system default", "taxonomy-scoped"])
+def test_bulk_update_assigns_a_named_profile_clearing_values(  # pylint: disable=too-many-positional-arguments
+    named: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """Naming a profile clears any override values, and the history row says why it changed."""
+    if named == "system default":
+        profile = default_rule_profile
+    else:
+        profile = CompetencyRuleProfile.objects.create(
+            rule_type=RuleType.GRADE, rule_payload=NEW_PAYLOAD, competency_taxonomy=competency_taxonomy,
+        )
+    on_override = batch[1]
+
+    bulk_update_competency_criteria([c.id for c in batch], leaf.id, rule_profile_id=profile.id, user=user)
+
+    for criterion in batch:
+        assert rule_state(criterion) == (profile.id, None, None)
+    assert history_of(on_override).first().history_change_reason == "Reassigned to rule profile"
+
+
+def test_the_profile_applicable_to_a_criterion_is_the_system_default(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion], default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """In this phase every criterion resolves to the system default, the only profile there is."""
+    system_default = cbe_api._get_system_default_rule_profile()  # pylint: disable=protected-access
+    resolve = cbe_api._resolve_applicable_rule_profile  # pylint: disable=protected-access
+    assert system_default == default_rule_profile
+    for criterion in batch:
+        assert resolve(criterion, system_default) == default_rule_profile
+
+
+def test_bulk_update_looks_up_the_applicable_profile_once_per_batch(
+    leaf: CompetencyCriteriaGroup, user: UserType, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """However many criteria a batch names, comparing override values against the default reads it once."""
+    criteria = [make_criterion(leaf, f"p{n}", rule_profile=default_rule_profile) for n in range(5)]
+    profile_table = CompetencyRuleProfile._meta.db_table
+
+    with CaptureQueriesContext(connection) as queries:
+        bulk_update_competency_criteria([c.id for c in criteria], leaf.id, user=user, **NEW_RULE)
+
+    profile_reads = [q for q in queries.captured_queries if q["sql"].startswith("SELECT") and profile_table in q["sql"]]
+    assert len(profile_reads) == 1
+
+
+def test_bulk_update_values_that_match_the_default_return_the_criterion_to_it(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    Values equal to the applicable profile's rule store the profile link, not a redundant override.
+
+    The payload's keys arrive in a different order from the seeded row's, to show the comparison is
+    on the parsed rule and never on JSON text.
+    """
+    reordered_payload = {"scale": "percent", "value": 0.8, "op": "gte"}
+
+    bulk_update_competency_criteria(
+        [c.id for c in batch], leaf.id, rule_type_override=RuleType.GRADE, rule_payload_override=reordered_payload,
+        user=user,
+    )
+
+    for criterion in batch:
+        assert rule_state(criterion) == (default_rule_profile.id, None, None)
+
+
+def test_bulk_update_decides_a_return_to_a_profile_per_criterion(  # pylint: disable=too-many-positional-arguments
+    monkeypatch: pytest.MonkeyPatch,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """
+    Two criteria given the same values can end in different states, each by its own applicable profile.
+
+    Only the system default exists in this phase, so the per-criterion lookup is stubbed to give the
+    first criterion a profile whose rule the submitted values match.
+    """
+    first, second = batch
+    matching = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE, rule_payload=NEW_PAYLOAD, competency_taxonomy=competency_taxonomy,
+    )
+    applicable = {first.id: matching, second.id: default_rule_profile}
+    monkeypatch.setattr(
+        cbe_api, "_resolve_applicable_rule_profile", lambda criterion, system_default: applicable[criterion.id],
+    )
+
+    bulk_update_competency_criteria([first.id, second.id], leaf.id, user=user, **NEW_RULE)
+
+    assert rule_state(first) == (matching.id, None, None)
+    assert rule_state(second) == (None, RuleType.GRADE, NEW_PAYLOAD)
+
+
+def test_bulk_update_writes_history_only_for_criteria_it_changes(
+    leaf: CompetencyCriteriaGroup, user: UserType, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A criterion already carrying the rule gets no new history row; one that changes gets exactly one."""
+    unchanged = make_criterion(leaf, "p1", **NEW_RULE)
+    changed = make_criterion(leaf, "p2", rule_profile=default_rule_profile)
+    unchanged_before, changed_before = history_of(unchanged).count(), history_of(changed).count()
+
+    result = bulk_update_competency_criteria([unchanged.id, changed.id], leaf.id, user=user, **NEW_RULE)
+
+    assert [criterion.id for criterion in result] == [unchanged.id, changed.id]
+    assert history_of(unchanged).count() == unchanged_before
+    assert history_of(changed).count() == changed_before + 1
+    latest = history_of(changed).first()
+    assert latest.history_user == user
+    assert latest.history_change_reason == "Rule values set"
+    assert (latest.rule_profile_id, latest.rule_type_override, latest.rule_payload_override) == (
+        None, RuleType.GRADE, NEW_PAYLOAD,
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "rule values",
+        "named profile",
+        "values matching the default",
+        "nothing to change",
+        "malformed request",
+        "id outside the group",
+        "archived criterion",
+        "no permission",
+    ],
+)
+def test_bulk_update_never_reads_or_writes_learner_status(
+    case: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    No path, accepted or refused, sends a query to a learner status table.
+
+    Whether a learner has a recorded status plays no part in accepting a batch: #723 owns that check,
+    in front of this endpoint. A create, update, delete or read would each be a query, so checking
+    the SQL covers all four.
+    """
+    first, second = batch
+    ids = [first.id, second.id]
+    unchanged = make_criterion(leaf, "p3", **NEW_RULE)
+    archived = make_criterion(leaf, "p4", rule_profile=default_rule_profile, archived=True)
+    requests: dict[str, tuple[list[int], dict[str, Any], type[Exception] | None]] = {
+        "rule values": (ids, NEW_RULE, None),
+        "named profile": (ids, {"rule_profile_id": default_rule_profile.id}, None),
+        "values matching the default": (ids, SEEDED_RULE, None),
+        "nothing to change": ([unchanged.id], NEW_RULE, None),
+        "malformed request": ([first.id, first.id], NEW_RULE, ValidationError),
+        "id outside the group": ([first.id, 999999], NEW_RULE, CompetencyCriterion.DoesNotExist),
+        "archived criterion": ([first.id, archived.id], NEW_RULE, CompetencyCriterionArchivedError),
+        "no permission": (ids, NEW_RULE, PermissionDenied),
+    }
+    criterion_ids, rule, error = requests[case]
+    if case == "no permission":
+        rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, lambda _user, _object_id: False)
+    status_tables = [
+        model._meta.db_table
+        for model in (StudentCompetencyStatus, StudentCompetencyCriteriaGroupStatus, StudentCompetencyCriterionStatus)
+    ]
+
+    with CaptureQueriesContext(connection) as queries:
+        if error is None:
+            bulk_update_competency_criteria(criterion_ids, leaf.id, user=user, **rule)
+        else:
+            with pytest.raises(error):
+                bulk_update_competency_criteria(criterion_ids, leaf.id, user=user, **rule)
+
+    assert queries.captured_queries
+    assert not [q["sql"] for q in queries.captured_queries if any(table in q["sql"] for table in status_tables)]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty id list",
+        "duplicate id",
+        "both rule forms",
+        "neither rule form",
+        "rule type without payload",
+        "payload without rule type",
+        "unknown profile",
+        "archived profile",
+        "unsupported comparison",
+        "threshold above 1.0",
+        "threshold below 0.0",
+        "unimplemented rule type",
+    ],
+)
+def test_bulk_update_rejects_a_malformed_request_changing_nothing(  # pylint: disable=too-many-positional-arguments
+    case: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """Each malformed request is refused with an error naming what is wrong, and no criterion changes."""
+    first, second = batch
+    ids = [first.id, second.id]
+    archived = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE, rule_payload=NEW_PAYLOAD, competency_taxonomy=competency_taxonomy, archived=True,
+    )
+    requests: dict[str, tuple[list[int], dict[str, Any], str]] = {
+        "empty id list": ([], NEW_RULE, "criterion_ids"),
+        "duplicate id": ([first.id, first.id, second.id], NEW_RULE, "criterion_ids"),
+        "both rule forms": (
+            ids, {"rule_profile_id": default_rule_profile.id, **NEW_RULE}, "rule_profile_id",
+        ),
+        "neither rule form": (ids, {}, NON_FIELD_ERRORS),
+        "rule type without payload": (ids, {"rule_type_override": RuleType.GRADE}, "rule_type_override"),
+        "payload without rule type": (ids, {"rule_payload_override": NEW_PAYLOAD}, "rule_payload_override"),
+        "unknown profile": (ids, {"rule_profile_id": 999999}, "rule_profile_id"),
+        "archived profile": (ids, {"rule_profile_id": archived.id}, "rule_profile_id"),
+        "unsupported comparison": (
+            ids, {**NEW_RULE, "rule_payload_override": {**NEW_PAYLOAD, "op": "gt"}}, NON_FIELD_ERRORS,
+        ),
+        "threshold above 1.0": (
+            ids, {**NEW_RULE, "rule_payload_override": {**NEW_PAYLOAD, "value": 1.5}}, NON_FIELD_ERRORS,
+        ),
+        "threshold below 0.0": (
+            ids, {**NEW_RULE, "rule_payload_override": {**NEW_PAYLOAD, "value": -0.1}}, NON_FIELD_ERRORS,
+        ),
+        "unimplemented rule type": (ids, {**NEW_RULE, "rule_type_override": "Completion"}, "rule_type_override"),
+    }
+    criterion_ids, rule, error_key = requests[case]
+    before = snapshot(batch)
+
+    with pytest.raises(ValidationError) as exc_info:
+        bulk_update_competency_criteria(criterion_ids, leaf.id, user=user, **rule)
+
+    assert error_key in exc_info.value.message_dict
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_names_both_rule_forms_as_not_combinable(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """The refusal of a profile plus values says the two cannot be combined, not merely that the request failed."""
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        bulk_update_competency_criteria(
+            [c.id for c in batch], leaf.id, rule_profile_id=default_rule_profile.id, user=user, **NEW_RULE,
+        )
+
+
+def test_bulk_update_names_half_a_rule_as_needing_its_pair(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion], leaf: CompetencyCriteriaGroup, user: UserType,
+) -> None:
+    """A rule type without its payload is refused with a message saying the two must be supplied together."""
+    with pytest.raises(ValidationError, match="must be supplied together"):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, rule_type_override=RuleType.GRADE, user=user)
+
+
+@pytest.mark.parametrize("stray", ["from another group", "nonexistent"])
+def test_bulk_update_raises_does_not_exist_for_ids_outside_the_group(  # pylint: disable=too-many-positional-arguments
+    stray: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    tag: Tag,
+    course_run: CourseRun,
+) -> None:
+    """One id outside the group raises CompetencyCriterion.DoesNotExist naming it, and nothing changes."""
+    if stray == "from another group":
+        stray_id = make_criterion(_create_leaf_group(tag, course_run), "p3", **NEW_RULE).id
+    else:
+        stray_id = 999999
+    before = snapshot(batch)
+
+    with pytest.raises(CompetencyCriterion.DoesNotExist, match=str(stray_id)):
+        bulk_update_competency_criteria([batch[0].id, stray_id, batch[1].id], leaf.id, user=user, **SEEDED_RULE)
+
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_raises_does_not_exist_for_an_unknown_group(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion], user: UserType,
+) -> None:
+    """An unknown group id raises CompetencyCriteriaGroup.DoesNotExist."""
+    with pytest.raises(CompetencyCriteriaGroup.DoesNotExist):
+        bulk_update_competency_criteria([c.id for c in batch], 999999, user=user, **NEW_RULE)
+
+
+def test_bulk_update_refuses_the_whole_batch_if_any_criterion_is_archived(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """One archived criterion refuses the whole batch, and nothing changes, not even the valid criteria."""
+    archived = make_criterion(leaf, "p3", rule_profile=default_rule_profile, archived=True)
+    criteria = [batch[0], archived, batch[1]]
+    before = snapshot(criteria)
+
+    with pytest.raises(CompetencyCriterionArchivedError, match=str(archived.id)):
+        bulk_update_competency_criteria([c.id for c in criteria], leaf.id, user=user, **NEW_RULE)
+
+    assert snapshot(criteria) == before
+
+
+@pytest.mark.parametrize("level", ["root", "course-level"])
+def test_bulk_update_rejects_a_group_that_is_not_a_leaf(
+    level: str, leaf: CompetencyCriteriaGroup, user: UserType,
+) -> None:
+    """Only a leaf group holds criteria, so the root and course-level groups are refused."""
+    course_level = leaf.parent
+    assert course_level is not None and course_level.parent is not None
+    group = course_level.parent if level == "root" else course_level
+
+    with pytest.raises(ValidationError, match="group_id"):
+        bulk_update_competency_criteria([1], group.id, user=user, **NEW_RULE)
+
+
+def test_bulk_update_checks_permission_against_the_leafs_course(
+    checked_object_ids: list[str],
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    course_run: CourseRun,
+) -> None:
+    """The object-level check asks about the leaf's course, resolved through its course-level parent."""
+    bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    assert checked_object_ids == [str(course_run.course_key)]
+
+
+@pytest.mark.parametrize("lacks", ["course write access", "taxonomy view access"])
+def test_bulk_update_refuses_a_user_without_permission_changing_nothing(
+    lacks: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """A user failing oel_tagging.can_tag_object's taxonomy check or object_id check is refused, and nothing changes."""
+    if lacks == "course write access":
+        rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, lambda _user, _object_id: False)
+    else:
+        # can_tag_object's taxonomy check fails on a disabled taxonomy for anyone but a superuser.
+        competency_taxonomy.enabled = False
+        competency_taxonomy.save()
+    before = snapshot(batch)
+
+    with pytest.raises(PermissionDenied):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_rolls_back_every_criterion_if_one_save_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user: UserType,
+) -> None:
+    """A failure partway through the batch undoes the saves already made, history included."""
+    before = snapshot(batch)
+    original_save = CompetencyCriterion.save
+    saves: list[int] = []
+
+    def _fail_on_second_save(self, *args, **kwargs) -> None:
+        saves.append(self.pk)
+        if len(saves) == 2:
+            raise IntegrityError("simulated failure")
+        original_save(self, *args, **kwargs)
+
+    monkeypatch.setattr(CompetencyCriterion, "save", _fail_on_second_save)
+
+    with pytest.raises(IntegrityError):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    monkeypatch.undo()
+    assert len(saves) == 2
+    assert snapshot(batch) == before

@@ -5,12 +5,13 @@ from __future__ import annotations
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import QuerySet
+from django.utils.translation import gettext_lazy as _
 from edx_rest_framework_extensions.auth.jwt.authentication import JwtAuthentication  # type: ignore[import]
 from edx_rest_framework_extensions.auth.session.authentication import (  # type: ignore[import]
     SessionAuthenticationAllowInactiveUser,
 )
 from rest_framework import generics, mixins, status
-from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.exceptions import APIException, NotFound, PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -19,11 +20,21 @@ from rest_framework.viewsets import GenericViewSet
 from openedx_tagging.models import Tag
 from openedx_tagging.rules import ObjectTagPermissionItem
 
-from ...api import associate_competency_criterion, get_competency_rule_profiles, resolve_competency_tag
-from ...models import CompetencyCriteriaGroup, CompetencyRuleProfile
+from ...api import (
+    CompetencyCriterionArchivedError,
+    associate_competency_criterion,
+    bulk_update_competency_criteria,
+    get_competency_rule_profiles,
+    resolve_competency_tag,
+)
+from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile
 from ..paginators import CompetencyRuleProfilePagination
 from .permissions import CompetencyRuleProfilePermissions
-from .serializers import CompetencyCriterionSerializer, CompetencyRuleProfileSerializer
+from .serializers import (
+    CompetencyCriterionBulkUpdateSerializer,
+    CompetencyCriterionSerializer,
+    CompetencyRuleProfileSerializer,
+)
 
 
 class CompetencyRuleProfileView(mixins.ListModelMixin, GenericViewSet):
@@ -104,3 +115,51 @@ class CompetencyCriterionCreateView(generics.CreateAPIView):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
         return Response(self.get_serializer(criterion).data, status=status.HTTP_201_CREATED)
+
+
+class CompetencyCriteriaConflict(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = _("The request conflicts with the current state of the named criteria.")
+    default_code = "conflict"
+
+
+class CompetencyCriterionBulkUpdateView(generics.GenericAPIView):
+    """
+    PATCH-only. Apply one rule to a named batch of CompetencyCriteria in one leaf group, atomically.
+
+    The body names the criteria to update, all of which must belong to the group in the URL, and
+    exactly one rule source: either a live ``rule_profile_id`` to point them at, or both
+    ``rule_type_override`` and ``rule_payload_override``. The response is every named criterion as
+    stored, in request order, including any the update left unchanged.
+
+    A thin adapter: :func:`bulk_update_competency_criteria` owns every semantic refusal, the
+    permission check included, so an in-process caller gets the same refusals. A batch naming an
+    archived criterion is refused whole with 409.
+    """
+
+    serializer_class = CompetencyCriterionBulkUpdateSerializer
+    http_method_names = ["patch"]
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, group_id: int):
+        """Parse the request body, then delegate to the public API."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            criteria = bulk_update_competency_criteria(
+                data["criterion_ids"],
+                group_id,
+                rule_profile_id=data.get("rule_profile_id"),
+                rule_type_override=data.get("rule_type_override"),
+                rule_payload_override=data.get("rule_payload_override"),
+                user=request.user,
+            )
+        except (CompetencyCriteriaGroup.DoesNotExist, CompetencyCriterion.DoesNotExist) as exc:
+            raise NotFound(str(exc)) from exc
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
+        except CompetencyCriterionArchivedError as exc:
+            raise CompetencyCriteriaConflict(str(exc)) from exc
+        return Response(CompetencyCriterionSerializer(criteria, many=True).data, status=status.HTTP_200_OK)

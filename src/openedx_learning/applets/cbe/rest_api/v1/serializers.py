@@ -99,3 +99,23 @@ class CompetencyCriterionSerializer(serializers.ModelSerializer):
         except InvalidKeyError as exc:
             raise serializers.ValidationError(_("object_id is not a valid usage key.")) from exc
         return value
+
+
+class CompetencyCriterionBulkUpdateSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """
+    Parse the bulk-update request body, checking only each field's shape and rejecting unknown keys.
+    """
+
+    criterion_ids = serializers.ListField(child=serializers.IntegerField())
+    rule_profile_id = serializers.IntegerField(required=False, allow_null=True)
+    rule_type_override = serializers.CharField(required=False, allow_null=True)
+    rule_payload_override = serializers.JSONField(required=False, allow_null=True)
+
+    def validate(self, attrs: dict) -> dict:
+        """
+        Reject any top-level key this serializer does not declare.
+        """
+        unrecognized = sorted(set(self.initial_data) - set(self.fields))
+        if unrecognized:
+            raise serializers.ValidationError({key: "This field is not recognized." for key in unrecognized})
+        return attrs

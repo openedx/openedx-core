@@ -17,4 +17,9 @@ urlpatterns = [
         views.CompetencyCriterionCreateView.as_view(),
         name="criterion-create",
     ),
+    path(
+        "criteria-groups/<int:group_id>/criteria/bulk-update/",
+        views.CompetencyCriterionBulkUpdateView.as_view(),
+        name="criterion-bulk-update",
+    ),
 ]
