@@ -84,6 +84,10 @@ class Tag(models.Model):
             " Set automatically by save(); do not set manually."
         ),
     )
+    archived = models.BooleanField(
+        default=False,
+        help_text=_("Hides this tag from active use by default, without removing it."),
+    )
 
     class Meta:
         indexes = [
@@ -309,6 +313,13 @@ class Taxonomy(models.Model):
         help_text=_(
             "Indicates that the tags in this taxonomy are maintained by the system or an external integration;"
             " taxonomy admins will not be permitted to add, edit, or delete its tags."
+        ),
+    )
+    archived = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Hides this taxonomy from active use by default, without removing it."
+            " Unlike disabling it with 'enabled', archiving marks the taxonomy as retired."
         ),
     )
 
@@ -724,6 +735,17 @@ class ObjectTag(models.Model):
             " If the tag field is set, then tag.value takes precedence over this field."
         ),
     )
+    archived = models.BooleanField(
+        default=False,
+        help_text=_("Hides this association from active use by default, without removing it."),
+    )
+    deletion_locked = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Set when something outside the tagging app depends on this association;"
+            " a delete archives it instead of removing it."
+        ),
+    )
 
     class Meta:
         indexes = [
@@ -896,6 +918,8 @@ class ObjectTag(models.Model):
         self.taxonomy = object_tag.taxonomy
         self.object_id = object_tag.object_id
         self.is_copied = object_tag.is_copied
+        self.archived = object_tag.archived
+        self.deletion_locked = object_tag.deletion_locked
         self._value = object_tag._value  # pylint: disable=protected-access
         self._export_id = object_tag._export_id  # pylint: disable=protected-access
         return self
