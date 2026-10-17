@@ -429,37 +429,68 @@ def publish_all_drafts(
     )
 
 
-def _get_dependencies_with_unpublished_changes(
-    draft_qset: QuerySet[Draft]
-) -> list[QuerySet[Draft]]:
+def _draft_has_unpublished_changes(draft: Draft) -> bool:
     """
-    Return all dependencies to publish as a list of Draft QuerySets.
+    Python equivalent of ``DraftQuerySet.with_unpublished_changes()``.
+
+    This requires ``draft`` to have been fetched with at least
+    ``select_related("entity__published")``, or it will make extra queries.
+
+    A Draft has unpublished changes if its version differs from the Published
+    version, where "no Published row" counts as a Published version of None.
+    That means a soft-delete that has already been published (both None) is
+    *not* an unpublished change, but an unpublished soft-delete (Draft None,
+    Published not None) is.
+    """
+    try:
+        published_version_id = draft.entity.published.version_id
+    except ObjectDoesNotExist:
+        published_version_id = None
+    return draft.version_id != published_version_id
+
+
+def _get_dependencies_with_unpublished_changes(
+    direct_drafts: list[Draft]
+) -> list[list[Draft]]:
+    """
+    Return all dependencies to publish as a list of Draft lists, one per layer.
 
     This should only return the Drafts that have actual changes, not pure side-
     effects. The side-effect calculations will happen separately.
+
+    The Drafts returned have ``entity__published__version`` pre-loaded.
     """
     # First we have to do a full crawl of *all* dependencies, regardless of
     # whether they have unpublished changes or not. This is because we might
     # have a dependency-of-a-dependency that has changed somewhere down the
-    # line. Example: The draft_qset includes a Subsection. Even if the Unit
+    # line. Example: The direct_drafts include a Subsection. Even if the Unit
     # versions are still the same, there might be a changed Component that needs
     # to be published.
-    all_dependency_drafts = []
-    dependency_drafts = Draft.objects.filter(
-        entity__affects__in=draft_qset.values_list("version_id", flat=True)
-    ).distinct()
+    #
+    # Each layer is one query. We materialize the version IDs of each layer and
+    # use them to find the next layer, rather than nesting each layer's query
+    # inside the next one as a subquery.
+    all_dependency_layers: list[list[Draft]] = []
+    version_ids = [draft.version_id for draft in direct_drafts if draft.version_id is not None]
+    while version_ids:
+        dependency_drafts = list(
+            Draft.objects
+                 .filter(entity__affects__in=version_ids)
+                 .select_related("entity__published__version")
+                 .distinct()
+                 .order_by("pk")
+        )
+        if not dependency_drafts:
+            break
+        all_dependency_layers.append(dependency_drafts)
+        version_ids = [draft.version_id for draft in dependency_drafts if draft.version_id is not None]
 
-    while dependency_drafts:
-        all_dependency_drafts.append(dependency_drafts)
-        dependency_drafts = Draft.objects.filter(
-            entity__affects__in=dependency_drafts.all().values_list("version_id", flat=True)
-        ).distinct()
-
-    unpublished_dependency_drafts = [
-        dependency_drafts_qset.all().with_unpublished_changes()
-        for dependency_drafts_qset in all_dependency_drafts
+    # We fetched every dependency above (so that we could keep crawling), but we
+    # only publish the ones that have actually changed.
+    return [
+        [draft for draft in layer if _draft_has_unpublished_changes(draft)]
+        for layer in all_dependency_layers
     ]
-    return unpublished_dependency_drafts
 
 
 def publish_from_drafts(
@@ -486,13 +517,20 @@ def publish_from_drafts(
         published_at = datetime.now(tz=timezone.utc)
 
     with atomic():
+        # Materialize the directly-requested Drafts once. We need the full rows
+        # to build the PublishLogRecords anyway, and this also gives us the set
+        # of direct Draft IDs (and their version IDs, for dependency expansion)
+        # without separate queries.
+        direct_drafts = list(draft_qset.select_related("entity__published__version"))
+        direct_draft_ids = {draft.pk for draft in direct_drafts}
+
         if publish_dependencies:
-            dependency_drafts_qsets = _get_dependencies_with_unpublished_changes(draft_qset)
+            dependency_draft_layers = _get_dependencies_with_unpublished_changes(direct_drafts)
         else:
-            dependency_drafts_qsets = []
+            dependency_draft_layers = []
             # Validation: check that all dependencies have been published already.
             if Draft.objects.filter(
-                entity__affects__in=draft_qset.values_list("version_id", flat=True),
+                entity__affects__in=[draft.version_id for draft in direct_drafts if draft.version_id is not None],
                 entity__published=None,
             ).exists():
                 raise ValidationError("Cannot publish entities that have unpublished dependencies.")
@@ -507,20 +545,11 @@ def publish_from_drafts(
         publish_log.full_clean()
         publish_log.save(force_insert=True)
 
-        # Materialize the directly-requested Drafts once. We need the full rows
-        # to build the PublishLogRecords anyway, and this also gives us the set
-        # of direct Draft IDs without a separate query.
-        direct_drafts = list(draft_qset.select_related("entity__published__version"))
-        direct_draft_ids = {draft.pk for draft in direct_drafts}
-
-        # We're intentionally avoiding union() here because Django ORM unions
-        # introduce cumbersome restrictions (can only union once, can't
-        # select_related on it after, the extra rows must be exactly compatible
-        # in unioned qsets, etc.) Instead, we're going to have one queryset per
-        # dependency layer.
-        all_draft_groups: list[list[Draft] | QuerySet[Draft]] = [
+        # We process the Drafts one layer at a time: first the ones that were
+        # directly requested, then each layer of their dependencies.
+        all_draft_groups: list[list[Draft]] = [
             direct_drafts,
-            *dependency_drafts_qsets,  # one QuerySet per layer of dependencies
+            *dependency_draft_layers,  # one list per layer of dependencies
         ]
 
         # Walk all the Drafts to publish, in order, and build up the list of
