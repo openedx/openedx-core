@@ -497,9 +497,6 @@ def publish_from_drafts(
             ).exists():
                 raise ValidationError("Cannot publish entities that have unpublished dependencies.")
 
-        # Collect PKs of directly-requested drafts before expanding dependencies.
-        direct_draft_ids = set(draft_qset.values_list('pk', flat=True))
-
         # One PublishLog for this entire publish operation.
         publish_log = PublishLog(
             learning_package_id=learning_package_id,
@@ -510,20 +507,37 @@ def publish_from_drafts(
         publish_log.full_clean()
         publish_log.save(force_insert=True)
 
+        # Materialize the directly-requested Drafts once. We need the full rows
+        # to build the PublishLogRecords anyway, and this also gives us the set
+        # of direct Draft IDs without a separate query.
+        direct_drafts = list(draft_qset.select_related("entity__published__version"))
+        direct_draft_ids = {draft.pk for draft in direct_drafts}
+
         # We're intentionally avoiding union() here because Django ORM unions
         # introduce cumbersome restrictions (can only union once, can't
         # select_related on it after, the extra rows must be exactly compatible
         # in unioned qsets, etc.) Instead, we're going to have one queryset per
         # dependency layer.
-        all_draft_qsets = [
-            draft_qset.select_related("entity__published__version"),
+        all_draft_groups: list[list[Draft] | QuerySet[Draft]] = [
+            direct_drafts,
             *dependency_drafts_qsets,  # one QuerySet per layer of dependencies
         ]
-        published_draft_ids = set()
-        for qset in all_draft_qsets:
-            for draft in qset:
+
+        # Walk all the Drafts to publish, in order, and build up the list of
+        # PublishLogRecords to write. We do all the writes in bulk afterwards
+        # rather than doing a handful of queries per Draft–this is the
+        # difference between a few queries and thousands when publishing a
+        # large library.
+        #
+        # Insertion order matters here: the PublishLogRecords get ascending IDs
+        # in the order we create them, and that ordering is what consumers of
+        # the ENTITIES_PUBLISHED event see.
+        drafts_to_publish: dict[int, Draft] = {}  # entity_id -> Draft, in publish order
+        publish_log_records: list[PublishLogRecord] = []
+        for group in all_draft_groups:
+            for draft in group:
                 # Skip duplicates that we might get from expanding dependencies.
-                if draft.pk in published_draft_ids:
+                if draft.pk in drafts_to_publish:
                     continue
                 # Validate Learning Package here where it won't require any extra queries
                 if draft.entity.learning_package_id != learning_package_id:
@@ -533,33 +547,59 @@ def publish_from_drafts(
                     )
 
                 try:
-                    old_version = draft.entity.published.version
+                    old_version_id = draft.entity.published.version_id
                 except ObjectDoesNotExist:
                     # This means there is no published version yet.
-                    old_version = None
+                    old_version_id = None
 
                 # Create a record describing publishing this particular
                 # Publishable (useful for auditing and reverting).
-                publish_log_record = PublishLogRecord(
-                    publish_log=publish_log,
-                    entity=draft.entity,
-                    old_version=old_version,
-                    new_version=draft.version,
-                    direct=draft.pk in direct_draft_ids,
+                publish_log_records.append(
+                    PublishLogRecord(
+                        publish_log=publish_log,
+                        entity_id=draft.entity_id,
+                        old_version_id=old_version_id,
+                        new_version_id=draft.version_id,
+                        direct=draft.pk in direct_draft_ids,
+                    )
                 )
-                publish_log_record.full_clean()
-                publish_log_record.save(force_insert=True)
+                drafts_to_publish[draft.pk] = draft
 
-                # Update the lookup we use to fetch the published versions
-                Published.objects.update_or_create(
-                    entity=draft.entity,
-                    defaults={
-                        "version": draft.version,
-                        "publish_log_record": publish_log_record,
-                    },
-                )
+        if publish_log_records:
+            PublishLogRecord.objects.bulk_create(publish_log_records)
+            # Not all databases (e.g. MySQL) return primary keys from a bulk
+            # insert, so look up the IDs we just created in one query. There is
+            # exactly one record per entity in a PublishLog.
+            record_ids_by_entity_id: dict[int, int] = dict(
+                PublishLogRecord.objects
+                                .filter(publish_log=publish_log)
+                                .values_list("entity_id", "id")
+            )
 
-                published_draft_ids.add(draft.pk)
+            # Update the lookup we use to fetch the published versions. We
+            # already know from the select_related above whether a Published
+            # row exists for each entity, so split into one bulk insert and
+            # one bulk update instead of an update_or_create() per Draft.
+            published_to_create: list[Published] = []
+            published_to_update: list[Published] = []
+            for entity_id, draft in drafts_to_publish.items():
+                record_id = record_ids_by_entity_id[entity_id]
+                try:
+                    published = draft.entity.published
+                except ObjectDoesNotExist:
+                    published_to_create.append(
+                        Published(
+                            entity_id=entity_id,
+                            version_id=draft.version_id,
+                            publish_log_record_id=record_id,
+                        )
+                    )
+                else:
+                    published.version_id = draft.version_id
+                    published.publish_log_record_id = record_id
+                    published_to_update.append(published)
+            Published.objects.bulk_create(published_to_create)
+            Published.objects.bulk_update(published_to_update, ["version", "publish_log_record"])
 
         _create_side_effects_for_change_log(publish_log)
         _emit_event_for_change_log(publish_log, timestamp=published_at, user_id=published_by)
