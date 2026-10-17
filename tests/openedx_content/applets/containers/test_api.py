@@ -1430,7 +1430,12 @@ def test_get_entities_in_container_soft_deletion_pinned(
 # get_entities_in_container_as_of
 
 
-def test_snapshots_of_published_unit(lp: LearningPackage, child_entity1: TestEntity, child_entity2: TestEntity):
+def test_snapshots_of_published_unit(
+    lp: LearningPackage,
+    child_entity1: TestEntity,
+    child_entity2: TestEntity,
+    django_assert_num_queries,
+):
     """Test that we can access snapshots of the historic published version of containers and their contents."""
     child_entity1_v1 = child_entity1.versioning.draft
 
@@ -1496,7 +1501,9 @@ def test_snapshots_of_published_unit(lp: LearningPackage, child_entity1: TestEnt
         "Component 1 as of checkpoint 3",
         "Component 2 as of checkpoint 3",
     ]
-    _, as_of_checkpoint_4 = containers_api.get_entities_in_container_as_of(container, checkpoint_4.pk)
+    # Fetching a snapshot takes a fixed number of queries, regardless of the number of children:
+    with django_assert_num_queries(4):
+        _, as_of_checkpoint_4 = containers_api.get_entities_in_container_as_of(container, checkpoint_4.pk)
     assert [ev.entity_version.title for ev in as_of_checkpoint_4] == [
         "Child 1 🌴",  # Pinned. This title is self.component_1_v1.title (original v1 title)
         "Component 1 as of checkpoint 3",  # we didn't modify these components so they're same as in snapshot 3
@@ -1627,22 +1634,16 @@ def test_get_container_children_count_queries(
 ):
     """Test how many database queries `get_container_children_count()` needs"""
     publishing_api.publish_all_drafts(lp.id)
-    # The 6 queries are:
-    # - Draft.objects.get()
-    # - PublishableEntityVersion.objects.get()
-    # - ContainerVersion.objects.get()
-    # - TestContainerVersion.objects.get()
-    # - EntityList.objects.get()
+    # The 2 queries are:
+    # - Find the entity list of the current draft/published ContainerVersion
     # - SELECT COUNT(*) from EntityListRow ... JOIN on not soft deleted...
-    # TODO: the first four/five queries are all just loading "TestContainer" and its related objects, and could be
-    # optimized into a single query with better `select_related()`. The first four queries all use the same primary key.
-    with django_assert_num_queries(6):
+    with django_assert_num_queries(2):
         assert containers_api.get_container_children_count(parent_of_two, published=False) == 2
-    with django_assert_num_queries(6):
+    with django_assert_num_queries(2):
         assert containers_api.get_container_children_count(parent_of_two, published=True) == 2
-    with django_assert_num_queries(6):
+    with django_assert_num_queries(2):
         assert containers_api.get_container_children_count(parent_of_six, published=False) == 6
-    with django_assert_num_queries(6):
+    with django_assert_num_queries(2):
         assert containers_api.get_container_children_count(parent_of_six, published=True) == 6
 
 
