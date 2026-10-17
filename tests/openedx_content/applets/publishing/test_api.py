@@ -11,6 +11,7 @@ from uuid import UUID
 import pytest
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
+from django.db.models import QuerySet
 from django.test import TestCase, TransactionTestCase
 
 from openedx_content.applets.containers import api as containers_api
@@ -22,8 +23,10 @@ from openedx_content.applets.publishing.models import (
     DraftSideEffect,
     LearningPackage,
     PublishableEntity,
+    Published,
     PublishLog,
     PublishLogRecord,
+    PublishSideEffect,
 )
 from openedx_content.models_api import Container
 from tests.test_django_app.models import TestContainer
@@ -2093,6 +2096,132 @@ class TestContainerSideEffects(TestCase):
         assert unit_publish.affected_by.first().cause == component_publish  # type: ignore[union-attr]
         assert subsection_publish.affected_by.count() == 1
         assert subsection_publish.affected_by.first().cause == unit_publish  # type: ignore[union-attr]
+
+    def test_side_effects_across_sibling_units(self) -> None:
+        """
+        Changing components in two sibling Units records side-effects up the tree.
+
+        Hierarchy: section > subsection > (unit_1 > component_1, unit_2 > component_2)
+
+        This pins down the exact set and order of records and side-effects that
+        get created, because that order determines the order of changes in the
+        ENTITIES_DRAFT_CHANGED / ENTITIES_PUBLISHED events.
+        """
+        def make_entity(ref: str) -> PublishableEntity:
+            entity = publishing_api.create_publishable_entity(
+                self.learning_package.id, ref, created=self.now, created_by=None,
+            )
+            publishing_api.create_publishable_entity_version(
+                entity.id, version_num=1, title=ref, created=self.now, created_by=None,
+            )
+            return entity
+
+        def make_container(ref: str, children: list[PublishableEntity]) -> PublishableEntity:
+            container, _version = containers_api.create_container_and_version(
+                self.learning_package.id,
+                ref,
+                title=ref,
+                entities=children,
+                container_cls=TestContainer,
+                created=self.now,
+                created_by=None,
+            )
+            return container.publishable_entity
+
+        def entity_refs(records: QuerySet) -> list[str]:
+            return list(records.order_by("id").values_list("entity__entity_ref", flat=True))
+
+        def side_effect_refs(side_effects: QuerySet) -> list[tuple[str, str]]:
+            return list(
+                side_effects.order_by("id").values_list("cause__entity__entity_ref", "effect__entity__entity_ref")
+            )
+
+        component_1 = make_entity("component_1")
+        component_2 = make_entity("component_2")
+        unit_1 = make_container("unit_1", [component_1])
+        unit_2 = make_container("unit_2", [component_2])
+        subsection = make_container("subsection", [unit_1, unit_2])
+        section = make_container("section", [subsection])
+        containers = [unit_1, unit_2, subsection, section]
+
+        # Change both components in one bulk operation:
+        with publishing_api.bulk_draft_changes_for(self.learning_package.id) as change_log:
+            for component in [component_1, component_2]:
+                publishing_api.create_publishable_entity_version(
+                    component.id, version_num=2, title="v2", created=self.now, created_by=None,
+                )
+
+        # The two direct changes come first, then the side-effect records in
+        # the order they were discovered: everything above component_1, then
+        # whatever above component_2 wasn't already recorded.
+        assert entity_refs(DraftChangeLogRecord.objects.filter(draft_change_log=change_log)) == [
+            "component_1", "component_2", "unit_1", "subsection", "section", "unit_2",
+        ]
+        assert side_effect_refs(DraftSideEffect.objects.filter(cause__draft_change_log=change_log)) == [
+            ("component_1", "unit_1"),
+            ("unit_1", "subsection"),
+            ("subsection", "section"),
+            ("component_2", "unit_2"),
+            # Note: no (unit_2, subsection) side-effect is recorded, because the
+            # subsection's own side-effects were already calculated while
+            # processing component_1's change. This documents the current
+            # behavior; it is not necessarily the ideal behavior.
+        ]
+        # Every container's Draft now points at its record in this change log,
+        # and the container versions are unchanged (old_version == new_version),
+        # i.e. they are pure side-effects.
+        for entity in containers:
+            draft = Draft.objects.select_related("draft_log_record").get(entity=entity)
+            assert draft.draft_log_record is not None
+            assert draft.draft_log_record.draft_change_log_id == change_log.id
+            assert draft.draft_log_record.old_version_id == draft.version_id
+            assert draft.draft_log_record.new_version_id == draft.version_id
+
+        # Publishing everything does the same thing on the Published side. Here
+        # the containers are directly published too, so their records already
+        # exist and all the side-effects get recorded.
+        publish_log = publishing_api.publish_all_drafts(self.learning_package.id)
+        assert entity_refs(PublishLogRecord.objects.filter(publish_log=publish_log)) == [
+            "component_1", "component_2", "unit_1", "unit_2", "subsection", "section",
+        ]
+        assert side_effect_refs(PublishSideEffect.objects.filter(cause__publish_log=publish_log)) == [
+            ("component_1", "unit_1"),
+            ("unit_1", "subsection"),
+            ("subsection", "section"),
+            ("component_2", "unit_2"),
+            ("unit_2", "subsection"),
+        ]
+        for entity in containers:
+            published = Published.objects.select_related("publish_log_record").get(entity=entity)
+            assert published.publish_log_record.publish_log_id == publish_log.id
+            assert published.publish_log_record.old_version is None
+            assert published.publish_log_record.new_version_id == published.version_id
+
+        # Now change just the components again and publish only those. The
+        # containers are pure side-effects of this publish:
+        for component in [component_1, component_2]:
+            publishing_api.create_publishable_entity_version(
+                component.id, version_num=3, title="v3", created=self.now, created_by=None,
+            )
+        publish_log = publishing_api.publish_from_drafts(
+            self.learning_package.id,
+            # The order of the Drafts we pass in determines the order of the records:
+            Draft.objects.filter(entity__in=[component_1, component_2]).order_by("pk"),
+        )
+        assert entity_refs(PublishLogRecord.objects.filter(publish_log=publish_log)) == [
+            "component_1", "component_2", "unit_1", "subsection", "section", "unit_2",
+        ]
+        assert side_effect_refs(PublishSideEffect.objects.filter(cause__publish_log=publish_log)) == [
+            ("component_1", "unit_1"),
+            ("unit_1", "subsection"),
+            ("subsection", "section"),
+            ("component_2", "unit_2"),
+        ]
+        for entity in containers:
+            published = Published.objects.select_related("publish_log_record").get(entity=entity)
+            assert published.publish_log_record.publish_log_id == publish_log.id
+            assert published.publish_log_record.old_version_id == published.version_id
+            assert published.publish_log_record.new_version_id == published.version_id
 
     def test_publish_all_layers(self) -> None:
         """Test that we can publish multiple layers from one root."""
