@@ -33,6 +33,7 @@ class Section(Container):
 
     type_code = "section"
     olx_tag_name = "chapter"  # Serializes to OLX as `<chapter>...</chapter>`.
+    validate_entity_select_related = ("container__container_type",)
 
     container = models.OneToOneField(
         Container,
