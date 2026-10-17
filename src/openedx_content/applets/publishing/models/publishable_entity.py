@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from functools import cached_property
-from typing import ClassVar, NewType, Self
+from typing import ClassVar, Literal, NewType, Self
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -351,6 +351,36 @@ class PublishableEntityVersionDependency(models.Model):
                 name="oel_pevd_uniq_rv_re",
             )
         ]
+
+    class DependencyQuerySet(models.QuerySet):
+        """
+        Custom QuerySet/Manager so we can chain common queries.
+        """
+
+        def of_current_versions(self, branch: Literal["draft", "published"]):
+            """
+            Dependencies of versions that are currently the Draft (or Published)
+            version of their entity.
+
+            Dependencies of old versions don't affect anything, so this is what
+            side-effect calculations follow. Each row is annotated with:
+
+            * ``referring_entity_id``: the entity whose current version has this
+              dependency.
+            * ``log_record_id``: the log record that entity's Draft (or
+              Published) row points to, i.e. ``Draft.draft_log_record_id`` or
+              ``Published.publish_log_record_id``.
+            """
+            log_record_field = {"draft": "draft_log_record_id", "published": "publish_log_record_id"}[branch]
+            return (
+                self.filter(**{f"referring_version__{branch}__isnull": False})
+                    .annotate(
+                        referring_entity_id=models.F("referring_version__entity_id"),
+                        log_record_id=models.F(f"referring_version__{branch}__{log_record_field}"),
+                    )
+            )
+
+    objects = DependencyQuerySet.as_manager()
 
 
 class PublishableEntityMixin(models.Model):
