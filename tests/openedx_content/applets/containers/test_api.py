@@ -379,14 +379,14 @@ def test_create_container_queries(
         "container_cls": TestContainer,
     }
     # The exact numbers here aren't too important - this is just to alert us if anything significant changes.
-    with django_assert_num_queries(30):
+    with django_assert_num_queries(29):
         containers_api.create_container_and_version(lp.id, container_code="c1", **base_args)
     # And try with a a container that has children:
-    with django_assert_num_queries(32):
+    with django_assert_num_queries(30):
         containers_api.create_container_and_version(lp.id, container_code="c2", **base_args, entities=[child_entity1])
     # The number of queries should not grow with the number of children:
     child_entity3_v1 = child_entity3.versioning.draft
-    with django_assert_num_queries(32):
+    with django_assert_num_queries(30):
         containers_api.create_container_and_version(
             lp.id,
             container_code="c3",
