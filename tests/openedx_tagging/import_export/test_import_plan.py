@@ -7,6 +7,7 @@ from django.test.testcases import TestCase
 from openedx_tagging.import_export.actions import CreateTag
 from openedx_tagging.import_export.exceptions import TagImportError
 from openedx_tagging.import_export.import_plan import TagImportPlan, TagItem
+from openedx_tagging.models import Tag, TagImportTask, Taxonomy
 
 from .test_actions import TestImportActionMixin
 
@@ -102,6 +103,10 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             0,
             [
                 {
+                    'name': 'detach',
+                    'id': 'tag_4'
+                },
+                {
                     'name': 'create',
                     'id': 'tag_31'
                 },
@@ -182,16 +187,16 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             0,
             [
                 {
+                    'name': 'update_parent',
+                    'id': 'tag_4',
+                },
+                {
                     'name': 'delete',
                     'id': 'tag_1',
                 },
                 {
                     'name': 'delete',
                     'id': 'tag_2',
-                },
-                {
-                    'name': 'update_parent',
-                    'id': 'tag_4',
                 },
                 {
                     'name': 'delete',
@@ -249,25 +254,27 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             False,
             "Import plan for Import Taxonomy Test\n"
             "--------------------------------\n"
-            "#1: Create a new tag with values (external_id=tag_31, value=Tag 31, parent_id=None).\n"
-            "#2: Create a new tag with values (external_id=tag_31, value=Tag 32, parent_id=None).\n"
-            "#3: Rename tag value of <Tag> (tag_1 / Tag 1) to 'Tag 2'\n"
-            "#4: Update the parent of <Tag> (tag_4 / Tag 4) from parent "
+            "#1: Move tag <TagItem> (tag_2 / Tag 2) to the root first, so that the parent changes "
+            "in this file can run in any order.\n"
+            "#2: Create a new tag with values (external_id=tag_31, value=Tag 31, parent_id=None).\n"
+            "#3: Create a new tag with values (external_id=tag_31, value=Tag 32, parent_id=None).\n"
+            "#4: Rename tag value of <Tag> (tag_1 / Tag 1) to 'Tag 2'\n"
+            "#5: Update the parent of <Tag> (tag_4 / Tag 4) from parent "
             "<Tag> (tag_3 / Tag 3) to tag_100\n"
-            "#5: Create a new tag with values (external_id=tag_33, value=Tag 32, parent_id=None).\n"
-            "#6: Update the parent of <Tag> (tag_2 / Tag 2) from parent "
+            "#6: Create a new tag with values (external_id=tag_33, value=Tag 32, parent_id=None).\n"
+            "#7: Update the parent of <Tag> (tag_2 / Tag 2) from parent "
             "<Tag> (tag_1 / Tag 1) to None\n"
-            "#7: Rename tag value of <Tag> (tag_2 / Tag 2) to 'Tag 31'\n"
+            "#8: Rename tag value of <Tag> (tag_2 / Tag 2) to 'Tag 31'\n"
             "\nOutput errors\n"
             "--------------------------------\n"
             "Duplicate id (tag_31): file rows 1, 2 all claim it as their final id. "
             "Each row's id must be unique within a single import.\n"
-            "Conflict with 'create' (#2) and action #1: Duplicated external_id tag.\n"
-            "Action error in 'rename' (#3): Duplicated tag value with tag in database (external_id=tag_2).\n"
-            "Action error in 'update_parent' (#4): Unknown parent tag (tag_100). "
-            "You need to add parent before the child in your file.\n"
-            "Conflict with 'create' (#5) and action #2: Duplicated tag value.\n"
-            "Conflict with 'rename' (#7) and action #1: Duplicated tag value.\n"
+            "Conflict with 'create' (#3) and action #2: Duplicated external_id tag.\n"
+            "Action error in 'rename' (#4): Duplicated tag value with tag in database (external_id=tag_2).\n"
+            "Action error in 'update_parent' (#5): Unknown parent tag (tag_100). "
+            "Add a row for the parent to your file.\n"
+            "Conflict with 'create' (#6) and action #3: Duplicated tag value.\n"
+            "Conflict with 'rename' (#8) and action #2: Duplicated tag value.\n"
         ),
         # Testing valid plan
         (
@@ -299,13 +306,15 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             False,
             "Import plan for Import Taxonomy Test\n"
             "--------------------------------\n"
-            "#1: Create a new tag with values (external_id=tag_31, value=Tag 31, parent_id=None).\n"
-            "#2: Create a new tag with values (external_id=tag_32, value=Tag 32, parent_id=tag_1).\n"
-            "#3: Rename tag value of <Tag> (tag_2 / Tag 2) to 'Tag 2 v2'\n"
-            "#4: Update the parent of <Tag> (tag_4 / Tag 4) from parent "
+            "#1: Move tag <TagItem> (tag_4 / Tag 4) to the root first, so that the parent changes "
+            "in this file can run in any order.\n"
+            "#2: Create a new tag with values (external_id=tag_31, value=Tag 31, parent_id=None).\n"
+            "#3: Create a new tag with values (external_id=tag_32, value=Tag 32, parent_id=tag_1).\n"
+            "#4: Rename tag value of <Tag> (tag_2 / Tag 2) to 'Tag 2 v2'\n"
+            "#5: Update the parent of <Tag> (tag_4 / Tag 4) from parent "
             "<Tag> (tag_3 / Tag 3) to tag_1\n"
-            "#5: Rename tag value of <Tag> (tag_4 / Tag 4) to 'Tag 4 v2'\n"
-            "#6: No changes needed for <TagItem> (tag_1 / Tag 1)\n"
+            "#6: Rename tag value of <Tag> (tag_4 / Tag 4) to 'Tag 4 v2'\n"
+            "#7: No changes needed for <TagItem> (tag_1 / Tag 1)\n"
         ),
         # Testing deletes (replace=True)
         (
@@ -319,10 +328,10 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             True,
             "Import plan for Import Taxonomy Test\n"
             "--------------------------------\n"
-            "#1: Delete tag <TagItem> (tag_1 / Tag 1)\n"
-            "#2: Delete tag <TagItem> (tag_2 / Tag 2)\n"
-            "#3: Update the parent of <Tag> (tag_4 / Tag 4) from parent "
+            "#1: Update the parent of <Tag> (tag_4 / Tag 4) from parent "
             "<Tag> (tag_3 / Tag 3) to None\n"
+            "#2: Delete tag <TagItem> (tag_1 / Tag 1)\n"
+            "#3: Delete tag <TagItem> (tag_2 / Tag 2)\n"
             "#4: Delete tag <TagItem> (tag_3 / Tag 3)\n"
             "#5: No changes needed for <TagItem> (tag_4 / Tag 4)\n"
         ),
@@ -618,6 +627,334 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         ]
         self.import_plan.generate_actions(tags=tags, replace=False)
         self.assertEqual(self.import_plan.errors, [])
+
+    def test_generate_actions_existing_child_keeps_stale_parent_id_rejected(self) -> None:
+        tags = [
+            TagItem(id='tag_50', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_2', value='Tag 2', parent_id='tag_1'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(
+            [str(error) for error in self.import_plan.errors],
+            [
+                "Action error in 'update_parent' (#2): "
+                "Row 2: Parent tag tag_1 is renamed to tag_50 in this file; use tag_50 as the parent_id."
+            ],
+        )
+
+    @ddt.data(
+        ('tag_2', None, 'tag_1'),  # exact pre-import id
+        ('tag_2', None, 'TAG_1'),  # case variant of it
+        ('tag_20', 'tag_2', 'tag_1'),  # the child is renamed too
+    )
+    @ddt.unpack
+    def test_generate_actions_swap_child_naming_own_parent_stale_id_rejected(
+        self, child_id: str, child_previous_id: str | None, child_parent_id: str,
+    ) -> None:
+        tags = [
+            TagItem(id='tag_3', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_1', value='Tag 3', previous_id='tag_3'),
+            TagItem(id=child_id, value='Tag 2', previous_id=child_previous_id, parent_id=child_parent_id),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(len(self.import_plan.errors), 1)
+        # The staging and detach actions come first, so the action number is not the row number.
+        self.assertIn(
+            f"(#6): Row 3: Parent tag {child_parent_id} is renamed to tag_3 in this file; use tag_3 as the parent_id. "
+            f"To move under the tag that takes the id {child_parent_id} in this file instead, "
+            "import the id changes and the move as two separate files.",
+            str(self.import_plan.errors[0]),
+        )
+
+    def test_generate_actions_stale_parent_id_error_names_row(self) -> None:
+        tags = [
+            TagItem(id='tag_50', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_60', value='Tag 60', parent_id='tag_1'),
+            TagItem(id='tag_2', value='Tag 2', parent_id='tag_50'),
+        ]
+        # replace=True deletes tag_3 and tag_4 first, so the child's action is #4, not #2.
+        self.import_plan.generate_actions(tags=tags, replace=True)
+        self.assertEqual(
+            [str(error) for error in self.import_plan.errors],
+            [
+                "Action error in 'create' (#4): "
+                "Row 2: Parent tag tag_1 is renamed to tag_50 in this file; use tag_50 as the parent_id."
+            ],
+        )
+
+    @ddt.data('tag_1', 'TAG_1')
+    def test_generate_actions_case_only_parent_rename_keeps_child(self, child_parent_id: str) -> None:
+        """
+        Renaming tag_1 to TAG_1 only changes its capitalization. external_id is
+        case-insensitive, so the id still names the same tag after the import,
+        and a tag_2 row naming it in either spelling is not a stale reference.
+        """
+        tags = [
+            TagItem(id='TAG_1', value='Tag 1', previous_id='tag_1'),
+            TagItem(id='tag_2', value='Tag 2', parent_id=child_parent_id),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(self.import_plan.errors, [])
+
+    @ddt.data(
+        # A new child listed before its new parent.
+        (
+            [
+                TagItem(id='new_child', value='New child', parent_id='new_parent'),
+                TagItem(id='new_parent', value='New parent'),
+            ],
+            ['new_parent', 'new_child'],
+        ),
+        # A row naming a parent's new id, spelled in another case, listed before the rename.
+        (
+            [
+                TagItem(id='tag_60', value='Tag 60', parent_id='TAG_50'),
+                TagItem(id='tag_50', value='Tag 1', previous_id='tag_1'),
+            ],
+            ['tag_50', 'tag_60'],
+        ),
+        # Parents already before their children: the plan keeps the file order.
+        (
+            [
+                TagItem(id='new_parent', value='New parent'),
+                TagItem(id='tag_4', value='Tag 4 v2', parent_id='tag_3'),
+                TagItem(id='new_child', value='New child', parent_id='new_parent'),
+            ],
+            ['new_parent', 'tag_4', 'new_child'],
+        ),
+    )
+    @ddt.unpack
+    def test_generate_actions_orders_each_row_after_the_row_defining_its_parent(
+        self, tags: list[TagItem], expected_order: list[str],
+    ) -> None:
+        """
+        A row is built after the row that creates or renames-in its parent, so a
+        file may list rows in any order. Rows are only pulled forward when needed.
+        """
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(self.import_plan.errors, [])
+        self.assertEqual([action.tag.id for action in self.import_plan.actions], expected_order)
+
+    def _plan_for_tree(self, tree: dict[str, str | None]) -> TagImportPlan:
+        """
+        Create a taxonomy holding ``tree`` (id -> parent id, parents listed first) and
+        return a plan for it. The tag values are the ids.
+        """
+        taxonomy = Taxonomy.objects.create(name='Tree taxonomy')
+        tags: dict[str, Tag] = {}
+        for tag_id, parent_id in tree.items():
+            tags[tag_id] = Tag.objects.create(
+                taxonomy=taxonomy, value=tag_id, external_id=tag_id,
+                parent=tags[parent_id] if parent_id else None,
+            )
+        return TagImportPlan(taxonomy)
+
+    @staticmethod
+    def _tree(taxonomy: Taxonomy) -> dict[str, str | None]:
+        """
+        The taxonomy's tags as id -> parent id.
+        """
+        return {tag.external_id: tag.parent.external_id if tag.parent else None for tag in taxonomy.tag_set.all()}
+
+    SIX_LEVELS: dict[str, str | None] = {
+        'level_1': None, 'level_2': 'level_1', 'level_3': 'level_2',
+        'level_4': 'level_3', 'level_5': 'level_4', 'level_6': 'level_5',
+    }
+
+    @ddt.data(
+        # A parent and its child swap places.
+        (
+            {'parent': None, 'child': 'parent'},
+            [TagItem(id='parent', value='parent', parent_id='child'), TagItem(id='child', value='child')],
+            {'child': None, 'parent': 'child'},
+        ),
+        # The ancestry is inverted through a new tag: new_root must leave old_root's
+        # subtree before old_root moves under new_middle.
+        (
+            {'old_root': None, 'sibling': 'old_root', 'new_root': 'old_root'},
+            [
+                TagItem(id='old_root', value='old_root', parent_id='new_middle'),
+                TagItem(id='sibling', value='sibling', parent_id='new_middle'),
+                TagItem(id='new_middle', value='new_middle', parent_id='new_root'),
+                TagItem(id='new_root', value='new_root'),
+            ],
+            {'new_root': None, 'new_middle': 'new_root', 'old_root': 'new_middle', 'sibling': 'new_middle'},
+        ),
+        # A deep tag moves to the root while new tags are created under it: created
+        # first, the new grandchild would be at a seventh level.
+        (
+            {'level_1': None, 'level_2': 'level_1', 'level_3': 'level_2', 'level_4': 'level_3', 'deep': 'level_4'},
+            [
+                TagItem(id='new_grandchild', value='new_grandchild', parent_id='new_child'),
+                TagItem(id='new_child', value='new_child', parent_id='deep'),
+                TagItem(id='deep', value='deep'),
+            ],
+            {
+                'level_1': None, 'level_2': 'level_1', 'level_3': 'level_2', 'level_4': 'level_3',
+                'deep': None, 'new_child': 'deep', 'new_grandchild': 'new_child',
+            },
+        ),
+        # A subtree moves under a tag that itself moves up: attached first, the
+        # grandchild would be at a seventh level.
+        (
+            {
+                'chain_1': None, 'chain_2': 'chain_1', 'chain_3': 'chain_2', 'moved_up': 'chain_3',
+                'subtree': None, 'subtree_child': 'subtree', 'subtree_grandchild': 'subtree_child',
+            },
+            [
+                TagItem(id='subtree', value='subtree', parent_id='moved_up'),
+                TagItem(id='moved_up', value='moved_up'),
+            ],
+            {
+                'chain_1': None, 'chain_2': 'chain_1', 'chain_3': 'chain_2', 'moved_up': None,
+                'subtree': 'moved_up', 'subtree_child': 'subtree', 'subtree_grandchild': 'subtree_child',
+            },
+        ),
+    )
+    @ddt.unpack
+    def test_execute_parent_moves_whose_steps_depend_on_each_other(
+        self, tree: dict[str, str | None], rows: list[TagItem], expected: dict[str, str | None],
+    ) -> None:
+        """
+        Restructures that fail when their actions run in file order, because an
+        intermediate step would build a cycle or a tree too deep, succeed: a
+        detach action moves every tag whose parent changes to the root before the
+        row actions. ``rows`` lists the worst order for each case. Omitted tags
+        keep their parent (replace=False).
+        """
+        plan = self._plan_for_tree(tree)
+        plan.generate_actions(tags=rows, replace=False)
+        self.assertEqual([str(error) for error in plan.errors], [])
+        names = [action.name for action in plan.actions]
+        self.assertIn('detach', names)
+        # All detaches run before any row action. This holds here because these cases have no
+        # renames or deletes, which are built before the detaches.
+        self.assertLess(
+            max(index for index, name in enumerate(names) if name == 'detach'),
+            min(index for index, name in enumerate(names) if name != 'detach'),
+        )
+        plan.execute()
+        self.assertEqual(self._tree(plan.taxonomy), expected)
+
+    def test_execute_kept_tag_under_deleted_ancestors_survives(self) -> None:
+        """
+        With replace=True, a kept tag whose parent and grandparent are deleted is
+        promoted to the root before the first delete, so the cascade does not
+        remove it, and it keeps its database row.
+        """
+        plan = self._plan_for_tree({'deleted_root': None, 'deleted_child': 'deleted_root', 'kept': 'deleted_child'})
+        kept_pk = plan.taxonomy.tag_set.get(external_id='kept').pk
+        plan.generate_actions(tags=[TagItem(id='kept', value='kept')], replace=True)
+        self.assertEqual(plan.errors, [])
+        names = [action.name for action in plan.actions]
+        self.assertLess(names.index('update_parent'), names.index('delete'))
+        self.assertNotIn('detach', names)  # The promotion already moves the tag to the root.
+        plan.execute()
+        self.assertEqual(self._tree(plan.taxonomy), {'kept': None})
+        self.assertEqual(plan.taxonomy.tag_set.get(external_id='kept').pk, kept_pk)
+
+    def test_execute_logs_the_old_parent_of_a_moved_tag(self) -> None:
+        # The plan is not logged first, so the description must already be built when the
+        # detach action moves tag_2 to the root.
+        task = TagImportTask.create(self.taxonomy)
+        self.import_plan.generate_actions(tags=[TagItem(id='tag_2', value='Tag 2', parent_id='tag_3')])
+        self.import_plan.execute(task)
+        self.assertEqual(self.taxonomy.tag_set.get(external_id='tag_2').parent.external_id, 'tag_3')
+        self.assertIn(
+            "Update the parent of <Tag> (tag_2 / Tag 2) from parent <Tag> (tag_1 / Tag 1) to tag_3 [Started]",
+            task.log,
+        )
+
+    @ddt.data(
+        # tag_1 under its own child tag_2.
+        ([TagItem(id='tag_1', value='Tag 1', parent_id='tag_2')], False, "Row 1's parent_id (tag_2)"),
+        # A tag under itself.
+        ([TagItem(id='tag_2', value='Tag 2', parent_id='tag_2')], False, "Row 1's parent_id (tag_2)"),
+        # tag_3 takes the id of the deleted tag_1 and names that id as its parent.
+        (
+            [TagItem(id='tag_1', value='Tag 3', previous_id='tag_3', parent_id='tag_1')],
+            True,
+            "Row 1's parent_id (tag_1)",
+        ),
+        # Two renamed tags, on ids the import frees, name each other.
+        (
+            [
+                TagItem(id='tag_4', value='Tag 4', parent_id='tag_2'),
+                TagItem(id='tag_2', value='Tag 1', previous_id='tag_1', parent_id='tag_3'),
+                TagItem(id='tag_3', value='Tag 2', previous_id='tag_2', parent_id='tag_2'),
+            ],
+            True,
+            "Row 2's parent_id (tag_3)",
+        ),
+    )
+    @ddt.unpack
+    def test_generate_actions_parent_cycle_rejected_once(
+        self, tags: list[TagItem], replace: bool, expected_prefix: str,
+    ) -> None:
+        """
+        A parent_id that makes a tag its own ancestor after the import is rejected
+        with one error, on the cycle's first row in the file.
+        """
+        self.import_plan.generate_actions(tags=tags, replace=replace)
+        messages = [str(error) for error in self.import_plan.errors]
+        self.assertEqual(len(messages), 1, messages)
+        self.assertEqual(messages[0], f"{expected_prefix} creates a parent cycle.")
+
+    def test_generate_actions_long_reversed_chain_terminates(self) -> None:
+        """
+        A 1100-row chain of new tags listed child first is ordered and checked
+        without recursion, so it neither hits the recursion limit nor crashes:
+        every row is planned, and the chain is rejected as too deep.
+        """
+        tags = [
+            TagItem(id=f'n{i}', value=f'N{i}', parent_id=f'n{i - 1}' if i else None)
+            for i in reversed(range(1100))
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        self.assertEqual(len(self.import_plan.actions), 1100)
+        self.assertEqual(self.import_plan.actions[0].tag.id, 'n0')
+        self.assertEqual(
+            [str(error) for error in self.import_plan.errors],
+            ["This import would leave tag n6 more than 6 levels deep."],
+        )
+
+    def test_generate_actions_cycle_of_new_tags_reports_an_unknown_parent_once(self) -> None:
+        """
+        New tags that name each other as parent get the existing "Unknown parent"
+        error for one of them, and no cycle error on top.
+        """
+        tags = [
+            TagItem(id='new_a', value='New A', parent_id='new_b'),
+            TagItem(id='new_b', value='New B', parent_id='new_a'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        messages = [str(error) for error in self.import_plan.errors]
+        self.assertEqual(len(messages), 1, messages)
+        self.assertIn("Unknown parent tag", messages[0])
+
+    FOUR_LEVELS: dict[str, str | None] = {
+        'other_1': None, 'other_2': 'other_1', 'other_3': 'other_2', 'other_4': 'other_3',
+    }
+
+    @ddt.data(
+        # A new tag under the sixth level.
+        (TagItem(id='level_7', value='level_7', parent_id='level_6'), 'level_7'),
+        # A four-level chain moved under the fourth level: other_3 and other_4 end up
+        # at the seventh and eighth level, although neither has a row.
+        (TagItem(id='other_1', value='other_1', parent_id='level_4'), 'other_3'),
+    )
+    @ddt.unpack
+    def test_generate_actions_import_too_deep_rejected(self, row: TagItem, named_tag: str) -> None:
+        """
+        An import whose result would leave a tag deeper than the taxonomy allows is
+        rejected at the plan step, with one error naming a tag that would be too deep.
+        """
+        plan = self._plan_for_tree({**self.SIX_LEVELS, **self.FOUR_LEVELS})
+        plan.generate_actions(tags=[row], replace=False)
+        self.assertEqual(
+            [str(error) for error in plan.errors],
+            [f"This import would leave tag {named_tag} more than 6 levels deep."],
+        )
 
     def test_generate_actions_genuine_collision_not_staged(self) -> None:
         """

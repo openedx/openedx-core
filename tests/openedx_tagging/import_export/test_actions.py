@@ -10,6 +10,7 @@ from django.test.testcases import TestCase
 from openedx_tagging.import_export.actions import (
     CreateTag,
     DeleteTag,
+    DetachTag,
     ImportAction,
     RenameTag,
     RenameTagExternalId,
@@ -132,7 +133,7 @@ class TestImportAction(TestImportActionMixin, TestCase):
                 (
                     "Action error in 'import_action' (#100): "
                     "Unknown parent tag (tag_100). "
-                    "You need to add parent before the child in your file."
+                    "Add a row for the parent to your file."
                 )
             )
 
@@ -140,16 +141,12 @@ class TestImportAction(TestImportActionMixin, TestCase):
         """
         Regression: a parent referenced by external_id that doesn't exist in
         the DB yet, but is being renamed-in via a `RenameTagExternalId`
-        action earlier in the same import, must validate as a known parent.
+        action in the same import (recorded in `_vacated_pks` by the plan,
+        wherever that row is in the file), must validate as a known parent.
         """
-        indexed_actions = dict(self.indexed_actions)
-        indexed_actions['rename_external_id'] = [
-            RenameTagExternalId(
-                taxonomy=self.taxonomy,
-                tag=TagItem(id='tag_60', value='Tag 60', previous_id='tag_3', index=1),
-                index=1,
-            )
-        ]
+        tag_3_pk = self.taxonomy.tag_set.get(external_id='tag_3').pk
+        indexed_actions: dict[str, list[ImportAction] | dict[int, str]] = dict(self.indexed_actions)
+        indexed_actions['_vacated_pks'] = {tag_3_pk: 'tag_60'}
         action = ImportAction(
             self.taxonomy,
             TagItem(
@@ -1008,6 +1005,48 @@ class TestStageTagExternalIdForSwap(TestImportActionMixin, TestCase):
         tag.refresh_from_db()
         self.assertEqual(tag.pk, pk)
         self.assertTrue(tag.external_id.startswith("oel-import-staging:"))
+
+
+class TestDetachTag(TestImportActionMixin, TestCase):
+    """
+    Test for 'detach' action
+    """
+
+    def _action(self) -> DetachTag:
+        return DetachTag(
+            taxonomy=self.taxonomy,
+            tag=TagItem(id='tag_2', value='Tag 2', index=100),
+            index=100,
+            target_pk=self.taxonomy.tag_set.get(external_id='tag_2').pk,
+        )
+
+    def test_str(self) -> None:
+        self.assertEqual(
+            str(self._action()),
+            "Move tag <TagItem> (tag_2 / Tag 2) to the root first, "
+            "so that the parent changes in this file can run in any order."
+        )
+
+    def test_applies_for(self) -> None:
+        self.assertFalse(DetachTag.applies_for(self.taxonomy, tag=TagItem(id='tag_2', value='Tag 2', index=100)))
+
+    def test_validate(self) -> None:
+        self.assertEqual(self._action().validate(self.indexed_actions), [])
+
+    def test_execute(self) -> None:
+        """
+        The tag moves to the root and keeps its pk; it is found by pk, so a
+        placeholder external_id from a staging action does not matter.
+        """
+        action = self._action()
+        tag = self.taxonomy.tag_set.get(external_id='tag_2')
+        self.assertIsNotNone(tag.parent)
+        # Simulate a staging action that already ran, to show DetachTag finds the tag by pk.
+        self.taxonomy.tag_set.filter(pk=tag.pk).update(external_id="oel-import-staging:x")
+        action.execute()
+        tag.refresh_from_db()
+        self.assertIsNone(tag.parent)
+        self.assertEqual(tag.depth, 0)
 
 
 class TestDeleteTag(TestImportActionMixin, TestCase):

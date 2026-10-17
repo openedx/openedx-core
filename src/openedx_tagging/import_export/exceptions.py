@@ -80,6 +80,33 @@ class StaleIdTargetedByPlainRowError(TagImportError):
         ).format(tag_id=tag_id, plain_row=plain_row, rename_row=rename_row)
 
 
+class ParentCycleError(TagImportError):
+    """
+    Exception raised when a row's parent_id would make its tag its own ancestor.
+
+    ``row`` is the 1-based position of the row among the file's data rows, as
+    in DuplicateFinalIdError.
+    """
+
+    def __init__(self, row: int, parent_id: str, **kargs):
+        super().__init__(**kargs)
+        self.message = _(
+            "Row {row}'s parent_id ({parent_id}) creates a parent cycle."
+        ).format(row=row, parent_id=parent_id)
+
+
+class TagTooDeepError(TagImportError):
+    """
+    Exception raised when the import would leave a tag deeper than the taxonomy allows.
+    """
+
+    def __init__(self, tag_id: str, max_levels: int, **kargs):
+        super().__init__(**kargs)
+        self.message = _(
+            "This import would leave tag {tag_id} more than {max_levels} levels deep."
+        ).format(tag_id=tag_id, max_levels=max_levels)
+
+
 class ImportActionConflict(ImportActionError):
     """
     Exception used when exists a conflict between actions

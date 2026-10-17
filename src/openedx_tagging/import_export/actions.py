@@ -37,15 +37,29 @@ class ImportAction:
 
     Then the actions are executed. Ex. Create the tag on the database
     This is done in `execute`
+
+    `row` is the 1-based position of the action's row among the file's rows, as
+    in the "Row N" of DuplicateFinalIdError. It is None for an action that no row
+    of the file describes, such as a delete or a detach.
+
+    "Pre-import id" and "final id" are used as defined in TagImportPlan.
     """
 
     name = "import_action"
 
-    def __init__(self, taxonomy: Taxonomy, tag: TagItem, index: int, target_pk: int | None = None):
+    def __init__(
+        self,
+        taxonomy: Taxonomy,
+        tag: TagItem,
+        index: int,
+        target_pk: int | None = None,
+        row: int | None = None,
+    ):
         self.taxonomy = taxonomy
         self.tag = tag
         self.index = index
         self.target_pk = target_pk
+        self.row = row
 
     def __repr__(self) -> str:
         return str(_("Action {name} (index={index},id={id})").format(name=self.name, index=self.index, id=self.tag.id))
@@ -103,53 +117,79 @@ class ImportAction:
 
         return None
 
+    @staticmethod
+    def _renamed_to_ids(indexed_actions) -> set[str]:
+        """
+        Return the casefolded final ids that rename rows of this import give to existing tags.
+
+        TagImportPlan stores them once per import. Without that, they are derived from
+        `_vacated_pks`, as for an action built outside a plan.
+        """
+        if "_renamed_to_ids" in indexed_actions:
+            return indexed_actions["_renamed_to_ids"]
+        return {new_id.casefold() for new_id in indexed_actions.get("_vacated_pks", {}).values()}
+
     def _validate_parent(self, indexed_actions) -> ImportActionError | None:
         """
-        Validate that `parent_id` names a tag that will exist once this import finishes.
+        Validate that `parent_id` is the final id of a tag once this import finishes.
 
-        A match against a tag being renamed away in this same import (see
-        `_vacated_pks`) doesn't count as the real parent: it falls through to the
-        same "created or renamed-in this import" check as a brand-new parent. If
-        nothing lands on that vacated id either, the error names the id it was
-        renamed to, instead of the generic "unknown parent" message for a parent
-        never mentioned at all.
+        That is the tag whose pre-import id is `parent_id`, unless this import renames
+        it away (see `_vacated_pks`). A renamed-away id, like a brand-new one, must be
+        given to a tag by a row of this file: a rename onto it (`_vacated_pks` maps
+        every renamed tag to its final id, whatever the row order) or a create action
+        built before this one (TagImportPlan builds a new parent before its
+        children). Even then it must not be the pre-import id of this row's own
+        parent: a row that names it while another row takes that id (a swap) could
+        mean "stay with my parent" or "move under the tag that takes `parent_id`",
+        so it is rejected, with a hint for the second meaning. The error for a
+        renamed-away id names the id it was renamed to, instead of the generic
+        "unknown parent" message for an id never mentioned at all.
         """
         vacated_pks: dict[int, str] = indexed_actions.get("_vacated_pks", {})
-        parent_tag = None
-        is_vacated = False
-        try:
-            # Validates that the parent exists on the taxonomy
-            parent_tag = self.taxonomy.tag_set.get(external_id=self.tag.parent_id)
-            if parent_tag.pk in vacated_pks:
-                is_vacated = True
-                raise Tag.DoesNotExist
-        except Tag.DoesNotExist:
-            # Or if the parent is created or renamed-in on previous actions
-            found = self._search_action(
-                indexed_actions, CreateTag.name, "id", self.tag.parent_id, casefold=True
-            ) or self._search_action(
-                indexed_actions, RenameTagExternalId.name, "id", self.tag.parent_id, casefold=True
-            )
-            if not found:
-                if is_vacated:
-                    # is_vacated is only set after parent_tag was assigned above.
-                    assert parent_tag is not None
-                    new_id = vacated_pks[parent_tag.pk]
-                    return ImportActionError(
-                        action=self,
-                        message=_(
-                            "Parent tag {parent_id} is renamed to {new_id} in this file; "
-                            "use {new_id} as the parent_id."
-                        ).format(parent_id=self.tag.parent_id, new_id=new_id),
-                    )
-                return ImportActionError(
-                    action=self,
-                    message=_(
-                        "Unknown parent tag ({parent_id}). "
-                        "You need to add parent before the child in your file."
-                    ).format(parent_id=self.tag.parent_id),
-                )
-        return None
+        parent_tag = self.taxonomy.tag_set.filter(external_id=self.tag.parent_id).first()
+        new_id = vacated_pks.get(parent_tag.pk) if parent_tag is not None else None
+        if parent_tag is not None and new_id is None:
+            return None  # The parent exists and keeps its id.
+
+        renamed_onto_id = (self.tag.parent_id or "").casefold() in self._renamed_to_ids(indexed_actions)
+        created_with_id = self._search_action(
+            indexed_actions, CreateTag.name, "id", self.tag.parent_id, casefold=True,
+        ) is not None
+        names_own_parents_old_id = parent_tag is not None and self._was_parent_before_import(parent_tag)
+        if (renamed_onto_id or created_with_id) and not names_own_parents_old_id:
+            return None
+        if new_id is not None:
+            message = _(
+                "Parent tag {parent_id} is renamed to {new_id} in this file; "
+                "use {new_id} as the parent_id."
+            ).format(parent_id=self.tag.parent_id, new_id=new_id)
+            if renamed_onto_id or created_with_id:
+                message += " " + _(
+                    "To move under the tag that takes the id {parent_id} in this file instead, "
+                    "import the id changes and the move as two separate files."
+                ).format(parent_id=self.tag.parent_id)
+            if self.row is not None:
+                message = _("Row {row}: {message}").format(row=self.row, message=message)
+            return ImportActionError(action=self, message=message)
+        return ImportActionError(
+            action=self,
+            message=_(
+                "Unknown parent tag ({parent_id}). "
+                "Add a row for the parent to your file."
+            ).format(parent_id=self.tag.parent_id),
+        )
+
+    def _was_parent_before_import(self, parent_tag: Tag) -> bool:
+        """
+        Return whether, before the import, `parent_tag` was the parent of the tag this row describes.
+
+        The tag is looked up by `previous_id` when the row renames it, and by `id`
+        otherwise. A row that describes a tag that does not exist yet has no parent
+        before the import, so the answer is False.
+        """
+        return self.taxonomy.tag_set.filter(
+            external_id=self.tag.previous_id or self.tag.id, parent=parent_tag,
+        ).exists()
 
     def _validate_value(self, indexed_actions) -> ImportActionError | None:
         """
@@ -327,21 +367,39 @@ class UpdateParentTag(ImportAction):
 
     name = "update_parent"
 
-    def __str__(self) -> str:
+    def __init__(
+        self,
+        taxonomy: Taxonomy,
+        tag: TagItem,
+        index: int,
+        target_pk: int | None = None,
+        row: int | None = None,
+    ):
+        super().__init__(taxonomy, tag, index, target_pk=target_pk, row=row)
+        # Describe the change as of the plan, because a DetachTag action may move the
+        # tag to the root before this one runs, and the change would then read as "from None".
         taxonomy_tag = self._get_tag()
-
-        description_str = _("Update the parent of {tag} from parent {old_parent} to {new_parent}").format(
-            tag=taxonomy_tag.display_str(),
-            old_parent=taxonomy_tag.parent.display_str() if taxonomy_tag.parent else None,
-            new_parent=self.tag.parent_id,
+        self._description = str(
+            _("Update the parent of {tag} from parent {old_parent} to {new_parent}").format(
+                tag=taxonomy_tag.display_str(),
+                old_parent=taxonomy_tag.parent.display_str() if taxonomy_tag.parent else None,
+                new_parent=self.tag.parent_id,
+            )
         )
 
-        return str(description_str)
+    def __str__(self) -> str:
+        return self._description
 
     @classmethod
     def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
         """
         This action applies whenever there is a change on the parent.
+
+        A row that names its parent's pre-import id is still a parent change when
+        this import gives that id to another tag: by renaming the parent away
+        from it, or by renaming another tag onto it once the parent is deleted.
+        Otherwise a stale id would skip `_validate_parent`, and a child of a
+        reclaimed id would be lost to the delete phase's promotion.
 
         See ImportAction._resolve_update_target for when this doesn't apply
         regardless of the parent change (a rename_external_id row).
@@ -349,10 +407,17 @@ class UpdateParentTag(ImportAction):
         taxonomy_tag = cls._resolve_update_target(taxonomy, tag)
         if taxonomy_tag is None:
             return False
+        old_parent = taxonomy_tag.parent
+        if old_parent is None:
+            return tag.parent_id is not None
+        if old_parent.external_id != tag.parent_id:
+            return True
+        indexed_actions = indexed_actions or {}
+        vacated_pks: dict[int, str] = indexed_actions.get("_vacated_pks", {})
         return (
-            taxonomy_tag.parent is not None
-            and taxonomy_tag.parent.external_id != tag.parent_id
-        ) or (taxonomy_tag.parent is None and tag.parent_id is not None)
+            old_parent.pk in vacated_pks
+            or old_parent.external_id.casefold() in cls._renamed_to_ids(indexed_actions)
+        )
 
     def validate(self, indexed_actions) -> list[ImportActionError]:
         """
@@ -641,6 +706,56 @@ class StageTagExternalIdForSwap(ImportAction):
         self.taxonomy.tag_set.filter(pk=self.target_pk).update(external_id=placeholder)
 
 
+class DetachTag(ImportAction):
+    """
+    Action to move a tag to the root before the actions that change parents run.
+
+    Synthesized by TagImportPlan._build_detach_actions for every existing tag
+    whose parent changes, not read from a file row. Tag.save checks the depth
+    of each step, and a cycle corrupts the tree silently, so a restructure that
+    is valid as a whole can still go wrong part-way through, depending on the
+    order of the actions. Once every moved tag is at the root, each tag is at
+    or above its final depth and none is an ancestor of its new parent, so the
+    actions that follow can attach tags in any order.
+    """
+
+    name = "detach"
+
+    def __str__(self) -> str:
+        return str(
+            _(
+                "Move tag {tag} to the root first, so that the parent changes "
+                "in this file can run in any order."
+            ).format(tag=self.tag)
+        )
+
+    @classmethod
+    def applies_for(cls, taxonomy: Taxonomy, tag: TagItem, indexed_actions=None) -> bool:
+        """
+        This action is an exception: synthesized in TagImportPlan.generate_actions.
+        """
+        return False
+
+    def validate(self, indexed_actions) -> list[ImportActionError]:
+        """
+        No validations necessary
+        """
+        return []
+
+    def execute(self) -> None:
+        """
+        Moves the tag to the root, with its descendants.
+
+        Looks the tag up by pk: a StageTagExternalIdForSwap action may have
+        moved it onto a placeholder id by now.
+        """
+        # _build_detach_actions only builds this action with a target_pk.
+        assert self.target_pk is not None
+        tag = self.taxonomy.tag_set.get(pk=self.target_pk)
+        tag.parent = None
+        tag.save()
+
+
 class DeleteTag(ImportAction):
     """
     Action for delete a Tag
@@ -718,6 +833,7 @@ available_actions = [
     RenameTagExternalId,
     CreateTag,
     StageTagExternalIdForSwap,
+    DetachTag,
     DeleteTag,
     WithoutChanges,
 ]
