@@ -71,6 +71,8 @@ venv/
 # Example settings to let people quickly get up to speed with testing.
 !.vscode/launch.json.example
 !.vscode/settings.json.example
+# Recommended extensions (only a suggestion; VS Code prompts to install them).
+!.vscode/extensions.json
 
 # Media files (for uploads)
 /media/

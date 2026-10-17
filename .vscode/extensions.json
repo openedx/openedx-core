@@ -1,0 +1,7 @@
+{
+    // Extensions recommended for working on this repo. VS Code will offer to
+    // install these when the folder is opened; nothing is installed automatically.
+    "recommendations": [
+        "charliermarsh.ruff"
+    ]
+}

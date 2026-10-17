@@ -52,6 +52,9 @@ indent = "    "
 line_length = 120
 multi_line_output = 3
 
+[tool.ruff]
+line-length = 120
+
 [tool.setuptools_scm]
 version_scheme = "only-version"
 local_scheme = "no-local-version"
