@@ -1435,16 +1435,28 @@ def _plan_side_effects(
     side_effect_keys: set[tuple[PublishableEntity.ID, PublishableEntity.ID]] = set()
     branch_rows_to_repoint: dict[PublishableEntity.ID, _ChangeRecord] = {}
 
-    # processed_entity_ids holds the entity IDs that we've already calculated
-    # side-effects for. This is to save us from recalculating side-effects for
-    # the same dependency relationships over and over again. So if we're calling
-    # this function in a loop for all the Components in a Unit, we won't be
+    # propagated_entity_ids holds the entity IDs whose dependents we've already
+    # queued up. Each entity's side-effects on *its* dependents only need to be
+    # calculated once, no matter how many different changes end up affecting
+    # it. So if we're processing all the Components in a Unit, we won't be
     # recalculating the Unit's side-effect on its Subsection, and its
-    # Subsection's side-effect on its Section each time through the loop.
-    # It also guards against infinite parent-child relationship loops, though
+    # Subsection's side-effect on its Section each time through the loop. It
+    # also guards against infinite parent-child relationship loops, though
     # those aren't *supposed* to happen anyhow.
-    processed_entity_ids: set[PublishableEntity.ID] = set()
+    #
+    # Note that this only short-circuits the *propagation* from an entity. The
+    # side-effect for each individual (cause, effect) edge is always recorded,
+    # even when the affected entity has already been processed. (An earlier
+    # version of this code skipped the edge as well, so when two sibling Units
+    # under the same Subsection both had changed children, only the first
+    # Unit's side-effect on the Subsection was recorded.)
+    propagated_entity_ids: set[PublishableEntity.ID] = set()
     for original_change in original_changes:
+        if original_change.entity_id in propagated_entity_ids:
+            # We already reached this entity as a side-effect of an earlier
+            # original change, which queued up everything that depends on it.
+            continue
+        propagated_entity_ids.add(original_change.entity_id)
         # This is a stack, so the last affected entity gets processed first.
         changes_and_affected = [
             (original_change, affected) for affected in dependents.get(original_change.entity_id, [])
@@ -1505,17 +1517,15 @@ def _plan_side_effects(
                 side_effect_keys.add(side_effect_key)
                 side_effects.append((change, side_effect_change))
 
-            # Make sure we never re-add the change we just processed when we
-            # queue up the next layer.
-            processed_entity_ids.add(change.entity_id)
-
             # Now we find the next layer up by looking at Drafts or Published
-            # that have ``affected.entity`` as a dependency.
-            changes_and_affected.extend(
-                (side_effect_change, next_affected)
-                for next_affected in dependents.get(affected.entity_id, [])
-                if next_affected.entity_id not in processed_entity_ids
-            )
+            # that have ``affected.entity`` as a dependency, unless we've
+            # already done that for this entity.
+            if affected.entity_id not in propagated_entity_ids:
+                propagated_entity_ids.add(affected.entity_id)
+                changes_and_affected.extend(
+                    (side_effect_change, next_affected)
+                    for next_affected in dependents.get(affected.entity_id, [])
+                )
 
     return new_records, side_effects, branch_rows_to_repoint
 
