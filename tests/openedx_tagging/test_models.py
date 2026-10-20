@@ -613,7 +613,7 @@ class TestObjectTag(TestTagTaxonomyMixin, TestCase):
             == "<ObjectTagTestSubclass> object:id:1: Life on Earth=Bacteria"
         )
 
-    def test_cast_copies_archived_and_deletion_locked(self) -> None:
+    def test_copying_a_tag_via_casting_copies_field_values(self) -> None:
         self.object_tag.archived = True
         self.object_tag.deletion_locked = True
         copy_tag = ObjectTagTestSubclass.cast(self.object_tag)
