@@ -102,6 +102,7 @@ Consequences
 * For two or more releases, the platform supports two storage backends for course Files, and every file-related feature must be tested in both modes.
 * Operators must run (or allow the upgrade to run) the migration before contentstore is removed. Very large instances may need to migrate in batches over several days.
 * Until a course's XBlocks also move out of modulestore, it still needs MongoDB. This ADR only removes MongoDB's role for files.
+* During the migration period, twice as much storage will be required for migrated course assets as the originals will be kept in GridFS while the working copy is stored in object storage (e.g. S3).
 
 Rejected Alternatives
 ---------------------
