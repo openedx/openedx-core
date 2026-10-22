@@ -155,22 +155,34 @@ def _create_leaf_group(
     tag/course pair can hold more than one leaf, one per criterion. The root and course-level
     group names are truncated to fit the name column; they are never shown in the UI.
 
+    An archived root is reactivated in place. Raises ValidationError (keyed "object_id") if the
+    course-level group is archived.
+
     Must run inside a transaction holding the tag row lock.
     """
     name_max_length = CompetencyCriteriaGroup._meta.get_field("name").max_length
-    # Both get_or_create() lookups match archived rows deliberately, so an archived container is
-    # never replaced; rejecting or reactivating it is the archived-group checks' decision.
-    root, _ = CompetencyCriteriaGroup.objects.get_or_create(
+    # Reactivate rather than reject an archived root: it is archived once its last course is, so rejecting
+    # would lock the competency. The throwaway name avoids shadowing the gettext alias ``_``.
+    root, _created = CompetencyCriteriaGroup.objects.get_or_create(
         tag=tag,
         parent=None,
         defaults={"name": f"{tag.value} (root)"[:name_max_length]},
     )
-    course_level_group, _ = CompetencyCriteriaGroup.objects.get_or_create(
+    if root.archived:
+        # save(), not update(), so simple_history records the reactivation.
+        root.archived = False
+        root.save()
+    course_level_group, _created = CompetencyCriteriaGroup.objects.get_or_create(
         tag=tag,
         course=course_run,
         parent=root,
         defaults={"name": f"{tag.value} — {course_run.title}"[:name_max_length]},
     )
+    if course_level_group.archived:
+        raise ValidationError({"object_id": _(
+            "The course-level CompetencyCriteriaGroup for this competency and course is archived "
+            "and no longer accepts new associations."
+        )})
     return CompetencyCriteriaGroup.objects.create(
         tag=tag,
         course=None,
@@ -187,8 +199,8 @@ def resolve_supplied_leaf_group(group_id: int, tag: Tag, course_run: CourseRun) 
     and archive behavior may change this function's shape without a deprecation cycle.
 
     Raises CompetencyCriteriaGroup.DoesNotExist if it doesn't exist, or ValidationError (keyed
-    "group_id") if it isn't a leaf, doesn't belong to ``tag``, or its course doesn't match
-    ``course_run``.
+    "group_id") if it isn't a leaf, doesn't belong to ``tag``, has a course that doesn't match
+    ``course_run``, or is archived.
     """
     group = CompetencyCriteriaGroup.objects.get(pk=group_id)
     if group.parent_id is None or group.course_id is not None:
@@ -197,6 +209,11 @@ def resolve_supplied_leaf_group(group_id: int, tag: Tag, course_run: CourseRun) 
         raise ValidationError({"group_id": _("group_id must belong to the given competency tag.")})
     if group.parent.course_id != course_run.id:
         raise ValidationError({"group_id": _("group_id must belong to the given course.")})
+    # Archiving never leaves an active group under an archived one, so the leaf's own flag is enough.
+    if group.archived:
+        raise ValidationError({"group_id": _(
+            "group_id references an archived CompetencyCriteriaGroup, which no longer accepts new associations."
+        )})
     return group
 
 
@@ -272,7 +289,9 @@ def create_competency_criterion(
 
 def _reject_duplicate_criterion(tag: Tag, object_id: str, group_id: int | None) -> None:
     """
-    Raise ValidationError if ``object_id`` is already associated with ``tag`` (in ``group_id``, when supplied).
+    Raise ValidationError if an active criterion already associates ``object_id`` with ``tag``.
+
+    The check is scoped to ``group_id`` when supplied.
 
     Must run inside a transaction holding the tag row lock.
     """
@@ -282,7 +301,8 @@ def _reject_duplicate_criterion(tag: Tag, object_id: str, group_id: int | None) 
     ).first()
     if existing_object_tag is None:
         return
-    duplicate_criteria = CompetencyCriterion.objects.filter(object_tag=existing_object_tag)
+    # An archived criterion keeps its ObjectTag for history; it must not block a fresh association.
+    duplicate_criteria = CompetencyCriterion.objects.filter(object_tag=existing_object_tag, archived=False)
     if group_id is None:
         # Can't know which group slot is intended, so any existing criterion is a duplicate.
         if duplicate_criteria.exists():
@@ -348,6 +368,10 @@ def associate_competency_criterion(
     duplicate. Branches on ``group_id`` to resolve or derive/create a leaf, then creates the
     criterion, all inside one transaction so a downstream failure rolls back any group just
     created.
+
+    An archived leaf group (``group_id``) or an archived course-level group is rejected. When no
+    ``group_id`` is supplied, an archived root group is reactivated. An archived criterion doesn't
+    count as a duplicate.
 
     Raises ValidationError (never DRF's) on rejected input, including an invalid combination of
     rule fields or a missing or archived ``rule_profile_id``; Tag.DoesNotExist if ``tag_id``

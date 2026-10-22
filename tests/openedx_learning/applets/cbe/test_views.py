@@ -547,6 +547,91 @@ def test_duplicate_association_via_the_derive_path_is_rejected_before_creating_a
     assert CompetencyCriteriaGroup.objects.count() == groups_before
 
 
+def test_supplied_archived_leaf_group_is_rejected(user_client: APIClient, tag: Tag, course_run: CourseRun) -> None:
+    """The 400 is keyed group_id, and no criterion is created."""
+    leaf = _create_leaf_group(tag, course_run)
+    leaf.archived = True
+    leaf.save()
+    object_id = usage_key(course_run, "p1")
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": object_id, "group_id": leaf.id}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "archived" in str(response.data["group_id"])
+    assert not CompetencyCriterion.objects.exists()
+
+
+def test_derive_path_with_an_archived_course_level_group_is_rejected(
+    user_client: APIClient, tag: Tag, course_run: CourseRun,
+) -> None:
+    """With no group_id, an archived course-level group for the object's course is a 400 and creates nothing."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root, archived=True)
+    groups_before = CompetencyCriteriaGroup.objects.count()
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p1")}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "archived" in str(response.data["object_id"])
+    assert CompetencyCriteriaGroup.objects.count() == groups_before
+    assert not CompetencyCriterion.objects.exists()
+
+
+def test_derive_path_reactivates_an_archived_root_instead_of_creating_a_second_one(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, organization: Organization,
+) -> None:
+    """An archived root whose only course-level group (another course) is archived is reactivated and reused."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, archived=True)
+    other_course_level = CompetencyCriteriaGroup.objects.create(
+        tag=tag, course=other_course_run, parent=root, archived=True,
+    )
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p1")}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+    root.refresh_from_db()
+    assert root.archived is False
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, parent__isnull=True).count() == 1
+    criterion = CompetencyCriterion.objects.get(pk=response.data["id"])
+    assert criterion.group.parent is not None
+    assert criterion.group.parent.parent_id == root.id
+    assert criterion.group.parent.course_id == course_run.id
+    other_course_level.refresh_from_db()
+    assert other_course_level.archived is True
+
+
+def test_re_association_while_a_sibling_keeps_the_course_level_group_alive_is_created(
+    user_client: APIClient, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    A fresh association of an archived (tag, object_id) is created while a sibling keeps the course-level group alive.
+
+    The archive state mirrors the cascade: the first criterion and its leaf are archived, the sibling's leaf is not.
+    """
+    object_id = usage_key(course_run, "p1")
+    first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
+    sibling = user_client.post(criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p2")}, format="json")
+    assert first.status_code == status.HTTP_201_CREATED
+    assert sibling.status_code == status.HTTP_201_CREATED
+    criterion = CompetencyCriterion.objects.get(pk=first.data["id"])
+    criterion.archived = True
+    criterion.save()
+    criterion.group.archived = True
+    criterion.group.save()
+
+    response = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
+
+    assert response.status_code == status.HTTP_201_CREATED
+    assert response.data["id"] != first.data["id"]
+
+
 def test_all_null_rule_fields_resolve_to_the_system_default_profile_id(
     user_client: APIClient, tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
