@@ -166,10 +166,20 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
 
     def test_get_children_tags_archived_parent(self) -> None:
         Tag.objects.filter(taxonomy=self.taxonomy, value="Chordata").update(archived=True)
+        with self.assertRaises(Tag.IsArchived):
+            tagging_api.get_children_tags(self.taxonomy, "Chordata")
+        with self.assertRaises(Tag.IsArchived):  # The full-depth query behaves the same way
+            self.taxonomy.get_filtered_tags(parent_tag_value="Chordata")
+
+    def test_archived_parent_error_is_a_does_not_exist_error(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Chordata").update(archived=True)
+        # Existing handlers for a missing tag keep working for an archived one:
         with self.assertRaises(Tag.DoesNotExist):
             tagging_api.get_children_tags(self.taxonomy, "Chordata")
-        with self.assertRaises(Tag.DoesNotExist):  # The full-depth query behaves the same way
-            self.taxonomy.get_filtered_tags(parent_tag_value="Chordata")
+        # But a tag that never existed is not reported as archived:
+        with self.assertRaises(Tag.DoesNotExist) as missing:
+            tagging_api.get_children_tags(self.taxonomy, "No such tag")
+        assert not isinstance(missing.exception, Tag.IsArchived)
 
     def test_search_tags_excludes_archived(self) -> None:
         Tag.objects.filter(taxonomy=self.taxonomy, value="Eubacteria").update(archived=True)
@@ -1063,6 +1073,19 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
         assert not get_tag("DPANN").archived  # ...nor the tag is archived
         assert not tagging_api.get_object_tags("obj1").exists()
 
+    def test_get_object_tags_excludes_archived_free_text_taxonomy(self) -> None:
+        # Only the taxonomy is archived: a free text object tag has no tag, so no other condition can hide it.
+        self.free_text_taxonomy.enabled = True
+        self.free_text_taxonomy.save()
+        tagging_api.tag_object(object_id="obj1", taxonomy=self.free_text_taxonomy, tags=["free"])
+        assert tagging_api.get_object_tags("obj1").exists()
+        assert tagging_api.get_object_tag_counts("obj1") == {"obj1": 1}
+
+        Taxonomy.objects.filter(pk=self.free_text_taxonomy.pk).update(archived=True)
+        assert not ObjectTag.objects.get(object_id="obj1").archived
+        assert not tagging_api.get_object_tags("obj1").exists()
+        assert tagging_api.get_object_tag_counts("obj1") == {}
+
     def test_archived_records_still_resolve_through_foreign_keys(self) -> None:
         tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["DPANN"])
         Tag.objects.filter(taxonomy=self.taxonomy, value="DPANN").update(archived=True)
@@ -1375,3 +1398,18 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
         tag_4 = tagging_api.add_tag_to_taxonomy(taxonomy, "Patty - depth 5", parent_tag_value=tag_4.value)
         with pytest.raises(ValidationError, match="Cannot create tags more than 6 levels deep."):
             tagging_api.add_tag_to_taxonomy(taxonomy, "Deep - depth 6", parent_tag_value=tag_4.value)
+
+    def test_add_tag_to_taxonomy_archived_taxonomy(self) -> None:
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        self.taxonomy.refresh_from_db()
+        tag_count = self.taxonomy.tag_set.count()
+        with self.assertRaisesRegex(ValueError, "archived"):
+            tagging_api.add_tag_to_taxonomy(self.taxonomy, "New tag")
+        assert self.taxonomy.tag_set.count() == tag_count
+
+    def test_add_tag_to_taxonomy_archived_parent(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Animalia").update(archived=True)
+        tag_count = self.taxonomy.tag_set.count()
+        with self.assertRaisesRegex(ValueError, "archived"):
+            tagging_api.add_tag_to_taxonomy(self.taxonomy, "New tag", parent_tag_value="Animalia")
+        assert self.taxonomy.tag_set.count() == tag_count

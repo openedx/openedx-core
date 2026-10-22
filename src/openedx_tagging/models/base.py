@@ -5,9 +5,9 @@ Tagging app base data models
 from __future__ import annotations
 
 import re
-from typing import Self, cast
+from typing import ClassVar, Self, cast
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models
 from django.db.models import F, Value
 from django.db.models.functions import Concat, Length, Replace, Substr
@@ -150,6 +150,9 @@ class Tag(models.Model):
 
     objects = TagQuerySet.as_manager()
 
+    # Set right after the class body, because it has to subclass Tag.DoesNotExist, which Django creates with the class.
+    IsArchived: ClassVar[type[ObjectDoesNotExist]]
+
     class Meta:
         indexes = [
             models.Index(fields=["taxonomy", "value"]),
@@ -275,8 +278,14 @@ class Tag(models.Model):
 
         super().save(*args, **kwargs)
 
-        # Cascade lineage (and depth, if it changed) to all descendants in a single UPDATE.
-        if old_values is not None and old_values["lineage"] and old_values["lineage"] != self.lineage:
+        # Cascade lineage (and depth, if it changed) to all descendants in a single UPDATE. Tags without a taxonomy
+        # have no tree to cascade into, and filtering on taxonomy=None would match unrelated taxonomy-less tags.
+        if (
+            old_values is not None
+            and self.taxonomy_id is not None
+            and old_values["lineage"]
+            and old_values["lineage"] != self.lineage
+        ):
             depth_delta = self.depth - old_values["depth"]
             update_kwargs: dict = {
                 # Expression to compute the new lineage for each descendent:
@@ -312,6 +321,18 @@ class Tag(models.Model):
 
         if self.external_id and "\t" in self.external_id:
             raise ValidationError("Tag external ID cannot contain a TAB character.")
+
+
+class TagIsArchived(Tag.DoesNotExist):
+    """
+    Raised when a tag exists but is archived, or belongs to an archived taxonomy.
+
+    Subclasses ``Tag.DoesNotExist`` so that code that treats an archived tag as missing keeps working,
+    while callers that care about the difference can catch this first. Reachable as ``Tag.IsArchived``.
+    """
+
+
+Tag.IsArchived = TagIsArchived
 
 
 class Taxonomy(models.Model):
@@ -434,7 +455,8 @@ class Taxonomy(models.Model):
         Use `excluded_values` to exclude tags with that value (and their parents, if applicable) from the results.
 
         Archived tags, and every tag of an archived taxonomy, are excluded. For free text taxonomies, values from
-        archived object tags are excluded. Raises Tag.DoesNotExist if `parent_tag_value` is missing or archived.
+        archived object tags are excluded. Raises Tag.DoesNotExist if `parent_tag_value` is missing, or its subclass
+        Tag.IsArchived if that tag or this taxonomy is archived.
 
         Note: This is mostly an 'internal' API and generally code outside of openedx_tagging
         should use the APIs in openedx_tagging.api which in turn use this.
@@ -467,13 +489,15 @@ class Taxonomy(models.Model):
 
     def _unarchived_tag_for_value(self, value: str) -> Tag:
         """
-        Like tag_for_value(), but also raises Tag.DoesNotExist if the tag or this taxonomy is archived.
+        Like tag_for_value(), but also raises Tag.IsArchived if the tag or this taxonomy is archived.
+
+        Tag.IsArchived subclasses Tag.DoesNotExist, so callers that treat archived tags as missing can ignore it.
 
         Kept separate from tag_for_value() because tagging an object needs to resolve archived tags.
         """
         tag = self.tag_for_value(value)
         if tag.archived or self.archived:
-            raise Tag.DoesNotExist(f"Tag '{value}' is archived or belongs to an archived taxonomy.")
+            raise Tag.IsArchived(f"Tag '{value}' is archived or belongs to an archived taxonomy.")
         return tag
 
     def _get_filtered_tags_free_text(
@@ -614,6 +638,8 @@ class Taxonomy(models.Model):
         Add new Tag to Taxonomy. If an existing Tag with the `tag_value` already
         exists in the Taxonomy, an exception is raised, otherwise the newly
         created Tag is returned
+
+        Raises ValueError if the taxonomy is archived, or if `parent_tag_value` is an archived tag.
         """
         if self.allow_free_text:
             raise ValueError(
@@ -623,6 +649,11 @@ class Taxonomy(models.Model):
         if self.read_only:
             raise ValueError(
                 "add_tag() doesn't work for read-only taxonomies. They cannot be modified."
+            )
+
+        if self.archived:
+            raise ValueError(
+                "add_tag() doesn't work for archived taxonomies. They cannot be modified."
             )
 
         if self.tag_set.filter(value__iexact=tag_value).exists():
@@ -636,6 +667,8 @@ class Taxonomy(models.Model):
             # Get parent tag from taxonomy, raises Tag.DoesNotExist if doesn't
             # belong to taxonomy
             parent = self.tag_set.get(value__iexact=parent_tag_value)
+            if parent.archived:
+                raise ValueError(f"Cannot add a tag under the archived tag '{parent.value}'.")
 
         tag = Tag.objects.create(
             taxonomy=self, value=tag_value, parent=parent, external_id=external_id
@@ -661,10 +694,14 @@ class Taxonomy(models.Model):
                 "update_tag() doesn't work for read-only taxonomies. They cannot be modified."
             )
 
+        # Checked before the lookup so that every tag name is rejected the same way in an archived taxonomy.
+        if self.archived:
+            raise ValueError("update_tag() doesn't work for archived taxonomies or tags. They cannot be modified.")
+
         # Update Tag instance with new value, raises Tag.DoesNotExist if
         # tag doesn't belong to taxonomy
         tag_to_update = self.tag_set.get(value__iexact=tag)
-        if self.archived or tag_to_update.archived:
+        if tag_to_update.archived:
             raise ValueError("update_tag() doesn't work for archived taxonomies or tags. They cannot be modified.")
         tag_to_update.value = new_value
         tag_to_update.save()

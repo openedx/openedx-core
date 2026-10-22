@@ -164,7 +164,7 @@ def get_children_tags(
     """
     Returns a QuerySet of unarchived children tags for the given parent tag.
 
-    Raises Tag.DoesNotExist if the parent tag does not exist or is archived.
+    Raises Tag.DoesNotExist if the parent tag does not exist, or Tag.IsArchived if it is archived.
 
     Note that if the taxonomy allows free-text tags, then the returned list will be empty.
     """

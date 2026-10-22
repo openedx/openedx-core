@@ -321,13 +321,27 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
         assert response.status_code == status.HTTP_200_OK
         assert response.data["read_only"] is True
 
-    def test_detail_taxonomy_archived_404(self) -> None:
+    def test_get_archived_taxonomy_responds_404(self) -> None:
         taxonomy = api.create_taxonomy(name="Archived taxonomy")
         Taxonomy.objects.filter(pk=taxonomy.pk).update(archived=True)
 
         self.client.force_authenticate(user=self.staff)
         response = self.client.get(TAXONOMY_DETAIL_URL.format(pk=taxonomy.pk))
         assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_get_taxonomy_tags_count_excludes_archived(self) -> None:
+        """
+        Only the list view annotates `tags_count`, so this covers the serializer's fallback count.
+        """
+        taxonomy = api.create_taxonomy(name="Taxonomy with archived tags")
+        for i in range(3):
+            Tag.objects.create(taxonomy=taxonomy, value=f"Tag {i}")
+        Tag.objects.filter(taxonomy=taxonomy, value="Tag 0").update(archived=True)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.get(TAXONOMY_DETAIL_URL.format(pk=taxonomy.pk))
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["tags_count"] == 2
 
     def test_detail_taxonomy_404(self) -> None:
         url = TAXONOMY_DETAIL_URL.format(pk=123123)
@@ -520,7 +534,7 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
         assert response.data["name"] == "new name"
         assert response.data["read_only"] == (not read_only)
 
-    def test_update_taxonomy_archived(self):
+    def test_update_archived_taxonomy_is_400(self):
         taxonomy = api.create_taxonomy(name="Archived taxonomy")
         Taxonomy.objects.filter(pk=taxonomy.pk).update(archived=True)
 
@@ -589,7 +603,7 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
         assert response.status_code == status.HTTP_200_OK
         assert response.data["read_only"] == (not read_only)
 
-    def test_patch_taxonomy_archived(self):
+    def test_patch_archived_taxonomy_is_400(self):
         taxonomy = api.create_taxonomy(name="Archived taxonomy")
         Taxonomy.objects.filter(pk=taxonomy.pk).update(archived=True)
 
@@ -630,6 +644,18 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
             response = self.client.get(url)
             assert response.status_code == status.HTTP_404_NOT_FOUND
 
+    def test_delete_archived_taxonomy(self):
+        """
+        Deleting an archived taxonomy still works. Archived deletion rules are owned by a separate ticket (#780).
+        """
+        taxonomy = api.create_taxonomy(name="Archived taxonomy")
+        Taxonomy.objects.filter(pk=taxonomy.pk).update(archived=True)
+
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.delete(TAXONOMY_DETAIL_URL.format(pk=taxonomy.pk))
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert not Taxonomy.objects.filter(pk=taxonomy.pk).exists()
+
     def test_delete_taxonomy_404(self):
         url = TAXONOMY_DETAIL_URL.format(pk=123123)
 
@@ -637,7 +663,7 @@ class TestTaxonomyViewSet(TestTaxonomyViewMixin):
         response = self.client.delete(url)
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_export_taxonomy_archived_404(self):
+    def test_export_archived_taxonomy_responds_404(self):
         taxonomy = api.create_taxonomy(name="Archived taxonomy")
         api.add_tag_to_taxonomy(taxonomy=taxonomy, tag="Tag 1")
         Taxonomy.objects.filter(pk=taxonomy.pk).update(archived=True)
@@ -1891,6 +1917,16 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         response = self.client.get(f"{self.small_taxonomy_url}?parent_tag=Chordata&full_depth_threshold=1000")
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
+    def test_list_full_depth_excludes_archived_descendant(self):
+        self.client.force_authenticate(user=self.staff)
+        Tag.objects.filter(taxonomy=self.small_taxonomy, value="Mammalia").update(archived=True)
+
+        response = self.client.get(f"{self.small_taxonomy_url}?parent_tag=Animalia&full_depth_threshold=1000")
+        assert response.status_code == status.HTTP_200_OK
+        values = [tag["value"] for tag in response.data["results"]]
+        assert "Chordata" in values
+        assert "Mammalia" not in values
+
     def test_list_archived_taxonomy_404(self):
         self.client.force_authenticate(user=self.staff)
         Taxonomy.objects.filter(pk=self.small_taxonomy.pk).update(archived=True)
@@ -2535,7 +2571,7 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         object_tag_3.refresh_from_db()
         self.assertEqual(object_tag_3.value, updated_tag_value)
 
-    def test_update_tag_in_taxonomy_archived_tag(self):
+    def test_update_tag_in_taxonomy_archived_tag_is_400(self):
         self.client.force_authenticate(user=self.staff)
         fungi = Tag.objects.get(taxonomy=self.small_taxonomy, value="Fungi")
         Tag.objects.filter(pk=fungi.pk).update(archived=True)
@@ -2548,7 +2584,7 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         fungi.refresh_from_db()
         assert fungi.value == "Fungi"
 
-    def test_update_tag_in_taxonomy_archived_taxonomy(self):
+    def test_update_tag_in_taxonomy_archived_taxonomy_is_400(self):
         self.client.force_authenticate(user=self.staff)
         fungi = Tag.objects.get(taxonomy=self.small_taxonomy, value="Fungi")
         Taxonomy.objects.filter(pk=self.small_taxonomy.pk).update(archived=True)  # The tag itself stays unarchived
@@ -2561,14 +2597,48 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
             fungi.refresh_from_db()
             assert fungi.value == "Fungi"
 
-    def test_create_tag_in_archived_taxonomy_404(self):
+    def test_create_tag_in_archived_taxonomy_is_400(self):
         self.client.force_authenticate(user=self.staff)
         Taxonomy.objects.filter(pk=self.small_taxonomy.pk).update(archived=True)
         tag_count = self.small_taxonomy.tag_set.count()
 
         response = self.client.post(self.small_taxonomy_url, {"tag": "New Tag"}, format="json")
-        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "archived" in response.content.decode()
         assert self.small_taxonomy.tag_set.count() == tag_count
+        assert not self.small_taxonomy.tag_set.filter(value="New Tag").exists()
+
+    def test_create_tag_under_archived_parent_is_400(self):
+        self.client.force_authenticate(user=self.staff)
+        Tag.objects.filter(taxonomy=self.small_taxonomy, value="Animalia").update(archived=True)
+
+        response = self.client.post(
+            self.small_taxonomy_url, {"tag": "New Tag", "parent_tag_value": "Animalia"}, format="json"
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "archived" in response.content.decode()
+        assert not self.small_taxonomy.tag_set.filter(value="New Tag").exists()
+
+    def test_update_missing_tag_in_archived_taxonomy_is_400(self):
+        self.client.force_authenticate(user=self.staff)
+        Taxonomy.objects.filter(pk=self.small_taxonomy.pk).update(archived=True)
+
+        response = self.client.put(
+            self.small_taxonomy_url, {"tag": "No such tag", "updated_tag_value": "Anything"}, format="json"
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "archived" in response.content.decode()
+
+    def test_delete_tag_in_archived_taxonomy_is_404(self):
+        """
+        Deleting tags uses the archive-aware lookup. Archived deletion rules are owned by a separate ticket (#780).
+        """
+        self.client.force_authenticate(user=self.staff)
+        Taxonomy.objects.filter(pk=self.small_taxonomy.pk).update(archived=True)
+
+        response = self.client.delete(self.small_taxonomy_url, {"tags": ["Fungi"], "with_subtags": True}, format="json")
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+        assert self.small_taxonomy.tag_set.filter(value="Fungi").exists()
 
     def test_update_tag_in_taxonomy_with_invalid_tag(self):
         self.client.force_authenticate(user=self.staff)
@@ -3613,6 +3683,20 @@ class TestImportTagsView(ImportTaxonomyMixin, APITestCase):
         assert response.data["plan"] == expected_plan
 
         self._check_taxonomy_not_changed()
+
+    def test_import_archived_taxonomy_is_400(self) -> None:
+        """
+        Both the import and its plan are rejected for an archived taxonomy, and its tags stay as they were.
+        """
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        self.client.force_authenticate(user=self.staff)
+
+        for url in (TAXONOMY_TAGS_IMPORT_URL, TAXONOMY_TAGS_IMPORT_PLAN_URL):
+            file = self._get_file([{"id": "tag_1", "value": "Tag 1"}], "json")
+            response = self.client.put(url.format(pk=self.taxonomy.id), {"file": file}, format="multipart")
+            assert response.status_code == status.HTTP_400_BAD_REQUEST
+            assert "This taxonomy is archived and cannot be edited." in str(response.data)
+            assert set(self.taxonomy.tag_set.values_list("value", flat=True)) == {"Old tag 1", "Old tag 2"}
 
     def test_import_no_file(self) -> None:
         """
