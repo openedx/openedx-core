@@ -76,25 +76,22 @@ def test_archive_path_leaves_the_row_and_its_object_tag_in_place(
     assert ObjectTag.objects.filter(id=object_tag.id).exists()
 
 
-def test_status_committed_after_the_check_falls_back_to_archive(
+def test_status_on_the_criterion_missed_by_the_first_check_archives_it(
     user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
 ) -> None:
     """
-    A status row that appears between the status check and the delete makes the PROTECT foreign
-    key refuse the delete; the attempt rolls back and the criterion is archived instead, with
-    nothing removed along the way.
+    The criterion has a status row, but the first status check misses it. The PROTECT foreign key
+    refuses the delete, the attempt rolls back, and the fallback finds the status and archives the
+    criterion, cascading the archive to its group and leaving the object_tag in place.
     """
     group = CompetencyCriteriaGroup.objects.create(tag=tag)
     criterion = _make_criterion(group, object_tag, default_rule_profile)
-    real_delete = CompetencyCriterion.delete
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
 
-    def _delete_after_a_status_appears(self, *args, **kwargs):
-        StudentCompetencyCriterionStatus.objects.create(
-            user=user, criterion=self, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
-        )
-        return real_delete(self, *args, **kwargs)
-
-    with mock.patch.object(CompetencyCriterion, "delete", autospec=True, side_effect=_delete_after_a_status_appears):
+    # Call 1 is the check inside the transaction, call 2 is the fallback re-check.
+    with mock.patch("openedx_learning.applets.cbe.api._criterion_has_status", side_effect=[False, True]):
         result = delete_competency_criterion(criterion.id)
 
     assert result.id == criterion.id
@@ -106,20 +103,55 @@ def test_status_committed_after_the_check_falls_back_to_archive(
     assert ObjectTag.objects.filter(id=object_tag.id).exists()
 
 
-def test_integrity_error_on_the_delete_falls_back_to_archive(
+def test_status_on_an_ancestor_missed_once_archives_only_the_ancestor(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    The leaf group has a status row, but the cascade's first check misses it, so the group delete is
+    refused. The criterion itself has no status, so the fallback does not archive it; the retry sees
+    the status, archives the leaf group and its parent, and the criterion is still hard-deleted.
+    If the fallback archived unconditionally, the criterion row would survive and this would fail.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    criterion = _make_criterion(leaf, object_tag, default_rule_profile)
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=leaf, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    # Call 1 is the first cascade at the leaf group, call 2 is the retry's cascade.
+    with mock.patch("openedx_learning.applets.cbe.api._group_has_status", side_effect=[False, True]):
+        result = delete_competency_criterion(criterion.id)
+
+    assert result.archived is False
+    assert not CompetencyCriterion.objects.filter(id=criterion.id).exists()
+    assert not ObjectTag.objects.filter(id=object_tag.id).exists()
+    leaf.refresh_from_db()
+    assert leaf.archived is True
+    root.refresh_from_db()
+    assert root.archived is True
+
+
+def test_unrelated_integrity_error_propagates_without_archiving(
     tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """A backend that reports the PROTECT violation as an IntegrityError gets the same archive fallback."""
+    """
+    An IntegrityError from the object_tag cleanup, with no status anywhere, is retried once and then
+    propagates. The criterion is not archived and its group is unchanged.
+    """
     group = CompetencyCriteriaGroup.objects.create(tag=tag)
     criterion = _make_criterion(group, object_tag, default_rule_profile)
 
-    with mock.patch.object(CompetencyCriterion, "delete", autospec=True, side_effect=IntegrityError):
-        result = delete_competency_criterion(criterion.id)
+    with mock.patch("openedx_learning.applets.cbe.api.tag_object", side_effect=IntegrityError) as tag_object:
+        with pytest.raises(IntegrityError):
+            delete_competency_criterion(criterion.id)
 
-    assert result.archived is True
+    assert tag_object.call_count == 2
+
     criterion.refresh_from_db()
-    assert criterion.archived is True
-    assert ObjectTag.objects.filter(id=object_tag.id).exists()
+    assert criterion.archived is False
+    group.refresh_from_db()
+    assert group.archived is False
 
 
 def test_repeat_call_on_an_already_archived_criterion_is_idempotent(
