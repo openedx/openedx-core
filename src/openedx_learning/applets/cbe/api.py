@@ -10,8 +10,8 @@ from decimal import Decimal
 from typing import Any, Iterable, Literal, Sequence, cast
 
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
-from django.db import IntegrityError, connection, transaction
-from django.db.models import F, ProtectedError, Q, QuerySet
+from django.db import connection, transaction
+from django.db.models import F, Q, QuerySet
 from django.db.transaction import TransactionManagementError
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
@@ -889,7 +889,7 @@ def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete",
     if has_live_child:
         return
     if event == "delete" and not group.criteria.exists() and not group.child_groups.exists():
-        if _group_has_status(group.id):
+        if _group_has_learner_progress(group.id):
             group.archived = True
             group.save()
             next_event: Literal["delete", "archive"] = "archive"
@@ -912,36 +912,24 @@ def _archive_criterion(criterion: CompetencyCriterion) -> None:
     _cascade_from_group(criterion.group, "archive")
 
 
-def _criterion_has_status(criterion_id: int) -> bool:
+def _criterion_has_learner_progress(criterion_id: int) -> bool:
     """Return whether a learner status row references ``criterion_id``."""
     return StudentCompetencyCriterionStatus.objects.filter(criterion_id=criterion_id).exists()
 
 
-def _group_has_status(group_id: int) -> bool:
+def _group_has_learner_progress(group_id: int) -> bool:
     """Return whether a learner group-level status row references ``group_id``."""
     return StudentCompetencyCriteriaGroupStatus.objects.filter(group_id=group_id).exists()
 
 
-def _remove_competency_criterion(criterion_id: int) -> CriterionDeletionResult:
-    """Run one all-or-nothing attempt to hard-delete or archive ``criterion_id``."""
-    with transaction.atomic():
-        # The lock makes a concurrent status insert for this criterion wait for this transaction,
-        # since inserting a row that references a locked row blocks on MySQL and PostgreSQL.
-        criterion = CompetencyCriterion.objects.select_for_update().get(pk=criterion_id)
-        if _criterion_has_status(criterion_id):
-            _archive_criterion(criterion)
-            return CriterionDeletionResult(id=criterion_id, archived=True)
-        group = criterion.group
-        object_tag = criterion.object_tag
-        criterion.delete()
-        if not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists():
-            existing_values = [
-                t.value for t in get_object_tags(object_tag.object_id, taxonomy_id=object_tag.taxonomy_id)
-                if t.value != group.tag.value
-            ]
-            tag_object(object_tag.object_id, group.tag.taxonomy, existing_values)
-        _cascade_from_group(group, "delete")
-        return CriterionDeletionResult(id=criterion_id, archived=False)
+def _lineage_group_ids(group: CompetencyCriteriaGroup) -> list[int]:
+    """Return the ids of ``group`` and every ancestor up to the root, one query per level."""
+    ids = [group.pk]
+    parent_id = group.parent_id
+    while parent_id is not None:
+        ids.append(parent_id)
+        parent_id = CompetencyCriteriaGroup.objects.values_list("parent_id", flat=True).get(pk=parent_id)
+    return ids
 
 
 def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) -> CriterionDeletionResult:
@@ -959,14 +947,14 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     cascaded in turn: hard-deleted if it carries no group-level status of its own, archived
     otherwise. See ADR-0002 Decision 2.
 
-    If the hard delete is refused, the attempt rolls back and the criterion is archived only if a
-    learner status row references the criterion itself, so the result reports archived=True. Otherwise
-    the refusal came from elsewhere, such as an ancestor group that gained a status after the cascade
-    checked it, so the delete is retried once. A failure on the retry propagates to the caller.
+    Raises CompetencyCriterion.DoesNotExist if no such criterion exists (including one deleted
+    concurrently) and PermissionDenied if ``user`` may not tag the criterion's object.
 
-    Raises CompetencyCriterion.DoesNotExist if no such criterion exists, PermissionDenied if
-    ``user`` may not tag the criterion's object, and ProtectedError or IntegrityError if the
-    retry is refused too.
+    The whole operation runs in one transaction that locks the competency's Tag, then the
+    criterion's group and every ancestor group, then the criterion. A concurrent create for the
+    same competency waits on the Tag lock. A learner-progress insert on the criterion or on any
+    ancestor group waits on that row's lock. The progress checks therefore cannot go stale, so
+    no fallback or retry is needed.
     """
     criterion = CompetencyCriterion.objects.select_related("group__tag__taxonomy", "object_tag").get(pk=criterion_id)
     # A group's tag is always a competency tag, so its taxonomy is always set.
@@ -976,17 +964,26 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     # has_perm object argument as a Model.
     if not user.has_perm("oel_tagging.can_tag_object", cast(Any, perm_obj)):
         raise PermissionDenied()
-    try:
-        return _remove_competency_criterion(criterion_id)
-    except (ProtectedError, IntegrityError):
-        # The refusal may come from the criterion, an ancestor group, or the tag cleanup. Only a
-        # status on the criterion itself justifies archiving it.
-        with transaction.atomic():
-            criterion = CompetencyCriterion.objects.select_for_update().get(pk=criterion_id)
-            if _criterion_has_status(criterion_id):
-                _archive_criterion(criterion)
-                return CriterionDeletionResult(id=criterion_id, archived=True)
-    # No status on the criterion. If the refusal came from an ancestor status committed meanwhile,
-    # the retry's cascade now sees it and archives only that ancestor; any other failure repeats
-    # and propagates.
-    return _remove_competency_criterion(criterion_id)
+    tag_id = criterion.group.tag_id
+    # Tree changes are serialized by the Tag lock, so reading the lineage before taking it is safe.
+    lineage_ids = _lineage_group_ids(criterion.group)
+    with transaction.atomic():
+        Tag.objects.select_for_update().get(pk=tag_id)
+        # Evaluated so the locks are taken now, in primary-key order to avoid deadlocks between writers.
+        list(CompetencyCriteriaGroup.objects.select_for_update().filter(pk__in=lineage_ids).order_by("pk"))
+        # A concurrent delete may have won; DoesNotExist propagates and the view maps it to 404.
+        criterion = CompetencyCriterion.objects.select_for_update().get(pk=criterion_id)
+        if _criterion_has_learner_progress(criterion_id):
+            _archive_criterion(criterion)
+            return CriterionDeletionResult(id=criterion_id, archived=True)
+        group = criterion.group
+        object_tag = criterion.object_tag
+        criterion.delete()
+        if not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists():
+            existing_values = [
+                t.value for t in get_object_tags(object_tag.object_id, taxonomy_id=object_tag.taxonomy_id)
+                if t.value != group.tag.value
+            ]
+            tag_object(object_tag.object_id, group.tag.taxonomy, existing_values)
+        _cascade_from_group(group, "delete")
+        return CriterionDeletionResult(id=criterion_id, archived=False)
