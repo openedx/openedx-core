@@ -874,14 +874,26 @@ def update_competency_criteria_group(
         return group
 
 
-def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete", "archive"]) -> None:
+def _archive_group(group: CompetencyCriteriaGroup, user: UserType) -> None:
+    """Archive ``group``, writing only the flag and recording ``user`` in its history."""
+    group.archived = True
+    # Set on the instance so attribution doesn't depend on simple_history's request middleware.
+    group._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    group.save(update_fields=["archived"])
+
+
+def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete", "archive"], user: UserType) -> None:
     """
     Walk `group` and its ancestors, collapsing/archiving any left with no live children.
 
-    `group.criteria` only has rows at the true-leaf level, so checking it at every level
-    unconditionally is harmless (an empty queryset above the leaf) and avoids a separate
-    leaf/non-leaf code path.
+    Checking both relations (`criteria` and `child_groups`) at every level is harmless: the one that
+    does not apply is an empty queryset, and it avoids a separate leaf/non-leaf code path.
+
+    The walk stops at a group that is already archived. Everything above it was handled when it was
+    archived, so writing it again would only add a redundant history row.
     """
+    if group.archived:
+        return
     has_live_child = (
         group.criteria.filter(archived=False).exists() or group.child_groups.filter(archived=False).exists()
     )
@@ -890,26 +902,32 @@ def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete",
         return
     if event == "delete" and not group.criteria.exists() and not group.child_groups.exists():
         if _group_has_learner_progress(group.id):
-            group.archived = True
-            group.save()
+            _archive_group(group, user)
             next_event: Literal["delete", "archive"] = "archive"
         else:
             group.delete()
             next_event = "delete"
     else:
         # Only archived children remain.
-        group.archived = True
-        group.save()
+        _archive_group(group, user)
         next_event = "archive"
     if parent is not None:
-        _cascade_from_group(parent, next_event)
+        _cascade_from_group(parent, next_event, user)
 
 
-def _archive_criterion(criterion: CompetencyCriterion) -> None:
-    """Archive ``criterion`` in place and cascade the archive to any ancestor left with no live children."""
+def _archive_criterion(criterion: CompetencyCriterion, user: UserType) -> None:
+    """
+    Archive ``criterion`` in place and cascade the archive to any ancestor left with no live children.
+
+    Does nothing if ``criterion`` is already archived, so a repeat call writes no history.
+    """
+    if criterion.archived:
+        return
     criterion.archived = True
-    criterion.save()
-    _cascade_from_group(criterion.group, "archive")
+    # Set on the instance so attribution doesn't depend on simple_history's request middleware.
+    criterion._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    criterion.save(update_fields=["archived"])
+    _cascade_from_group(criterion.group, "archive", user)
 
 
 def _criterion_has_learner_progress(criterion_id: int) -> bool:
@@ -974,7 +992,7 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
         # A concurrent delete may have won; DoesNotExist propagates and the view maps it to 404.
         criterion = CompetencyCriterion.objects.select_for_update().get(pk=criterion_id)
         if _criterion_has_learner_progress(criterion_id):
-            _archive_criterion(criterion)
+            _archive_criterion(criterion, user)
             return CriterionDeletionResult(id=criterion_id, archived=True)
         group = criterion.group
         object_tag = criterion.object_tag
@@ -985,5 +1003,5 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
                 if t.value != group.tag.value
             ]
             tag_object(object_tag.object_id, group.tag.taxonomy, existing_values)
-        _cascade_from_group(group, "delete")
+        _cascade_from_group(group, "delete", user)
         return CriterionDeletionResult(id=criterion_id, archived=False)
