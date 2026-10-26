@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 
 import pytest
 import rules
+from django.core.exceptions import ValidationError
 from django.urls import reverse
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey, UsageKey
@@ -2165,3 +2166,17 @@ def test_delete_of_a_criterion_gone_by_the_time_of_the_call_is_404(
         response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_delete_maps_a_validation_error_from_the_api_to_400(
+    user_client: APIClient, criterion: CompetencyCriterion,
+) -> None:
+    """A Django ValidationError raised by the API function becomes a 400 keyed by its field."""
+    with mock.patch(
+        "openedx_learning.applets.cbe.rest_api.v1.views.delete_or_archive_competency_criterion",
+        side_effect=ValidationError({"object_id": "x"}),
+    ):
+        response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "object_id" in response.json()
