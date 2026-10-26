@@ -1841,14 +1841,14 @@ def test_group_detail_offers_only_patch(
 def _criterion(
     group: CompetencyCriteriaGroup, tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile
 ) -> CompetencyCriterion:
-    """A leaf-agnostic CompetencyCriterion directly under the root `group`, for the delete-view tests."""
+    """A CompetencyCriterion directly under the root `group`, for the delete-view tests."""
     # The conftest object_tag's object_id isn't a parseable usage key, which _allow_object_level_tagging denies.
     object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
     return CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
 
 
 def test_hard_delete_200s_with_archived_false(user_client: APIClient, criterion: CompetencyCriterion) -> None:
-    """Deleting a criterion with no learner status 200s, hard-deletes it, and reports archived=false."""
+    """With no learner status on the criterion, the DELETE removes the row and the body says archived=false."""
     response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
 
     assert response.status_code == status.HTTP_200_OK
@@ -1859,7 +1859,7 @@ def test_hard_delete_200s_with_archived_false(user_client: APIClient, criterion:
 def test_archive_200s_with_archived_true(
     user_client: APIClient, user, criterion: CompetencyCriterion, now: datetime,
 ) -> None:
-    """Deleting a criterion a learner status row references 200s, archives it, and reports archived=true."""
+    """With a learner status on the criterion, the DELETE keeps the row, flags it archived, and says archived=true."""
     StudentCompetencyCriterionStatus.objects.create(
         user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
@@ -1888,7 +1888,7 @@ def test_repeat_delete_on_an_archived_criterion_is_idempotent_200(
 
 
 def test_unknown_criterion_id_404s(user_client: APIClient, tag: Tag) -> None:
-    """A criterion_id with no matching row 404s."""
+    """A criterion_id that never existed under a real tag 404s from the view's own lookup."""
     response = user_client.delete(criterion_delete_url(tag.id, 999999))
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
@@ -1897,7 +1897,7 @@ def test_unknown_criterion_id_404s(user_client: APIClient, tag: Tag) -> None:
 def test_repeat_delete_after_hard_delete_404s(
     user_client: APIClient, criterion: CompetencyCriterion,
 ) -> None:
-    """A second DELETE against the same URL, after a hard-delete already removed the row, 404s."""
+    """Repeating a DELETE after a hard-delete removed the row is not idempotent like the archived case: it 404s."""
     url = criterion_delete_url(criterion.group.tag_id, criterion.id)
     first = user_client.delete(url)
     assert first.status_code == status.HTTP_200_OK
@@ -1948,7 +1948,7 @@ def test_delete_no_permission_is_403(
     user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, tag: Tag, group: CompetencyCriteriaGroup,
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """A caller without object-level tagging permission on the criterion's object is refused with a 403."""
+    """A caller refused by the object-level tagging rule gets a 403, and the criterion and ObjectTag remain."""
     object_tag = ObjectTag.objects.create(
         object_id=f"block-v1:unused+{UNAUTHORIZED_MARKER}+unused+type@sequential+block@p1",
         taxonomy=competency_taxonomy,

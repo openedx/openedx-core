@@ -989,7 +989,7 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
         Tag.objects.select_for_update().get(pk=tag_id)
         # Evaluated so the locks are taken now, in primary-key order to avoid deadlocks between writers.
         list(CompetencyCriteriaGroup.objects.select_for_update().filter(pk__in=lineage_ids).order_by("pk"))
-        # A concurrent delete may have won; DoesNotExist propagates and the view maps it to 404.
+        # A concurrent delete may have won; DoesNotExist propagates to the caller.
         criterion = CompetencyCriterion.objects.select_for_update().get(pk=criterion_id)
         if _criterion_has_learner_progress(criterion_id):
             _archive_criterion(criterion, user)
@@ -1001,7 +1001,8 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
             tagged = get_object_tags(object_tag.object_id, taxonomy_id=object_tag.taxonomy_id)
             # get_object_tags hides the tags of a disabled taxonomy, but tag_object deletes every
             # ObjectTag missing from its list, so a keep list built from the filtered rows would
-            # delete tags it never saw. Refuse before writing anything.
+            # delete tags it never saw. Refuse before writing anything. This is defense in depth:
+            # the permission check above already refuses a disabled taxonomy.
             if object_tag.id not in {t.id for t in tagged}:
                 raise ValidationError({"object_id": _(
                     "The tagging API does not report this criterion's object tag, so it cannot be untagged safely."
