@@ -1615,7 +1615,8 @@ def test_get_competency_criteria_tree_orders_groups_by_parent_ordering_and_id(
 
 
 def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
-    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile, django_assert_num_queries,
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+    django_assert_num_queries,
 ) -> None:
     """
     Reading several groups and criteria costs two queries unscoped and four scoped, not one per row.
@@ -1624,23 +1625,30 @@ def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
     get_competency_criteria_tree(): dropping either would still pass every other test in this
     module (the rows returned would be identical), since select_related only changes how many
     queries fetch them, not which rows come back. The two extra scoped queries resolve the course
-    keys to course run ids and count the criteria under every reachable group.
+    keys to course run ids and count the criteria under every reachable group. An archived
+    course-level group is in the setup so reading ``archived_course_keys`` is held to the same budget.
     """
     leaf = _create_leaf_group(tag, course_run)
+    root = CompetencyCriteriaGroup.objects.get(tag=tag, parent=None)
+    archived_run = make_course_run(organization, "Archived101", "2026")
+    _create_course_level_group(tag, archived_run, root, archived=True)
     assert course_run.course_key is not None
+    assert archived_run.course_key is not None
     for i in range(3):
         object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, f"p{i}"), taxonomy=tag.taxonomy, tag=tag)
         CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
 
     with django_assert_num_queries(2):
         tree = get_competency_criteria_tree(tag)
+        assert tree.archived_course_keys == [archived_run.course_key]
         for group in tree.groups:
             _ = group.course  # accessing the select_related'd relation must not add a query
         for criterion in tree.criteria:
             _ = criterion.object_tag
 
     with django_assert_num_queries(4):
-        tree = get_competency_criteria_tree(tag, [course_run.course_key])
+        tree = get_competency_criteria_tree(tag, [course_run.course_key, archived_run.course_key])
+        assert tree.archived_course_keys == [archived_run.course_key]
         for group in tree.groups:
             _ = group.course
         for criterion in tree.criteria:
@@ -2035,10 +2043,12 @@ def test_get_competency_criteria_tree_scoped_keeps_every_group_above_any_course(
 
 
 def _create_course_level_group(
-    tag: Tag, course_run: CourseRun, root: CompetencyCriteriaGroup, archived: bool = False,
+    tag: Tag, course_run: CourseRun, root: CompetencyCriteriaGroup, *, archived: bool = False,
 ) -> CompetencyCriteriaGroup:
-    """Create a course-level group for `course_run` under `root`, optionally archived."""
-    return CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root, archived=archived)
+    """Create `course_run`'s course-level group under `root`, archived or not."""
+    return CompetencyCriteriaGroup.objects.create(
+        tag=tag, name="Course level", parent=root, course=course_run, archived=archived,
+    )
 
 
 def test_archived_course_keys_reports_an_archived_course_level_group_by_its_key(

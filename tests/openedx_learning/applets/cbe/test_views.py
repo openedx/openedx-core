@@ -1534,7 +1534,7 @@ def test_view_checks_the_view_taxonomy_rule_not_view_tag(user_client: APIClient,
 
 
 def _create_course_level_group(
-    tag: Tag, course_run: CourseRun, root: CompetencyCriteriaGroup, *, archived: bool,
+    tag: Tag, course_run: CourseRun, root: CompetencyCriteriaGroup, *, archived: bool = False,
 ) -> CompetencyCriteriaGroup:
     """Create `course_run`'s course-level group under `root`, archived or not."""
     return CompetencyCriteriaGroup.objects.create(
