@@ -24,14 +24,17 @@ from ...api import (
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
+    get_competency_criteria_tree,
     get_competency_rule_profiles,
     resolve_competency_tag,
 )
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile
 from ..paginators import CompetencyRuleProfilePagination
-from .permissions import CompetencyRuleProfilePermissions
+from .permissions import CompetencyReadPermission, CompetencyRuleProfilePermissions
 from .serializers import (
+    CompetencyCriteriaGroupSerializer,
     CompetencyCriterionBulkUpdateSerializer,
+    CompetencyCriterionReadSerializer,
     CompetencyCriterionSerializer,
     CompetencyRuleProfileSerializer,
 )
@@ -164,3 +167,34 @@ class CompetencyCriterionBulkUpdateView(generics.GenericAPIView):
         except CompetencyCriterionArchivedError as exc:
             raise CompetencyCriteriaConflict(str(exc)) from exc
         return Response(CompetencyCriterionSerializer(criteria, many=True).data, status=status.HTTP_200_OK)
+
+
+class CompetencyCriteriaTreeView(generics.GenericAPIView):
+    """
+    GET-only. Return a competency's CompetencyCriteriaGroup tree and CompetencyCriterion leaves.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this response shape may change
+    without a deprecation cycle.
+
+    Only groups whose whole ancestor chain is non-archived are returned, with their non-archived
+    criteria; see ``get_competency_criteria_tree``. Returned as two flat lists (groups, criteria)
+    for client-side reconstruction: each group carries its parent_id, and each criterion its
+    group_id. An empty tree (the tag exists but nothing has been authored under it yet) is a
+    valid 200 with two empty arrays; a 404 is reserved for tag resolution failure only.
+    """
+
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated, CompetencyReadPermission]
+
+    def get(self, request, tag_id):
+        """Return the competency's criteria tree; 404 if ``tag_id`` is not a competency tag."""
+        try:
+            tag = resolve_competency_tag(tag_id)
+        except Tag.DoesNotExist as exc:
+            raise NotFound(str(exc)) from exc
+        self.check_object_permissions(request, tag)
+        tree = get_competency_criteria_tree(tag)
+        return Response({
+            "groups": CompetencyCriteriaGroupSerializer(tree.groups, many=True).data,
+            "criteria": CompetencyCriterionReadSerializer(tree.criteria, many=True).data,
+        })

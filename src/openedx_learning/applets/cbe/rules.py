@@ -28,8 +28,9 @@ def can_view_competency_rule_profile(
     Course authors, not only platform staff, need to read rule profiles, so the collection and
     the system default are open to anyone signed in. A taxonomy-scoped profile is as visible as
     its taxonomy, which is the gate the criteria tree endpoint uses too, through
-    ``oel_tagging.view_tag``; a profile on a disabled taxonomy stays admin-only. Course- and
-    organization-scoped profiles are refused to everyone until #645 decides who may see them.
+    ``oel_tagging.view_taxonomy`` on the tag's taxonomy; a profile on a disabled taxonomy stays
+    admin-only. Course- and organization-scoped profiles are refused to everyone until #645
+    decides who may see them.
 
     The signed-in requirement is added where the permission is registered, below, so ``has_perm``
     refuses an anonymous caller whatever view sits in front of it. This predicate alone does not

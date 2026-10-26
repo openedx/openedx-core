@@ -22,4 +22,9 @@ urlpatterns = [
         views.CompetencyCriterionBulkUpdateView.as_view(),
         name="criterion-bulk-update",
     ),
+    path(
+        "competencies/<int:tag_id>/criteria-groups/",
+        views.CompetencyCriteriaTreeView.as_view(),
+        name="criteria-tree",
+    ),
 ]

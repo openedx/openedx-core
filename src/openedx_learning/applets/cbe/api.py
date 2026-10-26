@@ -4,6 +4,7 @@ Public API for Competency-Based Education (CBE).
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Sequence
@@ -35,12 +36,14 @@ from .models import (
 from .rule_payloads import evaluate_rule
 
 __all__ = [
+    "CompetencyCriteriaTree",
     "CompetencyCriterionArchivedError",
     "GradedObjectScore",
     "associate_competency_criterion",
     "bulk_update_competency_criteria",
     "create_competency_criterion",
     "create_competency_taxonomy",
+    "get_competency_criteria_tree",
     "get_competency_rule_profiles",
     "is_competency_taxonomy",
     "record_graded_object_statuses",
@@ -141,6 +144,63 @@ def resolve_competency_tag(tag_id: int) -> Tag:
     if tag.taxonomy is None or not is_competency_taxonomy(tag.taxonomy):
         raise Tag.DoesNotExist("Tag is not on a CompetencyTaxonomy.")
     return tag
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CompetencyCriteriaTree:
+    """
+    One competency's non-archived CompetencyCriteriaGroup tree and CompetencyCriterion leaves.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle. ``groups`` and ``criteria`` are flat lists: each group carries its
+    ``parent_id`` and each criterion its ``group_id``, and both always name a group in ``groups``.
+    """
+
+    groups: list[CompetencyCriteriaGroup]
+    criteria: list[CompetencyCriterion]
+
+
+def get_competency_criteria_tree(tag: Tag) -> CompetencyCriteriaTree:
+    """
+    Return the non-archived CompetencyCriteriaGroup tree and CompetencyCriterion leaves for ``tag``.
+
+    A group is returned only if it and every ancestor up to its root are non-archived, and a
+    criterion only if it and its group are returned, so the result always forms one tree: no
+    returned ``parent_id`` or ``group_id`` names a row that was left out. Groups come back
+    root first, then ordered by ``(parent_id, ordering, id)``; criteria by ``(group_id, id)``.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
+    behavior may change this function's shape without a deprecation cycle.
+    """
+    groups = list(
+        CompetencyCriteriaGroup.objects.filter(tag=tag, archived=False)
+        .select_related("course")
+        .order_by(F("parent_id").asc(nulls_first=True), "ordering", "id")
+    )
+
+    # Walk down from the roots instead of relying on row order: ordering by parent_id does not
+    # guarantee a parent comes before its child once groups can be moved, since a parent may
+    # then have a larger id than its child.
+    children_by_parent_id: dict[int | None, list[int]] = {}
+    for group in groups:
+        children_by_parent_id.setdefault(group.parent_id, []).append(group.id)
+    kept_group_ids: set[int] = set()
+    pending = list(children_by_parent_id.get(None, []))
+    while pending:
+        group_id = pending.pop()
+        kept_group_ids.add(group_id)
+        pending.extend(children_by_parent_id.get(group_id, []))
+
+    criteria = list(
+        CompetencyCriterion.objects.filter(group_id__in=kept_group_ids, archived=False)
+        .select_related("object_tag")
+        .order_by("group_id", "id")
+    )
+
+    return CompetencyCriteriaTree(
+        groups=[group for group in groups if group.id in kept_group_ids],
+        criteria=criteria,
+    )
 
 
 def _create_leaf_group(
