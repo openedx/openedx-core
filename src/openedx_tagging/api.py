@@ -28,6 +28,7 @@ from .models import ObjectTag, Tag, Taxonomy
 
 # Export this as part of the API
 TagDoesNotExist = Tag.DoesNotExist
+ObjectTagDoesNotExist = ObjectTag.DoesNotExist
 
 # Maximum number of tags allowed on any one object
 OBJECT_MAX_TAGS = 100
@@ -624,50 +625,73 @@ def unmark_copied_tags(object_id: str) -> None:
     ObjectTag.objects.filter(object_id=object_id).update(is_copied=False)
 
 
+def _extract_object_tag_ids(object_tag_ids: int | Iterable[int]) -> set[int]:
+    """
+    Return ``object_tag_ids`` as a set, raising TypeError for anything that is not an int or an iterable of ints.
+    """
+    if isinstance(object_tag_ids, (str, bytes)) or not isinstance(object_tag_ids, (int, Iterable)):
+        raise TypeError(f"ObjectTag ids must be ints, got {object_tag_ids!r} ({type(object_tag_ids).__name__})")
+    ids = {object_tag_ids} if isinstance(object_tag_ids, int) else set(object_tag_ids)
+    for object_tag_id in ids:
+        if isinstance(object_tag_id, bool) or not isinstance(object_tag_id, int):
+            raise TypeError(f"ObjectTag ids must be ints, got {object_tag_id!r} ({type(object_tag_id).__name__})")
+    return ids
+
+
 def lock_object_tags_for_deletion(object_tag_ids: int | Iterable[int]) -> None:
     """
-    Mark ObjectTags as locked against deletion.
+    Lock the given ObjectTags against deletion.
 
-    A deletion lock records that an association must be preserved. This function only sets ``ObjectTag.deletion_locked``
-    to ``True``; no other field is changed.
+    A locked association is archived rather than deleted, because a learner competency status depends on it.
+    Locks are permanent; there is no unlock.
 
-    :param object_tag_ids: The primary key of one ObjectTag, or an iterable of primary keys.
-    :raises ObjectTag.DoesNotExist: If any given id does not resolve to an ObjectTag, including one deleted
-        concurrently. The update is rolled back, so either every given ObjectTag is locked or none is.
+    :param object_tag_ids: One ObjectTag primary key, or an iterable of them.
+    :raises TypeError: If any id is not an int. Strings, bytes, and bools are not coerced.
+    :raises ObjectTagDoesNotExist: If any id does not resolve to an ObjectTag, or is deleted while this function
+        runs.
     """
-    ids = {object_tag_ids} if isinstance(object_tag_ids, int) else set(object_tag_ids)
-    with transaction.atomic():
-        updated = ObjectTag.objects.filter(pk__in=ids).update(deletion_locked=True)
-        if updated != len(ids):
-            found = set(ObjectTag.objects.filter(pk__in=ids).values_list("pk", flat=True))
-            raise ObjectTag.DoesNotExist(f"ObjectTag ids not found: {sorted(ids - found)}")
+    ids = _extract_object_tag_ids(object_tag_ids)
+    if not ids:
+        return
+    locked_by_id = dict(ObjectTag.objects.filter(pk__in=ids).values_list("pk", "deletion_locked"))
+    missing = ids - locked_by_id.keys()
+    if missing:
+        raise ObjectTag.DoesNotExist(f"ObjectTag ids not found: {sorted(missing)}")
+    unlocked = [object_tag_id for object_tag_id, locked in locked_by_id.items() if not locked]
+    if unlocked:
+        updated = ObjectTag.objects.filter(pk__in=unlocked, deletion_locked=False).update(deletion_locked=True)
+        if updated != len(unlocked):
+            # A shortfall means a row was deleted, or another caller locked it first. Only the former is an error.
+            surviving = set(ObjectTag.objects.filter(pk__in=unlocked).values_list("pk", flat=True))
+            deleted = set(unlocked) - surviving
+            if deleted:
+                raise ObjectTag.DoesNotExist(f"ObjectTag ids deleted before they could be locked: {sorted(deleted)}")
 
 
 def get_tags_locked_for_deletion(tag_ids: Iterable[int]) -> set[int]:
     """
-    Find which of the given tags have a deletion-locked association directly on them.
+    Return the subset of ``tag_ids`` that have at least one deletion-locked association.
 
-    :param tag_ids: The ids of the tags to check.
-    :return: The subset of ``tag_ids`` that have at least one deletion-locked ObjectTag. Ids that are unknown or have
-        no locked association are omitted.
+    Archived associations count: a locked association keeps protecting its tag after it is archived.
 
-    Archived associations count, because an archived but locked association still anchors learner history.
+    :param tag_ids: The tag ids to check. Unknown ids are omitted from the result.
     """
     ids = set(tag_ids)
     locked = ObjectTag.objects.filter(tag_id__in=ids, deletion_locked=True)
     return set(locked.values_list("tag_id", flat=True).distinct())
 
 
-def is_taxonomy_locked_for_deletion(taxonomy_id: int) -> bool:
+def is_taxonomy_locked_for_deletion(taxonomy_id: int | None) -> bool:
     """
-    Check whether any deletion-locked association belongs to the given taxonomy.
+    Return whether any association in the taxonomy is deletion-locked.
 
-    :param taxonomy_id: The id of the taxonomy to check.
-    :return: ``True`` if any deletion-locked ObjectTag in the taxonomy exists, free-text associations included.
-        ``False`` otherwise, including for an unknown id.
+    Archived associations count: a locked association keeps protecting its taxonomy after it is archived.
 
-    Archived associations count, because an archived but locked association still anchors learner history.
+    :param taxonomy_id: The taxonomy id to check. ``None`` returns ``False``, so that associations left behind by a
+        deleted taxonomy, whose ``taxonomy_id`` is NULL, are not mistaken for a locked one.
     """
+    if taxonomy_id is None:
+        return False
     return ObjectTag.objects.filter(taxonomy_id=taxonomy_id, deletion_locked=True).exists()
 
 

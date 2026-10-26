@@ -9,7 +9,10 @@ from unittest.mock import patch
 import ddt  # type: ignore[import]
 import pytest
 from django.core.exceptions import ValidationError
+from django.db import connection
+from django.db.models import QuerySet
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 import openedx_tagging.api as tagging_api
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
@@ -1425,6 +1428,7 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
         assert self.taxonomy.tag_set.count() == tag_count
 
 
+@ddt.ddt
 class TestDeletionLock(TestTagTaxonomyMixin, TestCase):
     """
     Tests for the deletion-lock API functions.
@@ -1447,14 +1451,16 @@ class TestDeletionLock(TestTagTaxonomyMixin, TestCase):
     def test_lock_is_idempotent(self) -> None:
         object_tag = self._tag("obj1")
         tagging_api.lock_object_tags_for_deletion(object_tag.pk)
-        tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        with CaptureQueriesContext(connection) as ctx:
+            tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        assert not any(q["sql"].startswith("UPDATE") for q in ctx.captured_queries)
         assert self._is_locked(object_tag)
 
     def test_lock_multiple_ids_in_one_call(self) -> None:
         object_tags = [self._tag("obj1"), self._tag("obj2"), self._tag("obj3", "Fungi")]
-        # One UPDATE, plus the SAVEPOINT and RELEASE that atomic() emits inside a TestCase transaction.
-        with self.assertNumQueries(3):
+        with CaptureQueriesContext(connection) as ctx:
             tagging_api.lock_object_tags_for_deletion([object_tag.pk for object_tag in object_tags])
+        assert sum(q["sql"].startswith("UPDATE") for q in ctx.captured_queries) == 1
         assert all(self._is_locked(object_tag) for object_tag in object_tags)
 
     def test_lock_with_missing_id_raises_and_locks_nothing(self) -> None:
@@ -1463,6 +1469,41 @@ class TestDeletionLock(TestTagTaxonomyMixin, TestCase):
         with pytest.raises(ObjectTag.DoesNotExist, match=str(missing_id)):
             tagging_api.lock_object_tags_for_deletion([*(object_tag.pk for object_tag in valid_tags), missing_id])
         assert not any(self._is_locked(object_tag) for object_tag in valid_tags)
+
+    def test_lock_raises_when_a_row_vanishes_before_the_write(self) -> None:
+        object_tag = self._tag("obj1")
+        real_update = QuerySet.update
+
+        def delete_then_update(queryset: QuerySet[Any], **kwargs: Any) -> int:
+            ObjectTag.objects.filter(pk=object_tag.pk).delete()
+            return real_update(queryset, **kwargs)
+
+        with patch.object(QuerySet, "update", delete_then_update):
+            with pytest.raises(ObjectTag.DoesNotExist, match=str(object_tag.pk)):
+                tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+
+    def test_lock_tolerates_a_concurrent_lock(self) -> None:
+        object_tag = self._tag("obj1")
+        real_update = QuerySet.update
+
+        def lock_then_update(queryset: QuerySet[Any], **kwargs: Any) -> int:
+            real_update(ObjectTag.objects.filter(pk=object_tag.pk), deletion_locked=True)
+            return real_update(queryset, **kwargs)
+
+        with patch.object(QuerySet, "update", lock_then_update):
+            tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        assert self._is_locked(object_tag)
+
+    @ddt.data("12", b"12", True, 1.5, None, ["1"], [1, "1"], [1.0], [None])
+    def test_lock_rejects_non_int_ids(self, bad_ids: Any) -> None:
+        self._tag("obj1")
+        with pytest.raises(TypeError):
+            tagging_api.lock_object_tags_for_deletion(bad_ids)
+        assert not ObjectTag.objects.filter(deletion_locked=True).exists()
+
+    def test_lock_empty_input_runs_no_queries(self) -> None:
+        with self.assertNumQueries(0):
+            tagging_api.lock_object_tags_for_deletion([])
 
     def test_lock_changes_only_deletion_locked(self) -> None:
         object_tag = self._tag("obj1")
@@ -1493,6 +1534,13 @@ class TestDeletionLock(TestTagTaxonomyMixin, TestCase):
             result = tagging_api.get_tags_locked_for_deletion(all_tag_ids)
         assert result == {get_tag(value).pk for value in locked_values}
 
+    def test_get_tags_locked_ignores_unknown_tag_ids_and_empty_input(self) -> None:
+        tagging_api.lock_object_tags_for_deletion(self._tag("obj1", "Mammalia").pk)
+        unknown = max(Tag.objects.values_list("pk", flat=True)) + 1000
+        assert tagging_api.get_tags_locked_for_deletion([self.mammalia.pk, unknown]) == {self.mammalia.pk}
+        with self.assertNumQueries(0):
+            assert tagging_api.get_tags_locked_for_deletion([]) == set()
+
     def test_taxonomy_locked_once_an_association_is_locked(self) -> None:
         object_tag = self._tag("obj1", "Mammalia")
         assert not tagging_api.is_taxonomy_locked_for_deletion(self.taxonomy.pk)
@@ -1510,12 +1558,21 @@ class TestDeletionLock(TestTagTaxonomyMixin, TestCase):
         tagging_api.lock_object_tags_for_deletion(object_tag.pk)
         assert tagging_api.is_taxonomy_locked_for_deletion(self.free_text_taxonomy.pk)
 
+    def test_taxonomy_none_is_not_locked(self) -> None:
+        object_tag = self._tag("obj1")
+        tagging_api.lock_object_tags_for_deletion(object_tag.pk)
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).delete()
+        survivor = ObjectTag.objects.get(pk=object_tag.pk)
+        assert survivor.taxonomy_id is None
+        assert survivor.deletion_locked
+        with self.assertNumQueries(0):
+            assert not tagging_api.is_taxonomy_locked_for_deletion(None)
+
     def test_archived_locked_association_still_counts(self) -> None:
         """
-        An archived but locked association still counts for both readers.
+        Archiving a locked association does not stop it protecting its tag and taxonomy.
 
-        This guards against adding ``.unarchived()`` to the readers, which would hide associations that anchor
-        learner history.
+        Adding ``.unarchived()`` to either reader makes this test fail.
         """
         object_tag = self._tag("obj1")
         tagging_api.lock_object_tags_for_deletion(object_tag.pk)
