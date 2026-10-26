@@ -664,7 +664,10 @@ def bulk_update_competency_criteria(
         # Locked for the same reason as the criteria below.
         lineage = [group.id, group.parent.id, group.parent.parent_id]
         archived_by_id = dict(
-            CompetencyCriteriaGroup.objects.select_for_update().filter(pk__in=lineage).values_list("pk", "archived")
+            CompetencyCriteriaGroup.objects.select_for_update()
+            .filter(pk__in=lineage)
+            .order_by("pk")
+            .values_list("pk", "archived")
         )
         archived_group_id = next((pk for pk in lineage if archived_by_id.get(pk)), None)
         if archived_group_id is not None:
@@ -966,7 +969,9 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     otherwise. See ADR-0002 Decision 2.
 
     Raises CompetencyCriterion.DoesNotExist if no such criterion exists (including one deleted
-    concurrently) and PermissionDenied if ``user`` may not tag the criterion's object.
+    concurrently) and PermissionDenied if ``user`` may not tag the criterion's object. Raises
+    ValidationError keyed ``object_id`` if the criterion's ObjectTag must be removed but the tagging
+    API does not report it, which the permission check normally prevents.
 
     The whole operation runs in one transaction that locks the competency's Tag, then the
     criterion's group and every ancestor group, then the criterion. A concurrent create for the
@@ -983,10 +988,9 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     if not user.has_perm("oel_tagging.can_tag_object", cast(Any, perm_obj)):
         raise PermissionDenied()
     tag_id = criterion.group.tag_id
-    # Tree changes are serialized by the Tag lock, so reading the lineage before taking it is safe.
-    lineage_ids = _lineage_group_ids(criterion.group)
     with transaction.atomic():
         Tag.objects.select_for_update().get(pk=tag_id)
+        lineage_ids = _lineage_group_ids(criterion.group)
         # Evaluated so the locks are taken now, in primary-key order to avoid deadlocks between writers.
         list(CompetencyCriteriaGroup.objects.select_for_update().filter(pk__in=lineage_ids).order_by("pk"))
         # A concurrent delete may have won; DoesNotExist propagates to the caller.

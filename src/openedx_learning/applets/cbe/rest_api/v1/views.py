@@ -287,4 +287,6 @@ class CompetencyCriterionDeleteView(generics.GenericAPIView):
         except CompetencyCriterion.DoesNotExist as exc:
             # Removed between the lookup above and the API call.
             raise NotFound() from exc
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
         return Response({"id": result.id, "archived": result.archived}, status=status.HTTP_200_OK)
