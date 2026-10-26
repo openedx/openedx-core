@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Iterable, Literal, Sequence
+from typing import Any, Iterable, Literal, Sequence, cast
 
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
 from django.db import IntegrityError, connection, transaction
@@ -23,7 +23,7 @@ from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descenda
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 from openedx_tagging.rules import ObjectTagPermissionItem, UserType
 
-from .data import GradedObjectScore
+from .data import CriterionDeletionResult, GradedObjectScore
 from .models import (
     CompetencyCourseRun,
     CompetencyCriteriaGroup,
@@ -41,12 +41,13 @@ __all__ = [
     "CompetencyCriteriaGroupArchivedError",
     "CompetencyCriteriaTree",
     "CompetencyCriterionArchivedError",
+    "CriterionDeletionResult",
     "GradedObjectScore",
     "associate_competency_criterion",
     "bulk_update_competency_criteria",
     "create_competency_criterion",
     "create_competency_taxonomy",
-    "delete_competency_criterion",
+    "delete_or_archive_competency_criterion",
     "get_competency_criteria_tree",
     "get_competency_rule_profiles",
     "get_courses_with_relative_criteria",
@@ -873,14 +874,6 @@ def update_competency_criteria_group(
         return group
 
 
-@dataclass(frozen=True)
-class CriterionDeletionResult:
-    """The outcome of :func:`delete_competency_criterion`: whether the row was hard-deleted or archived."""
-
-    id: int
-    archived: bool
-
-
 def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete", "archive"]) -> None:
     """
     Walk `group` and its ancestors, collapsing/archiving any left with no live children.
@@ -951,15 +944,16 @@ def _remove_competency_criterion(criterion_id: int) -> CriterionDeletionResult:
         return CriterionDeletionResult(id=criterion_id, archived=False)
 
 
-def delete_competency_criterion(criterion_id: int) -> CriterionDeletionResult:
+def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) -> CriterionDeletionResult:
     """
     Hard-delete `criterion_id`, or archive it if a learner status row already references it.
 
     UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
     and archive behavior may change this function's shape without a deprecation cycle.
 
-    The caller is expected to have already checked ``oel_tagging.can_tag_object`` for the
-    criterion's object, the same contract as :func:`associate_competency_criterion`.
+    ``user`` must hold ``oel_tagging.can_tag_object`` for the criterion's object, as
+    :func:`bulk_update_competency_criteria` requires; otherwise Django's ``PermissionDenied`` is
+    raised before anything is locked or changed.
 
     An ancestor :class:`CompetencyCriteriaGroup` left with no live children by this call is
     cascaded in turn: hard-deleted if it carries no group-level status of its own, archived
@@ -970,9 +964,18 @@ def delete_competency_criterion(criterion_id: int) -> CriterionDeletionResult:
     the refusal came from elsewhere, such as an ancestor group that gained a status after the cascade
     checked it, so the delete is retried once. A failure on the retry propagates to the caller.
 
-    Raises CompetencyCriterion.DoesNotExist if no such criterion exists, and ProtectedError or
-    IntegrityError if the retry is refused too.
+    Raises CompetencyCriterion.DoesNotExist if no such criterion exists, PermissionDenied if
+    ``user`` may not tag the criterion's object, and ProtectedError or IntegrityError if the
+    retry is refused too.
     """
+    criterion = CompetencyCriterion.objects.select_related("group__tag__taxonomy", "object_tag").get(pk=criterion_id)
+    # A group's tag is always a competency tag, so its taxonomy is always set.
+    assert criterion.group.tag.taxonomy is not None
+    perm_obj = ObjectTagPermissionItem(taxonomy=criterion.group.tag.taxonomy, object_id=criterion.object_tag.object_id)
+    # The rules-based permission takes an ObjectTagPermissionItem, but django-stubs types the
+    # has_perm object argument as a Model.
+    if not user.has_perm("oel_tagging.can_tag_object", cast(Any, perm_obj)):
+        raise PermissionDenied()
     try:
         return _remove_competency_criterion(criterion_id)
     except (ProtectedError, IntegrityError):

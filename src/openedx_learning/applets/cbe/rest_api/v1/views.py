@@ -26,7 +26,7 @@ from ...api import (
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
-    delete_competency_criterion,
+    delete_or_archive_competency_criterion,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
     resolve_competency_tag,
@@ -261,8 +261,8 @@ class CompetencyCriterionDeleteView(generics.GenericAPIView):
     """
     DELETE-only. Remove a CompetencyCriterion: hard-delete, or archive if learner status exists.
 
-    Does not call self.check_object_permissions(): oel_tagging.can_tag_object is checked inline
-    with a manual ``has_perm()`` call, the same pattern CompetencyCriterionCreateView uses.
+    Does not call self.check_object_permissions(): the public API function checks
+    oel_tagging.can_tag_object itself and raises Django's PermissionDenied, which becomes a 403.
     """
 
     serializer_class = CompetencyCriterionSerializer
@@ -271,7 +271,7 @@ class CompetencyCriterionDeleteView(generics.GenericAPIView):
 
     def delete(self, request, *args, **kwargs):
         """
-        Resolve the criterion scoped to both path segments, check permission, then delegate to the public API.
+        Resolve the criterion scoped to both path segments, then delegate to the public API, which checks permission.
 
         Scoped by tag_id rather than a specific group_id, matching CompetencyCriterionCreateView's
         own URL convention; a group-scoped delete is a separate ticket's concern (direct group
@@ -282,10 +282,9 @@ class CompetencyCriterionDeleteView(generics.GenericAPIView):
         criterion = get_object_or_404(
             CompetencyCriterion, pk=self.kwargs["criterion_id"], group__tag_id=self.kwargs["tag_id"],
         )
-        perm_obj = ObjectTagPermissionItem(
-            taxonomy=criterion.group.tag.taxonomy, object_id=criterion.object_tag.object_id,
-        )
-        if not request.user.has_perm("oel_tagging.can_tag_object", perm_obj):
-            raise PermissionDenied()
-        result = delete_competency_criterion(criterion.id)
+        try:
+            result = delete_or_archive_competency_criterion(criterion.id, request.user)
+        except CompetencyCriterion.DoesNotExist as exc:
+            # Removed between the lookup above and the API call.
+            raise NotFound() from exc
         return Response({"id": result.id, "archived": result.archived}, status=status.HTTP_200_OK)

@@ -6,6 +6,7 @@ directly rather than through a live call, because no create or archive endpoint 
 """
 from datetime import datetime
 from typing import Any, Generator
+from unittest import mock
 
 import pytest
 import rules
@@ -348,6 +349,7 @@ def test_no_group_no_existing_groups_creates_the_full_hierarchy_and_201s(
     assert response.data["object_tag_id"] == criterion.object_tag_id
     assert response.data["group_id"] == criterion.group_id
     assert response.data["rule_profile_id"] == default_rule_profile.id
+    assert response.data["archived"] is False
 
 
 def test_logic_operator_provided_is_stored_on_the_new_leaf(
@@ -1845,14 +1847,6 @@ def _criterion(
     return CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
 
 
-def test_create_response_reports_archived_false(user_client: APIClient, tag: Tag, course_run: CourseRun) -> None:
-    """The create endpoint's response carries the read-only archived flag, false for a new criterion."""
-    response = user_client.post(criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p1")}, format="json")
-
-    assert response.status_code == status.HTTP_201_CREATED
-    assert response.data["archived"] is False
-
-
 def test_hard_delete_200s_with_archived_false(user_client: APIClient, criterion: CompetencyCriterion) -> None:
     """Deleting a criterion with no learner status 200s, hard-deletes it, and reports archived=false."""
     response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
@@ -1967,3 +1961,32 @@ def test_delete_no_permission_is_403(
     response = user_client.delete(criterion_delete_url(tag.id, criterion.id))
 
     assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert CompetencyCriterion.objects.filter(id=criterion.id).exists()
+    assert ObjectTag.objects.filter(id=object_tag.id).exists()
+
+
+def test_delete_without_view_access_to_the_taxonomy_is_403(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, criterion: CompetencyCriterion,
+) -> None:
+    """A disabled taxonomy refuses an ordinary caller even when the object id itself is permitted."""
+    competency_taxonomy.enabled = False
+    competency_taxonomy.save()
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert CompetencyCriterion.objects.filter(id=criterion.id).exists()
+    assert ObjectTag.objects.filter(id=criterion.object_tag_id).exists()
+
+
+def test_delete_of_a_criterion_gone_by_the_time_of_the_call_is_404(
+    user_client: APIClient, criterion: CompetencyCriterion,
+) -> None:
+    """A criterion removed between the view's lookup and the API call is a 404, not a 500."""
+    with mock.patch(
+        "openedx_learning.applets.cbe.rest_api.v1.views.delete_or_archive_competency_criterion",
+        side_effect=CompetencyCriterion.DoesNotExist,
+    ):
+        response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
