@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 import rules
 from django.apps import apps
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from rules.permissions import permissions as rule_permissions
 
 from openedx_learning.api import delete_or_archive_competency_criterion
@@ -23,6 +23,7 @@ from openedx_tagging.models import ObjectTag, Tag
 pytestmark = pytest.mark.django_db
 
 CHANGE_OBJECTTAG_OBJECTID = "oel_tagging.change_objecttag_objectid"
+CHANGE_OBJECTTAG_TAXONOMY = "oel_tagging.change_objecttag_taxonomy"
 
 
 @pytest.fixture(autouse=True)
@@ -370,6 +371,41 @@ def test_a_user_without_permission_is_refused_and_nothing_changes(
     assert criterion.archived is False
     assert CompetencyCriteriaGroup.objects.filter(id=group.id).exists()
     assert ObjectTag.objects.filter(id=object_tag.id).exists()
+
+
+def test_untag_with_the_competency_taxonomy_disabled_raises_and_deletes_nothing(
+    user,
+    competency_taxonomy: CompetencyTaxonomy,
+    tag: Tag,
+    object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    With the taxonomy disabled the tagging API hides its tags, so the untag cannot name the right
+    ObjectTag: the call raises on object_id and neither criterion nor ObjectTag is touched. The
+    taxonomy-level permission rule denies every user on a disabled taxonomy, so the test substitutes
+    a permissive one to reach the untag step.
+    """
+    other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Reading Poetry")
+    other_object_tag = _make_object_tag(competency_taxonomy, other_tag, object_tag.object_id)
+    criterion = _make_criterion(CompetencyCriteriaGroup.objects.create(tag=tag), object_tag, default_rule_profile)
+    other_criterion = _make_criterion(
+        CompetencyCriteriaGroup.objects.create(tag=other_tag), other_object_tag, default_rule_profile
+    )
+    competency_taxonomy.enabled = False
+    competency_taxonomy.save()
+    original = rule_permissions[CHANGE_OBJECTTAG_TAXONOMY]
+    rules.set_perm(CHANGE_OBJECTTAG_TAXONOMY, lambda _user, _taxonomy: True)
+
+    try:
+        with pytest.raises(ValidationError) as exc_info:
+            delete_or_archive_competency_criterion(criterion.id, user)
+    finally:
+        rules.set_perm(CHANGE_OBJECTTAG_TAXONOMY, original)
+
+    assert "object_id" in exc_info.value.message_dict
+    assert CompetencyCriterion.objects.filter(id__in=[criterion.id, other_criterion.id]).count() == 2
+    assert ObjectTag.objects.filter(id__in=[object_tag.id, other_object_tag.id]).count() == 2
 
 
 # =================================================================================================
