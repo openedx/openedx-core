@@ -1,11 +1,15 @@
-"""Tests for delete_competency_criterion() and its ancestor-cascade helper, _cascade_from_group()."""
+"""Tests for delete_or_archive_competency_criterion() and its ancestor-cascade helper, _cascade_from_group()."""
+from collections.abc import Iterator
 from datetime import datetime
 from unittest import mock
 
 import pytest
+import rules
+from django.core.exceptions import PermissionDenied
 from django.db import IntegrityError
+from rules.permissions import permissions as rule_permissions
 
-from openedx_learning.api import delete_competency_criterion
+from openedx_learning.api import delete_or_archive_competency_criterion
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
     CompetencyCriterion,
@@ -18,6 +22,22 @@ from openedx_learning.models import (
 from openedx_tagging.models import ObjectTag, Tag
 
 pytestmark = pytest.mark.django_db
+
+CHANGE_OBJECTTAG_OBJECTID = "oel_tagging.change_objecttag_objectid"
+
+
+@pytest.fixture(autouse=True)
+def _allow_object_level_tagging() -> Iterator[None]:
+    """
+    Let any user tag any object; restore the real rule afterwards.
+
+    openedx_tagging denies change_objecttag_objectid to everyone and leaves the real Studio-role
+    check to openedx-platform, so these tests substitute a permissive one.
+    """
+    original = rule_permissions[CHANGE_OBJECTTAG_OBJECTID]
+    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, lambda _user, _object_id: True)
+    yield
+    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, original)
 
 
 def _make_object_tag(competency_taxonomy: CompetencyTaxonomy, tag: Tag, object_id: str) -> ObjectTag:
@@ -38,7 +58,7 @@ def _make_criterion(
 
 
 def test_hard_delete_with_no_status_removes_the_row_and_its_object_tag(
-    tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
     Deleting a criterion with no learner status hard-deletes it and drops its now-unreferenced
@@ -47,7 +67,7 @@ def test_hard_delete_with_no_status_removes_the_row_and_its_object_tag(
     group = CompetencyCriteriaGroup.objects.create(tag=tag)
     criterion = _make_criterion(group, object_tag, default_rule_profile)
 
-    result = delete_competency_criterion(criterion.id)
+    result = delete_or_archive_competency_criterion(criterion.id, user)
 
     assert result.id == criterion.id
     assert result.archived is False
@@ -68,7 +88,7 @@ def test_archive_path_leaves_the_row_and_its_object_tag_in_place(
         user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
 
-    result = delete_competency_criterion(criterion.id)
+    result = delete_or_archive_competency_criterion(criterion.id, user)
 
     assert result.archived is True
     criterion.refresh_from_db()
@@ -92,7 +112,7 @@ def test_status_on_the_criterion_missed_by_the_first_check_archives_it(
 
     # Call 1 is the check inside the transaction, call 2 is the fallback re-check.
     with mock.patch("openedx_learning.applets.cbe.api._criterion_has_status", side_effect=[False, True]):
-        result = delete_competency_criterion(criterion.id)
+        result = delete_or_archive_competency_criterion(criterion.id, user)
 
     assert result.id == criterion.id
     assert result.archived is True
@@ -121,7 +141,7 @@ def test_status_on_an_ancestor_missed_once_archives_only_the_ancestor(
 
     # Call 1 is the first cascade at the leaf group, call 2 is the retry's cascade.
     with mock.patch("openedx_learning.applets.cbe.api._group_has_status", side_effect=[False, True]):
-        result = delete_competency_criterion(criterion.id)
+        result = delete_or_archive_competency_criterion(criterion.id, user)
 
     assert result.archived is False
     assert not CompetencyCriterion.objects.filter(id=criterion.id).exists()
@@ -133,7 +153,7 @@ def test_status_on_an_ancestor_missed_once_archives_only_the_ancestor(
 
 
 def test_unrelated_integrity_error_propagates_without_archiving(
-    tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
     An IntegrityError from the object_tag cleanup, with no status anywhere, is retried once and then
@@ -144,7 +164,7 @@ def test_unrelated_integrity_error_propagates_without_archiving(
 
     with mock.patch("openedx_learning.applets.cbe.api.tag_object", side_effect=IntegrityError) as tag_object:
         with pytest.raises(IntegrityError):
-            delete_competency_criterion(criterion.id)
+            delete_or_archive_competency_criterion(criterion.id, user)
 
     assert tag_object.call_count == 2
 
@@ -163,9 +183,9 @@ def test_repeat_call_on_an_already_archived_criterion_is_idempotent(
     StudentCompetencyCriterionStatus.objects.create(
         user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
-    delete_competency_criterion(criterion.id)
+    delete_or_archive_competency_criterion(criterion.id, user)
 
-    result = delete_competency_criterion(criterion.id)
+    result = delete_or_archive_competency_criterion(criterion.id, user)
 
     assert result.id == criterion.id
     assert result.archived is True
@@ -174,7 +194,7 @@ def test_repeat_call_on_an_already_archived_criterion_is_idempotent(
 
 
 def test_shared_object_tag_is_untouched_while_another_criterion_still_references_it(
-    tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
     Two criteria, in two different groups, referencing the same object_tag (a deliberate second
@@ -186,7 +206,7 @@ def test_shared_object_tag_is_untouched_while_another_criterion_still_references
     criterion_a = _make_criterion(group_a, object_tag, default_rule_profile)
     criterion_b = _make_criterion(group_b, object_tag, default_rule_profile)
 
-    delete_competency_criterion(criterion_a.id)
+    delete_or_archive_competency_criterion(criterion_a.id, user)
 
     assert not CompetencyCriterion.objects.filter(id=criterion_a.id).exists()
     assert CompetencyCriterion.objects.filter(id=criterion_b.id).exists()
@@ -199,7 +219,7 @@ def test_shared_object_tag_is_untouched_while_another_criterion_still_references
 
 
 def test_single_child_leaf_group_cascade_deletes_while_a_sibling_keeps_the_root_alive(
-    competency_taxonomy: CompetencyTaxonomy, tag: Tag, object_tag: ObjectTag,
+    user, competency_taxonomy: CompetencyTaxonomy, tag: Tag, object_tag: ObjectTag,
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
@@ -214,7 +234,7 @@ def test_single_child_leaf_group_cascade_deletes_while_a_sibling_keeps_the_root_
     sibling_object_tag = _make_object_tag(competency_taxonomy, tag, "obj-sibling")
     _make_criterion(sibling, sibling_object_tag, default_rule_profile)
 
-    delete_competency_criterion(criterion.id)
+    delete_or_archive_competency_criterion(criterion.id, user)
 
     assert not CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
     assert CompetencyCriteriaGroup.objects.filter(id=root.id).exists()
@@ -222,7 +242,7 @@ def test_single_child_leaf_group_cascade_deletes_while_a_sibling_keeps_the_root_
 
 
 def test_multilevel_cascade_fully_collapses_the_root_to_leaf_chain(
-    tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
     Hard-deleting the only criterion in a root -> mid -> leaf chain, with nothing else anywhere in
@@ -233,7 +253,7 @@ def test_multilevel_cascade_fully_collapses_the_root_to_leaf_chain(
     leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=mid)
     criterion = _make_criterion(leaf, object_tag, default_rule_profile)
 
-    delete_competency_criterion(criterion.id)
+    delete_or_archive_competency_criterion(criterion.id, user)
 
     assert not CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
     assert not CompetencyCriteriaGroup.objects.filter(id=mid.id).exists()
@@ -241,7 +261,7 @@ def test_multilevel_cascade_fully_collapses_the_root_to_leaf_chain(
 
 
 def test_cascade_stops_at_an_ancestor_with_a_surviving_sibling_group(
-    competency_taxonomy: CompetencyTaxonomy, tag: Tag, object_tag: ObjectTag,
+    user, competency_taxonomy: CompetencyTaxonomy, tag: Tag, object_tag: ObjectTag,
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
@@ -257,7 +277,7 @@ def test_cascade_stops_at_an_ancestor_with_a_surviving_sibling_group(
     other_object_tag = _make_object_tag(competency_taxonomy, tag, "obj-other-branch")
     other_criterion = _make_criterion(other_branch, other_object_tag, default_rule_profile)
 
-    delete_competency_criterion(criterion.id)
+    delete_or_archive_competency_criterion(criterion.id, user)
 
     assert not CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
     assert not CompetencyCriteriaGroup.objects.filter(id=branch.id).exists()
@@ -282,7 +302,7 @@ def test_group_with_its_own_status_is_archived_not_deleted_at_zero_remaining_chi
         user=user, group=leaf, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
 
-    result = delete_competency_criterion(criterion.id)
+    result = delete_or_archive_competency_criterion(criterion.id, user)
 
     assert result.archived is False
     assert not CompetencyCriterion.objects.filter(id=criterion.id).exists()
@@ -311,7 +331,7 @@ def test_archiving_a_groups_only_criterion_archives_the_group_and_cascades_upwar
         user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
 
-    delete_competency_criterion(criterion.id)
+    delete_or_archive_competency_criterion(criterion.id, user)
 
     leaf.refresh_from_db()
     root.refresh_from_db()
@@ -322,11 +342,33 @@ def test_archiving_a_groups_only_criterion_archives_the_group_and_cascades_upwar
 
 
 # =================================================================================================
+# Permission
+# =================================================================================================
+
+
+def test_a_user_without_permission_is_refused_and_nothing_changes(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A user who may not tag the criterion's object is refused, and the criterion, group and ObjectTag survive."""
+    group = CompetencyCriteriaGroup.objects.create(tag=tag)
+    criterion = _make_criterion(group, object_tag, default_rule_profile)
+    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, lambda _user, _object_id: False)
+
+    with pytest.raises(PermissionDenied):
+        delete_or_archive_competency_criterion(criterion.id, user)
+
+    criterion.refresh_from_db()
+    assert criterion.archived is False
+    assert CompetencyCriteriaGroup.objects.filter(id=group.id).exists()
+    assert ObjectTag.objects.filter(id=object_tag.id).exists()
+
+
+# =================================================================================================
 # Not found
 # =================================================================================================
 
 
-def test_does_not_exist_for_an_unknown_criterion_id() -> None:
+def test_does_not_exist_for_an_unknown_criterion_id(user) -> None:
     """A criterion_id with no matching row raises CompetencyCriterion.DoesNotExist."""
     with pytest.raises(CompetencyCriterion.DoesNotExist):
-        delete_competency_criterion(999999999)
+        delete_or_archive_competency_criterion(999999999, user)
