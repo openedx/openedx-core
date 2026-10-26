@@ -1530,6 +1530,128 @@ def test_view_checks_the_view_taxonomy_rule_not_view_tag(user_client: APIClient,
     assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
+# archived_course_keys
+
+
+def _create_course_level_group(
+    tag: Tag, course_run: CourseRun, root: CompetencyCriteriaGroup, *, archived: bool,
+) -> CompetencyCriteriaGroup:
+    """Create `course_run`'s course-level group under `root`, archived or not."""
+    return CompetencyCriteriaGroup.objects.create(
+        tag=tag, name="Course level", parent=root, course=course_run, archived=archived,
+    )
+
+
+def test_tree_response_lists_archived_course_runs_as_key_strings(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, organization: Organization,
+) -> None:
+    """An archived course-level group's course run is listed by key string; an active course run is not."""
+    other_run = make_course_run(organization, "Python200", "Fall2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
+    _create_course_level_group(tag, course_run, root, archived=True)
+    _create_course_level_group(tag, other_run, root, archived=False)
+
+    response = user_client.get(criteria_tree_url(tag.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert course_run.course_key is not None
+    assert response.data["archived_course_keys"] == [str(course_run.course_key)]
+
+
+def test_tree_response_has_an_empty_archived_course_keys_list_when_nothing_is_archived(
+    user_client: APIClient, tag: Tag,
+) -> None:
+    """The field is always present: a tag with no groups returns an empty list."""
+    response = user_client.get(criteria_tree_url(tag.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["archived_course_keys"] == []
+
+
+def test_no_view_access_to_the_taxonomy_discloses_no_archived_course_runs(
+    api_client: APIClient, user, tag: Tag, course_run: CourseRun,
+) -> None:
+    """A caller denied access to the taxonomy gets a 403 without the archived course keys."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
+    _create_course_level_group(tag, course_run, root, archived=True)
+    taxonomy = tag.taxonomy
+    assert taxonomy is not None
+    taxonomy.enabled = False
+    taxonomy.save()
+    api_client.force_authenticate(user=user)
+
+    response = api_client.get(criteria_tree_url(tag.id))
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert "archived_course_keys" not in response.data
+
+
+def test_tree_response_lists_an_archived_course_run_the_caller_cannot_author_in(
+    user_client: APIClient, tag: Tag, organization: Organization,
+) -> None:
+    """Reading the tree needs no tagging permission, so an archived course run the caller cannot author in is listed."""
+    unauthorized_run = make_course_run(organization, f"{UNAUTHORIZED_MARKER}100", "Fall2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
+    _create_course_level_group(tag, unauthorized_run, root, archived=True)
+
+    response = user_client.get(criteria_tree_url(tag.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert unauthorized_run.course_key is not None
+    assert str(unauthorized_run.course_key) in response.data["archived_course_keys"]
+
+
+def test_tree_response_archived_course_keys_follow_the_course_keys_query_param(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, organization: Organization,
+) -> None:
+    """Scoping by course_keys also scopes archived_course_keys: an archived course run left out is not listed."""
+    run_y = make_course_run(organization, "Python200", "Fall2026")
+    run_z = make_course_run(organization, "Python300", "Fall2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
+    _create_course_level_group(tag, course_run, root, archived=True)
+    _create_course_level_group(tag, run_y, root, archived=True)
+    _create_course_level_group(tag, run_z, root, archived=False)
+    assert course_run.course_key is not None
+    assert run_z.course_key is not None
+
+    response = user_client.get(
+        criteria_tree_url(tag.id), {"course_keys": f"{course_run.course_key},{run_z.course_key}"},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["archived_course_keys"] == [str(course_run.course_key)]
+
+
+def test_deleting_the_only_rule_group_with_learner_progress_reports_its_course_run_as_archived(
+    user_client: APIClient, *, user, tag: Tag, course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """Archiving the only Rule Group cascades up to its course-level group, and the tree then lists the course run."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
+    course_level = _create_course_level_group(tag, course_run, root, archived=False)
+    rule_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=rule_group, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    delete_response = user_client.delete(group_delete_url(tag.id, rule_group.id))
+
+    assert delete_response.status_code == status.HTTP_200_OK
+    assert delete_response.data["archived"] is True
+    response = user_client.get(criteria_tree_url(tag.id))
+    assert response.status_code == status.HTTP_200_OK
+    assert course_run.course_key is not None
+    assert str(course_run.course_key) in response.data["archived_course_keys"]
+    returned_group_ids = {group["id"] for group in response.data["groups"]}
+    assert course_level.id not in returned_group_ids
+    assert rule_group.id not in returned_group_ids
+    assert criterion.id not in {c["id"] for c in response.data["criteria"]}
+
+
 # course_keys scoping
 
 

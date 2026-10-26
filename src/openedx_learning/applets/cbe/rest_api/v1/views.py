@@ -203,6 +203,9 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
     ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is the number
     under every reachable group regardless of ``course_keys``, so a client scoped down to zero
     criteria can still tell the competency is not empty.
+
+    ``archived_course_keys`` is always present: the sorted course run key strings that have an
+    archived course-level group for this competency, limited to ``course_keys`` when given.
     """
 
     authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
@@ -226,6 +229,7 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
             "criteria": CompetencyCriterionReadSerializer(tree.criteria, many=True).data,
             "criteria_count": tree.criteria_count,
             "total_criteria_count": tree.total_criteria_count,
+            "archived_course_keys": [str(key) for key in tree.archived_course_keys],
         })
 
 
