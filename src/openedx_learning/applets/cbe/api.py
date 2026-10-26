@@ -996,12 +996,22 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
             return CriterionDeletionResult(id=criterion_id, archived=True)
         group = criterion.group
         object_tag = criterion.object_tag
+        untag = not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exclude(pk=criterion_id).exists()
+        if untag:
+            tagged = get_object_tags(object_tag.object_id, taxonomy_id=object_tag.taxonomy_id)
+            # get_object_tags hides the tags of a disabled taxonomy, but tag_object deletes every
+            # ObjectTag missing from its list, so a keep list built from the filtered rows would
+            # delete tags it never saw. Refuse before writing anything.
+            if object_tag.id not in {t.id for t in tagged}:
+                raise ValidationError({"object_id": _(
+                    "The tagging API does not report this criterion's object tag, so it cannot be untagged safely."
+                )})
         criterion.delete()
-        if not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists():
-            existing_values = [
-                t.value for t in get_object_tags(object_tag.object_id, taxonomy_id=object_tag.taxonomy_id)
-                if t.value != group.tag.value
-            ]
-            tag_object(object_tag.object_id, group.tag.taxonomy, existing_values)
+        if untag:
+            tag_object(
+                object_tag.object_id,
+                group.tag.taxonomy,
+                [t.value for t in tagged if t.value != group.tag.value],
+            )
         _cascade_from_group(group, "delete", user)
         return CriterionDeletionResult(id=criterion_id, archived=False)
