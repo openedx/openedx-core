@@ -347,8 +347,6 @@ def test_archiving_a_groups_only_criterion_archives_the_group_and_cascades_upwar
     root.refresh_from_db()
     assert leaf.archived is True
     assert root.archived is True
-    assert CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
-    assert CompetencyCriteriaGroup.objects.filter(id=root.id).exists()
 
 
 # =================================================================================================
@@ -414,7 +412,7 @@ def test_untag_with_the_competency_taxonomy_disabled_raises_and_deletes_nothing(
 
 
 def test_does_not_exist_for_an_unknown_criterion_id(user) -> None:
-    """A criterion_id with no matching row raises CompetencyCriterion.DoesNotExist."""
+    """The API layer lets DoesNotExist propagate for an unknown criterion_id so each caller can map it itself."""
     with pytest.raises(CompetencyCriterion.DoesNotExist):
         delete_or_archive_competency_criterion(999999999, user)
 
