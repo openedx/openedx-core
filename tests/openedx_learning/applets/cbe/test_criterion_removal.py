@@ -4,6 +4,7 @@ from datetime import datetime
 
 import pytest
 import rules
+from django.apps import apps
 from django.core.exceptions import PermissionDenied
 from rules.permissions import permissions as rule_permissions
 
@@ -94,16 +95,36 @@ def test_archive_path_leaves_the_row_and_its_object_tag_in_place(
     assert ObjectTag.objects.filter(id=object_tag.id).exists()
 
 
-def test_repeat_call_on_an_already_archived_criterion_is_idempotent(
+def _latest_history_user(model_name: str, pk: int):
+    """Return the user recorded on the newest historical row of the ``model_name`` row ``pk``."""
+    historical = apps.get_model("openedx_learning", model_name)
+    return historical.objects.filter(id=pk).order_by("-history_date", "-history_id").first().history_user
+
+
+def _history_count(model_name: str, pk: int) -> int:
+    """Return how many historical rows exist for the ``model_name`` row ``pk``."""
+    return apps.get_model("openedx_learning", model_name).objects.filter(id=pk).count()
+
+
+def test_repeat_delete_on_an_archived_criterion_writes_no_history(
     user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
 ) -> None:
-    """A second DELETE against an already-archived criterion re-enters the archive branch without error."""
-    group = CompetencyCriteriaGroup.objects.create(tag=tag)
-    criterion = _make_criterion(group, object_tag, default_rule_profile)
+    """
+    A second delete of an already-archived criterion returns archived=True and leaves the
+    criterion and its groups untouched, so no new historical row is written for any of them.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    criterion = _make_criterion(leaf, object_tag, default_rule_profile)
     StudentCompetencyCriterionStatus.objects.create(
         user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
     delete_or_archive_competency_criterion(criterion.id, user)
+    counts = (
+        _history_count("HistoricalCompetencyCriterion", criterion.id),
+        _history_count("HistoricalCompetencyCriteriaGroup", leaf.id),
+        _history_count("HistoricalCompetencyCriteriaGroup", root.id),
+    )
 
     result = delete_or_archive_competency_criterion(criterion.id, user)
 
@@ -111,6 +132,29 @@ def test_repeat_call_on_an_already_archived_criterion_is_idempotent(
     assert result.archived is True
     criterion.refresh_from_db()
     assert criterion.archived is True
+    assert counts == (
+        _history_count("HistoricalCompetencyCriterion", criterion.id),
+        _history_count("HistoricalCompetencyCriteriaGroup", leaf.id),
+        _history_count("HistoricalCompetencyCriteriaGroup", root.id),
+    )
+
+
+def test_archive_records_the_acting_user_in_history(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """Archiving a criterion records the acting user on the newest historical row of it and of each archived group."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    criterion = _make_criterion(leaf, object_tag, default_rule_profile)
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    delete_or_archive_competency_criterion(criterion.id, user)
+
+    assert _latest_history_user("HistoricalCompetencyCriterion", criterion.id) == user
+    assert _latest_history_user("HistoricalCompetencyCriteriaGroup", leaf.id) == user
+    assert _latest_history_user("HistoricalCompetencyCriteriaGroup", root.id) == user
 
 
 def test_shared_object_tag_is_untouched_while_another_criterion_still_references_it(
@@ -159,6 +203,10 @@ def test_single_child_leaf_group_cascade_deletes_while_a_sibling_keeps_the_root_
     assert not CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
     assert CompetencyCriteriaGroup.objects.filter(id=root.id).exists()
     assert CompetencyCriteriaGroup.objects.filter(id=sibling.id).exists()
+    root.refresh_from_db()
+    sibling.refresh_from_db()
+    assert root.archived is False
+    assert sibling.archived is False
 
 
 def test_multilevel_cascade_fully_collapses_the_root_to_leaf_chain(
@@ -204,31 +252,72 @@ def test_cascade_stops_at_an_ancestor_with_a_surviving_sibling_group(
     assert CompetencyCriteriaGroup.objects.filter(id=root.id).exists()
     assert CompetencyCriteriaGroup.objects.filter(id=other_branch.id).exists()
     assert CompetencyCriterion.objects.filter(id=other_criterion.id).exists()
+    root.refresh_from_db()
+    other_branch.refresh_from_db()
+    assert root.archived is False
+    assert other_branch.archived is False
 
 
+@pytest.mark.parametrize("progress_on", ["leaf group", "root group"])
 def test_group_with_its_own_status_is_archived_not_deleted_at_zero_remaining_children(
-    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
+    progress_on: str, user, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
 ) -> None:
     """
-    A leaf group carrying its own StudentCompetencyCriteriaGroupStatus is archived, not
-    hard-deleted, even once its last criterion is gone -- while that criterion itself, with no
-    status of its own, is still hard-deleted. Archiving the leaf then cascades upward as
-    "archive", so an ancestor with no other content is archived too, not deleted.
+    A group carrying its own StudentCompetencyCriteriaGroupStatus is archived, not hard-deleted,
+    once its last child is gone, whether that group is the leaf or the root above it (depth 2).
+    The criterion itself, with no status of its own, is still hard-deleted, and an archive
+    cascades upward as "archive", so every ancestor of an archived group is archived too.
     """
+    assert object_tag.tag is not None
+    tag = object_tag.tag
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
     leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
     criterion = _make_criterion(leaf, object_tag, default_rule_profile)
     StudentCompetencyCriteriaGroupStatus.objects.create(
-        user=user, group=leaf, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+        user=user, group=leaf if progress_on == "leaf group" else root,
+        status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
 
     result = delete_or_archive_competency_criterion(criterion.id, user)
 
     assert result.archived is False
     assert not CompetencyCriterion.objects.filter(id=criterion.id).exists()
-    leaf.refresh_from_db()
-    assert leaf.archived is True
     root.refresh_from_db()
+    assert root.archived is True
+    if progress_on == "leaf group":
+        leaf.refresh_from_db()
+        assert leaf.archived is True
+    else:
+        assert not CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
+
+
+def test_hard_delete_beside_an_archived_criterion_archives_the_group_and_its_parent(
+    user, competency_taxonomy: CompetencyTaxonomy, object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    A leaf holding one archived criterion (it has learner progress) and one live criterion: hard-deleting
+    the live one removes it, and the leaf, left with only archived children, is archived with its parent.
+    """
+    assert object_tag.tag is not None
+    tag = object_tag.tag
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    live = _make_criterion(leaf, object_tag, default_rule_profile)
+    archived_object_tag = _make_object_tag(competency_taxonomy, tag, "obj-archived")
+    archived = _make_criterion(leaf, archived_object_tag, default_rule_profile)
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=archived, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    delete_or_archive_competency_criterion(archived.id, user)
+
+    result = delete_or_archive_competency_criterion(live.id, user)
+
+    assert result.archived is False
+    assert not CompetencyCriterion.objects.filter(id=live.id).exists()
+    leaf.refresh_from_db()
+    root.refresh_from_db()
+    assert leaf.archived is True
     assert root.archived is True
 
 
@@ -292,3 +381,35 @@ def test_does_not_exist_for_an_unknown_criterion_id(user) -> None:
     """A criterion_id with no matching row raises CompetencyCriterion.DoesNotExist."""
     with pytest.raises(CompetencyCriterion.DoesNotExist):
         delete_or_archive_competency_criterion(999999999, user)
+
+
+# =================================================================================================
+# The walk stops at archived groups
+# =================================================================================================
+
+
+def test_cascade_stops_at_a_group_that_is_already_archived(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    Archiving a criterion whose group is already archived leaves that group and its parent alone, so
+    neither gets a new historical row: everything above an archived group was handled when it was archived.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, archived=True)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root, archived=True)
+    criterion = _make_criterion(leaf, object_tag, default_rule_profile)
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    counts = (
+        _history_count("HistoricalCompetencyCriteriaGroup", leaf.id),
+        _history_count("HistoricalCompetencyCriteriaGroup", root.id),
+    )
+
+    result = delete_or_archive_competency_criterion(criterion.id, user)
+
+    assert result.archived is True
+    assert counts == (
+        _history_count("HistoricalCompetencyCriteriaGroup", leaf.id),
+        _history_count("HistoricalCompetencyCriteriaGroup", root.id),
+    )
