@@ -2053,7 +2053,7 @@ def test_archived_course_keys_reports_an_archived_course_level_group_by_its_key(
     _create_course_level_group(tag, x2, root)
     _create_course_level_group(tag, y, root)
 
-    tree = get_competency_criteria_tree(tag.id)
+    tree = get_competency_criteria_tree(tag)
 
     assert tree.archived_course_keys == [x.course_key]
 
@@ -2077,7 +2077,7 @@ def test_archived_course_keys_ignores_archived_rule_groups_and_criteria_under_an
             group=rule_group_b, object_tag=object_tag, rule_profile=default_rule_profile, archived=archived,
         )
 
-    tree = get_competency_criteria_tree(tag.id)
+    tree = get_competency_criteria_tree(tag)
 
     assert not tree.archived_course_keys
 
@@ -2092,9 +2092,23 @@ def test_archived_course_keys_is_not_hidden_by_an_archived_root(
     _create_course_level_group(tag, x, root, archived=True)
     _create_course_level_group(tag, y, root, archived=True)
 
-    tree = get_competency_criteria_tree(tag.id)
+    tree = get_competency_criteria_tree(tag)
 
     assert tree.archived_course_keys == sorted([x.course_key, y.course_key], key=str)
+
+
+def test_archived_course_keys_reports_a_course_level_group_below_a_course_less_group(
+    tag: Tag, organization: Organization,
+) -> None:
+    """A course-level group nested under a group with no course is still the first course on its path."""
+    x = make_course_run(organization, "CS101", "2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    mid = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    _create_course_level_group(tag, x, mid, archived=True)
+
+    tree = get_competency_criteria_tree(tag)
+
+    assert tree.archived_course_keys == [x.course_key]
 
 
 def test_archived_course_keys_reports_only_the_selected_competencys_groups(
@@ -2109,20 +2123,20 @@ def test_archived_course_keys_reports_only_the_selected_competencys_groups(
     child_root = CompetencyCriteriaGroup.objects.create(tag=child, parent=None)
     _create_course_level_group(child, y, child_root, archived=True)
 
-    assert get_competency_criteria_tree(tag.id).archived_course_keys == [x.course_key]
+    assert get_competency_criteria_tree(tag).archived_course_keys == [x.course_key]
 
 
 def test_archived_course_keys_is_empty_without_archived_course_level_groups(
     tag: Tag, organization: Organization,
 ) -> None:
     """A tag with no groups, and a tag whose root and course-level groups are all active, report nothing."""
-    assert not get_competency_criteria_tree(tag.id).archived_course_keys
+    assert not get_competency_criteria_tree(tag).archived_course_keys
 
     x = make_course_run(organization, "CS101", "2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
     _create_course_level_group(tag, x, root)
 
-    assert not get_competency_criteria_tree(tag.id).archived_course_keys
+    assert not get_competency_criteria_tree(tag).archived_course_keys
 
 
 @pytest.mark.parametrize(
@@ -2155,7 +2169,7 @@ def test_archived_course_keys_follows_the_course_keys_scope(
             assert key is not None
             scope_keys.append(key)
 
-    tree = get_competency_criteria_tree(tag.id, scope_keys)
+    tree = get_competency_criteria_tree(tag, scope_keys)
 
     assert tree.archived_course_keys == [keys[name] for name in expected]
 
@@ -2180,7 +2194,7 @@ def test_archived_course_keys_lists_a_run_whose_rows_are_left_out_of_the_tree(
         group=y_rule_group, object_tag=y_object_tag, rule_profile=default_rule_profile,
     )
 
-    tree = get_competency_criteria_tree(tag.id)
+    tree = get_competency_criteria_tree(tag)
 
     assert tree.archived_course_keys == [x.course_key]
     group_ids = {group.id for group in tree.groups}
