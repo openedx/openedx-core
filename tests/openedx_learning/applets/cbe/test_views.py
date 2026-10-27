@@ -1483,8 +1483,12 @@ def test_tag_not_on_a_competency_taxonomy_404s(user_client: APIClient) -> None:
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_no_view_access_to_the_taxonomy_is_403(api_client: APIClient, user, tag: Tag) -> None:
-    """A non-staff caller may not read the tree of a competency on a disabled taxonomy."""
+def test_no_view_access_to_the_taxonomy_is_403(
+    api_client: APIClient, user, tag: Tag, course_run: CourseRun,
+) -> None:
+    """A non-staff caller may not read the tree of a competency on a disabled taxonomy, nor its archived runs."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
+    _create_course_level_group(tag, course_run, root, archived=True)
     taxonomy = tag.taxonomy
     assert taxonomy is not None
     taxonomy.enabled = False
@@ -1494,6 +1498,7 @@ def test_no_view_access_to_the_taxonomy_is_403(api_client: APIClient, user, tag:
     response = api_client.get(criteria_tree_url(tag.id))
 
     assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert "archived_course_keys" not in response.data
 
 
 def test_anonymous_request_is_401_and_discloses_nothing(
@@ -1566,24 +1571,6 @@ def test_tree_response_has_an_empty_archived_course_keys_list_when_nothing_is_ar
 
     assert response.status_code == status.HTTP_200_OK
     assert response.data["archived_course_keys"] == []
-
-
-def test_no_view_access_to_the_taxonomy_discloses_no_archived_course_runs(
-    api_client: APIClient, user, tag: Tag, course_run: CourseRun,
-) -> None:
-    """A caller denied access to the taxonomy gets a 403 without the archived course keys."""
-    root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
-    _create_course_level_group(tag, course_run, root, archived=True)
-    taxonomy = tag.taxonomy
-    assert taxonomy is not None
-    taxonomy.enabled = False
-    taxonomy.save()
-    api_client.force_authenticate(user=user)
-
-    response = api_client.get(criteria_tree_url(tag.id))
-
-    assert response.status_code == status.HTTP_403_FORBIDDEN
-    assert "archived_course_keys" not in response.data
 
 
 def test_tree_response_lists_an_archived_course_run_the_caller_cannot_author_in(

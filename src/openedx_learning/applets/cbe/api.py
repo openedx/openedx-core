@@ -184,7 +184,7 @@ class CompetencyCriteriaTree:
 
     ``archived_course_keys`` lists, sorted by ``str`` and once each, the course runs whose
     course-level group for this competency is archived, limited to the requested ``course_keys``
-    when a scope is given. Archived groups themselves never appear in ``groups`` or ``criteria``.
+    when a scope is given.
     """
 
     groups: list[CompetencyCriteriaGroup]
@@ -196,7 +196,7 @@ class CompetencyCriteriaTree:
 
 def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None = None) -> CompetencyCriteriaTree:
     """
-    Return the non-archived CompetencyCriteriaGroup tree and CompetencyCriterion leaves for ``tag``.
+    Return ``tag``'s non-archived CompetencyCriteriaGroup tree, CompetencyCriterion leaves, and archived course runs.
 
     UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
     behavior may change this function's shape without a deprecation cycle.
@@ -228,13 +228,7 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
     own ``course`` is the first one on its path from the root, so an archived Rule Group that
     carries its course-level group's course is not reported for that reason alone, and an archived
     root does not hide the archived course-level groups below it. ``course_keys`` limits the list
-    to the runs it names (``[]`` lists none). Archived groups, everything under them, and their
-    criteria stay out of ``groups``, ``criteria`` and ``total_criteria_count``.
-
-    This archived-course rule (an archived group carrying the first ``course`` on its path from the
-    root) is broader than the create path's lookup, which checks only the course-level group directly
-    under the root. The two agree for every shape the API creates, and the create path must follow
-    the same rule before groups can be nested or moved.
+    to the runs it names (``[]`` lists none).
     """
     # Archived rows are fetched too: the walk below skips them for the tree but still reads them
     # to find archived course runs.
@@ -248,6 +242,7 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
             groups=[], criteria=[], criteria_count=0, total_criteria_count=0, archived_course_keys=[],
         )
 
+    # Besides ranking the requested runs, this limits ``archived_course_keys`` to them.
     rank_by_run_id: dict[int, int] = {}
     if course_keys is not None:
         run_ids_by_key = get_course_run_ids(course_keys)
@@ -265,7 +260,7 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
     # Maps each reachable group id to the course run id of its branch, or None above any course.
     branch_course_ids: dict[int, int | None] = {}
     archived_courses: dict[int, CourseKey] = {}
-    # Each entry is (group, branch course run id of its parent, whether the group is under no archived row).
+    # Each entry is (group, branch course run id of its parent, whether every ancestor is non-archived).
     pending: list[tuple[CompetencyCriteriaGroup, int | None, bool]] = [
         (group, None, True) for group in groups_by_parent_id.get(None, [])
     ]
@@ -277,14 +272,16 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
             branch_course_ids[group.id] = branch_course_id
         elif group.archived and parent_branch_course_id is None and group.course_id is not None:
             # Only the group that sets the branch's course counts: an archived Rule Group below an
-            # active course-level group can carry the same course without archiving that run.
+            # active course-level group can carry the same course without archiving that run. The API
+            # writes Rule Groups with no course, so this covers rows written directly through the ORM.
             assert group.course is not None
             course_key = group.course.course_key
             assert course_key is not None
             if course_keys is None or group.course_id in rank_by_run_id:
                 archived_courses[group.course_id] = course_key
         if not reachable and branch_course_id is not None:
-            # Nothing below an unreachable group in a course branch can be reported or shown.
+            # Pruning only: skips walking a subtree that can contribute nothing to the tree or the
+            # archived list.
             continue
         for child in groups_by_parent_id.get(group.id, []):
             pending.append((child, branch_course_id, reachable))

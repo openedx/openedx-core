@@ -189,8 +189,9 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
     Only groups whose whole ancestor chain is non-archived are returned, with their non-archived
     criteria; see ``get_competency_criteria_tree``. Returned as two flat lists (groups, criteria)
     for client-side reconstruction: each group carries its parent_id, and each criterion its
-    group_id. An empty tree (the tag exists but nothing has been authored under it yet) is a
-    valid 200 with two empty arrays; a 404 is reserved for tag resolution failure only.
+    group_id. A third list, ``archived_course_keys``, holds the keys of the archived course runs.
+    An empty tree (the tag exists but nothing has been authored under it yet) is a
+    valid 200 with three empty arrays; a 404 is reserved for tag resolution failure only.
 
     The optional ``course_keys`` query parameter (comma-separated course keys) scopes the tree by
     course run. A course run's groups are its course-level group and every group nested below it.
