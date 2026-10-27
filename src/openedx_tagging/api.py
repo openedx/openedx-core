@@ -659,13 +659,16 @@ def lock_object_tags_for_deletion(object_tag_ids: int | Iterable[int]) -> None:
         raise ObjectTag.DoesNotExist(f"ObjectTag ids not found: {sorted(missing)}")
     unlocked = [object_tag_id for object_tag_id, locked in locked_by_id.items() if not locked]
     if unlocked:
-        updated = ObjectTag.objects.filter(pk__in=unlocked, deletion_locked=False).update(deletion_locked=True)
-        if updated != len(unlocked):
-            # A shortfall means a row was deleted, or another caller locked it first. Only the former is an error.
-            surviving = set(ObjectTag.objects.filter(pk__in=unlocked).values_list("pk", flat=True))
-            deleted = set(unlocked) - surviving
-            if deleted:
-                raise ObjectTag.DoesNotExist(f"ObjectTag ids deleted before they could be locked: {sorted(deleted)}")
+        with transaction.atomic():
+            updated = ObjectTag.objects.filter(pk__in=unlocked, deletion_locked=False).update(deletion_locked=True)
+            if updated != len(unlocked):
+                # A shortfall means a row was deleted, or another caller locked it first. Only the former is an error.
+                surviving = set(ObjectTag.objects.filter(pk__in=unlocked).values_list("pk", flat=True))
+                deleted = set(unlocked) - surviving
+                if deleted:
+                    raise ObjectTag.DoesNotExist(
+                        f"ObjectTag ids deleted before they could be locked: {sorted(deleted)}"
+                    )
 
 
 def get_tags_locked_for_deletion(tag_ids: Iterable[int]) -> set[int]:
