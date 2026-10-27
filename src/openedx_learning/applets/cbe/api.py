@@ -969,13 +969,14 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     otherwise. See ADR-0002 Decision 2.
 
     Raises CompetencyCriterion.DoesNotExist if no such criterion exists (including one deleted
-    concurrently) and PermissionDenied if ``user`` may not tag the criterion's object. Raises
-    ValidationError keyed ``object_id`` if the criterion's ObjectTag must be removed but the tagging
-    API does not report it, which the permission check normally prevents.
+    concurrently) and PermissionDenied if ``user`` may not tag the criterion's object.
+
+    On a hard delete, the criterion's own ObjectTag is deleted too, and only when no other
+    criterion references it. No other ObjectTag on the object is touched.
 
     The whole operation runs in one transaction that locks the competency's Tag, then the
-    criterion's group and every ancestor group, then the criterion. A concurrent create for the
-    same competency waits on the Tag lock. A learner-progress insert on the criterion or on any
+    criterion's group and every ancestor group, then the criterion, then its ObjectTag. A concurrent
+    create for the same competency waits on the Tag lock. A learner-progress insert on the criterion or on any
     ancestor group waits on that row's lock. The progress checks therefore cannot go stale, so
     no fallback or retry is needed.
     """
@@ -1000,23 +1001,13 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
             return CriterionDeletionResult(id=criterion_id, archived=True)
         group = criterion.group
         object_tag = criterion.object_tag
-        untag = not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exclude(pk=criterion_id).exists()
-        if untag:
-            tagged = get_object_tags(object_tag.object_id, taxonomy_id=object_tag.taxonomy_id)
-            # get_object_tags hides the tags of a disabled taxonomy, but tag_object deletes every
-            # ObjectTag missing from its list, so a keep list built from the filtered rows would
-            # delete tags it never saw. Refuse before writing anything. This is defense in depth:
-            # the permission check above already refuses a disabled taxonomy.
-            if object_tag.id not in {t.id for t in tagged}:
-                raise ValidationError({"object_id": _(
-                    "The tagging API does not report this criterion's object tag, so it cannot be untagged safely."
-                )})
         criterion.delete()
-        if untag:
-            tag_object(
-                object_tag.object_id,
-                group.tag.taxonomy,
-                [t.value for t in tagged if t.value != group.tag.value],
-            )
+        # Only this criterion's own ObjectTag is a candidate, and its lock comes last. Inserting a
+        # criterion takes a foreign key lock on its ObjectTag, so the re-check under this lock sees
+        # any criterion committed for it in the meantime, and that criterion keeps its ObjectTag.
+        locked_object_tag = ObjectTag.objects.select_for_update().filter(pk=object_tag.id).first()
+        still_referenced = CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists()
+        if locked_object_tag is not None and not still_referenced:
+            locked_object_tag.delete()
         _cascade_from_group(group, "delete", user)
         return CriterionDeletionResult(id=criterion_id, archived=False)
