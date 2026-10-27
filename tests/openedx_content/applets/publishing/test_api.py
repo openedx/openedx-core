@@ -2578,6 +2578,82 @@ class CrossEntityValidationTestCase(TransactionTestCase):
                 dependencies=[entity_in_lp2.id],
             )
 
+    def _create_entity_with_deps(self, ref: str, dependencies: list | None = None) -> PublishableEntity:
+        """Create an entity with a v1 draft that has ``dependencies``."""
+        entity = publishing_api.create_publishable_entity(
+            self.learning_package_1.id, ref, created=self.now, created_by=None,
+        )
+        publishing_api.create_publishable_entity_version(
+            entity.id,
+            version_num=1,
+            title=f"{ref} v1",
+            created=self.now,
+            created_by=None,
+            dependencies=dependencies,
+        )
+        return entity
+
+    def _create_next_version(self, entity: PublishableEntity, dependencies: list) -> None:
+        """Create the next draft version of ``entity`` with ``dependencies``."""
+        publishing_api.create_publishable_entity_version(
+            entity.id,
+            version_num=entity.versions.count() + 1,
+            title=f"{entity.entity_ref} next",
+            created=self.now,
+            created_by=None,
+            dependencies=dependencies,
+        )
+
+    def test_dependencies_reject_self_reference(self) -> None:
+        """
+        An entity version cannot depend on its own entity.
+        """
+        entity = self._create_entity_with_deps("self_ref")
+        with pytest.raises(ValidationError, match="dependency cycle"):
+            self._create_next_version(entity, [entity.id])
+
+    def test_dependencies_reject_draft_cycle(self) -> None:
+        """
+        A -> B -> C (via draft versions); making C depend on A is a cycle.
+        """
+        c = self._create_entity_with_deps("cycle_c")
+        b = self._create_entity_with_deps("cycle_b", [c.id])
+        a = self._create_entity_with_deps("cycle_a", [b.id])
+        with pytest.raises(ValidationError, match="dependency cycle"):
+            self._create_next_version(c, [a.id])
+
+        # Nothing was written for the rejected version (it was rolled back).
+        assert c.versions.count() == 1
+
+    def test_dependencies_reject_published_cycle(self) -> None:
+        """
+        Cycles through published versions are rejected even if the current
+        drafts no longer contain the relationship.
+        """
+        b = self._create_entity_with_deps("pub_cycle_b")
+        a = self._create_entity_with_deps("pub_cycle_a", [b.id])
+        publishing_api.publish_all_drafts(self.learning_package_1.id)
+
+        # Remove the A -> B dependency in draft only; published A still depends on B.
+        self._create_next_version(a, [])
+        with pytest.raises(ValidationError, match="dependency cycle"):
+            self._create_next_version(b, [a.id])
+
+    def test_dependencies_allow_dags(self) -> None:
+        """
+        Shared dependencies (diamonds) are fine, as is reversing an edge once
+        the old one is gone from both draft and published versions.
+        """
+        d = self._create_entity_with_deps("dag_d")
+        b = self._create_entity_with_deps("dag_b", [d.id])
+        c = self._create_entity_with_deps("dag_c", [d.id])
+        a = self._create_entity_with_deps("dag_a", [b.id, c.id])
+        assert a.versions.get().dependencies.count() == 2
+
+        # B no longer depends on D (never published), so D may depend on B.
+        self._create_next_version(b, [])
+        self._create_next_version(d, [b.id])
+
     def test_publish_functions_rejected_inside_bulk_draft_changes_for(self) -> None:
         """
         publish_all_drafts() and publish_from_drafts() must not be callable

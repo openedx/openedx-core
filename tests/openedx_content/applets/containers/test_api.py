@@ -376,7 +376,7 @@ def test_create_container_queries(lp: LearningPackage, child_entity1: TestEntity
     with django_assert_num_queries(35):
         containers_api.create_container_and_version(lp.id, container_code="c1", **base_args)
     # And try with a a container that has children:
-    with django_assert_num_queries(38):
+    with django_assert_num_queries(39):
         containers_api.create_container_and_version(lp.id, container_code="c2", **base_args, entities=[child_entity1])
 
 
