@@ -69,21 +69,34 @@ def combine_parent_competency_status(
 
 
 def _child_groups(group_ids: set[int]) -> list[tuple[int, int]]:
-    """Return (child group id, parent group id) for every child group of ``group_ids``."""
-    return list(CompetencyCriteriaGroup.objects.filter(parent_id__in=group_ids).values_list("pk", "parent_id"))
+    """Return (child group id, parent group id) for every non-archived child group of ``group_ids``."""
+    return list(
+        CompetencyCriteriaGroup.objects.filter(parent_id__in=group_ids, archived=False).values_list("pk", "parent_id")
+    )
 
 
 def _child_criteria(group_ids: set[int]) -> list[tuple[int, int]]:
-    """Return (criterion id, group id) for every criterion directly under ``group_ids``."""
-    return list(CompetencyCriterion.objects.filter(group_id__in=group_ids).values_list("pk", "group_id"))
+    """Return (criterion id, group id) for every non-archived criterion directly under ``group_ids``."""
+    return list(
+        CompetencyCriterion.objects.filter(group_id__in=group_ids, archived=False).values_list("pk", "group_id")
+    )
 
 
 def _to_status(value: int | None) -> MasteryStatus | None:
     return None if value is None else MasteryStatus(value)
 
 
+def _stored_group_status(user_id: int, group_id: int) -> MasteryStatus | None:
+    """Return the status stored for ``group_id``, or None when the learner has no row for it."""
+    return _to_status(
+        StudentCompetencyCriteriaGroupStatus.objects.filter(user_id=user_id, group_id=group_id)
+        .values_list("status_id", flat=True)
+        .first()
+    )
+
+
 def _children_statuses(user_id: int, group_ids: set[int]) -> dict[int, list[MasteryStatus | None]]:
-    """Return, per group, one status (or None for no row) for each of its child groups and criteria."""
+    """Return, per group, one status (or None for no row) for each of its non-archived child groups and criteria."""
     child_groups = _child_groups(group_ids)
     child_criteria = _child_criteria(group_ids)
     group_status = dict(
@@ -115,7 +128,8 @@ def _roll_up_groups(user_id: int, group_ids: set[int], now: datetime) -> set[int
     """
     Recompute each group in ``group_ids`` and then its parent, one level at a time, up to the roots.
 
-    Returns the ids of the competency tags whose root group was reached.
+    An archived group is passed through without recomputing its status, and an archived root raises its competency from
+    the status it already holds. Returns the ids of the competency tags whose root group was reached.
     """
     competency_tag_ids: set[int] = set()
     frontier = set(group_ids)
@@ -123,7 +137,7 @@ def _roll_up_groups(user_id: int, group_ids: set[int], now: datetime) -> set[int
         statuses = _children_statuses(user_id, frontier)
         next_frontier: set[int] = set()
         for group in CompetencyCriteriaGroup.objects.filter(pk__in=frontier):
-            status = combine_children(group.logic_operator, statuses[group.pk])
+            status = None if group.archived else combine_children(group.logic_operator, statuses[group.pk])
             if status is not None:
                 raise_status(
                     StudentCompetencyCriteriaGroupStatus.objects,
@@ -135,6 +149,8 @@ def _roll_up_groups(user_id: int, group_ids: set[int], now: datetime) -> set[int
                 next_frontier.add(group.parent_id)
                 continue
             competency_tag_ids.add(group.tag_id)
+            if group.archived:
+                status = _stored_group_status(user_id, group.pk)
             if status is not None:
                 raise_status(
                     StudentCompetencyStatus.objects,
@@ -148,6 +164,7 @@ def _roll_up_groups(user_id: int, group_ids: set[int], now: datetime) -> set[int
 
 def _own_criteria_statuses(user_id: int, tag_ids: set[int]) -> dict[int, MasteryStatus]:
     """Return each tag's own criteria result: its best root-group status, for tags that have an attempted root."""
+    # Archived roots are counted because the walk raises a competency's row from an archived root's stored status.
     rows = (
         StudentCompetencyCriteriaGroupStatus.objects.filter(
             user_id=user_id, group__tag_id__in=tag_ids, group__parent__isnull=True,
@@ -221,6 +238,7 @@ def roll_up_competency_statuses(*, user_id: int, object_ids: Sequence[str]) -> N
 
     The caller must not be inside a transaction, because each level has to commit before the next is read.
     Repeated calls with the same arguments are safe, since every write only ever raises a stored status.
+    Archived groups and criteria are left out of the combination, and a status already stored against them is kept.
 
     :raises TransactionManagementError: if called inside an atomic block.
     """
@@ -231,6 +249,7 @@ def roll_up_competency_statuses(*, user_id: int, object_ids: Sequence[str]) -> N
         )
     if not object_ids:
         return
+    # Not filtered on archived: naming an archived criterion's object recomputes its group from non-archived children.
     group_ids = set(
         CompetencyCriterion.objects.filter(
             object_tag__object_id__in=list(set(object_ids)),
