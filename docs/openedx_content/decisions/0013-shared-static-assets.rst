@@ -48,17 +48,57 @@ If a file is uploaded with the same filename as an Asset that has been (soft) de
 
 Within a single Learning Package, Assets can use relative references to each other. For example, an HTML file stored as an Asset can reference ``image.jpg`` (or ``./image.jpg``) which would be rendered if the HTML file was viewed in the browser and the image in question was another Asset in the same Learning Package.
 
-This is largely for backwards compatibility. Existing courses have ``.html`` files in their Files that load ``.js``, ``.css`` and image files from the same course by relative URL, and are framed or linked from course content. Plain (unscripted) HTML and SVG documents work under the ``sandbox`` policy of :ref:`openedx-content-adr-0005`; HTML that relies on running scripts additionally needs the ``allow_scripts`` flag (decision 8). For new content, HTML interactives are better implemented as an HTML Component with the related files attached to it: the interactive's markup lives in the component's own HTML, which loads the attached ``.js``, ``.css`` and image files as subresources.
+This is largely for backwards compatibility. Existing courses have ``.html`` files in their Files that load ``.js``, ``.css`` and image files from the same course by relative URL, and are framed or linked from course content. Plain (unscripted) HTML and SVG documents work under the ``sandbox`` policy of :ref:`openedx-content-adr-0005`; HTML that relies on running scripts additionally needs the ``allow_scripts`` flag (decision 10). For new content, HTML interactives are better implemented as an HTML Component with the related files attached to it: the interactive's markup lives in the component's own HTML, which loads the attached ``.js``, ``.css`` and image files as subresources.
 
-To achieve this, Assets are served under their own URL form, defined in :ref:`openedx-content-adr-0005` ("URLs"), in which the filename is the final part of the path and all Assets of a learning package share one directory::
+To achieve this, Assets are served in a way that makes every Asset of a learning package appear to be in the same directory, so that relative references between them resolve as ordinary relative URLs. There are two URL forms that do this, both defined in :ref:`openedx-content-adr-0005`: a component-scoped form (decision 4) and a learning-package-level form (decision 5).
+
+4. Shared Assets used by a Component are served relative to that Component
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When a Component is rendered, every ``/static/{filename}`` reference in it is rewritten to that Component's own file URL, regardless of whether ``{filename}`` is a file attached to the Component or a shared Asset::
+
+    .../{context}/.../{component_key}/{version}/static/{filename}
+
+The rewriting code therefore doesn't need to know where the file lives. Instead, the serving endpoint resolves each request for a component file as follows:
+
+1. The platform checks permissions on the Component, and returns a 403 or 404 if access is denied.
+2. If the requested component version has an attached file ``static/{filename}``, that file is served.
+3. Otherwise, if the learning package has a shared Asset with that ``filename``, then:
+
+   * **Lenient mode**: the Asset is served.
+   * **Strict mode**: the Asset is served only if the requested component version has a :class:`PublishableEntityVersionDependency` on it (see :ref:`openedx-content-adr-0014`, decision 3).
+
+   In both modes, the Asset's own permissions mode (decision 9) is also enforced, and its ``allow_scripts`` flag (decision 10) determines the response's ``Content-Security-Policy``.
+4. Otherwise, the response is a 404.
+
+The shared Asset is served directly at the component file URL, without a redirect, so that relative references from the shared Asset are resolved relative to the Component too. For example, if an HTML Component references ``/static/page.html`` (a shared Asset), and ``page.html`` references ``image.png`` (another shared Asset), the browser requests ``.../{component_key}/published/static/image.png``, which goes through the same resolution steps. Filenames containing ``/`` work the same way: ``images/diagram.html`` referencing ``../logo.png`` resolves to ``.../static/logo.png``. (References that climb above ``static/`` must not resolve to any component files outside ``static/``, which are not learner-accessible.)
+
+The version of the shared Asset that's served is determined by the requested component version, as described in :ref:`openedx-content-adr-0014`, decision 7: a ``published`` Component uses the published version of the Asset, and a ``draft`` Component uses the draft version of the Asset. Dependencies are not pinned, so if a specific historical component version is requested (``?v=num``), the strict mode check uses that component version's dependencies, but the Asset's current draft is served.
+
+**The mode is chosen by the platform.** As with ``allow_scripts``, ``openedx_content`` doesn't decide which mode to use; the platform passes it into the serving API. We will start with **content libraries in strict mode** and **courses in lenient mode**, because existing course Files contain HTML assets that make relative references to other Assets, and no dependency has been declared for those. The platform may move courses towards strict mode over time, e.g. per course, once dependencies can be relied on. In lenient mode, the platform should log whenever it serves a shared Asset that is not a declared dependency of the requesting component version, so that operators can see which undeclared dependencies exist before tightening the mode.
+
+The benefits of this approach are:
+
+* Every shared Asset that a library Component uses, including through relative references, is a declared dependency. So editing a relatively-referenced library Asset shows up as a change to the Components that use it, and copying the Component into a course (:ref:`openedx-content-adr-0014`, decision 5) brings along every Asset that it needs.
+* Operators can see which shared Assets are used by which Components, whether they are referenced using ``/static/`` or using relative references.
+* Access to shared Assets used in course content can be checked in the context of the Component that uses them (release dates, cohorts, etc.), as anticipated in the "Permissions" section of :ref:`openedx-content-adr-0005`.
+
+This requires that ``/static/`` rewriting knows which Component it is rewriting for. Static URL replacement is already done block-by-block, but some call sites in ``openedx-platform`` don't pass the block's ID, so they'll need to be updated.
+
+5. Shared Assets also have a learning-package-level URL
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some references to shared Assets aren't made from any Component, e.g. course "about" pages, textbooks, handouts, external links, legacy asset key URLs (:ref:`openedx-content-adr-0014`), and the Studio "Files" page itself. For these, shared Assets are also served under a URL form in which the filename is the final part of the path and all Assets of a learning package share one directory::
 
     .../{context}/assets/{draft|published}/{filename}
 
-For example, an HTML Asset served at ``.../assets/published/page.html`` that references ``image.png`` causes the browser to request ``.../assets/published/image.png``, which is the ``image.png`` Asset's own URL. Filenames containing ``/`` work the same way: ``images/diagram.html`` referencing ``../logo.png`` resolves to ``.../assets/published/logo.png``.
+For example, an HTML Asset served at ``.../assets/published/page.html`` that references ``image.png`` causes the browser to request ``.../assets/published/image.png``, which is the ``image.png`` Asset's own URL at this level.
+
+Since there's no Component to check dependencies against, requests to this URL form are always resolved like lenient mode, subject to the Asset's own permissions mode (decision 9).
 
 Historic versions: there is no current use case for learners to access previous versions of assets, so the LMS is expected to use the ``...assets/published/...`` URL form only (plus perhaps the ``draft`` form for staff previewing unpublished changes). Studio can use the ``...assets/draft/...`` URL to get the draft asset data, as well as optionally use the ``?v=num`` query string to access a previous version of a specific file (e.g. ``.../assets/draft/example.jpg?v=5``). Specific historical versions (e.g. ``?v=5``) are always served with ``Content-Disposition: attachment``, so they can be downloaded (e.g. from a version history UI) but are never rendered as documents (relative links are likely to be broken or inconsistent in such cases, since there's no way to correlate the version of the relatively referenced asset like "./image.jpg" with the specific version of a requesting asset like ``referencer.html``).
 
-4. Course Files are Assets within the run's learning package
+6. Course Files are Assets within the run's learning package
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For courses authored in the future, we want to encourage most static assets to be directly attached to the Component where they are used. But shared assets (referenced by multiple components), including every Course Files asset migrated from legacy MongoDB storage, will live in the run's learning package as Assets.
@@ -67,24 +107,24 @@ When migrating assets from MongoDB/contentstore to ``openedx_content``, each ass
 
 * **Thumbnails** generated by contentstore are dropped and not migrated. Thumbnails will be handled separately, as described in an upcoming ADR.
 * **Video transcripts** stored in contentstore (e.g. ``subs_*.srt.sjson``) become Assets like any other file. Video blocks reference transcripts by name rather than via ``/static/`` URLs, and during this migration they are still in modulestore with no :class:`Component`, so no dependency tracking is set up for transcript Assets at this stage. Dependencies between video components and their transcript Assets can be added when course content itself is migrated to ``openedx_content``.
-* **python_lib.zip** automatically gets ``private`` mode (decision 7), so that it remains inaccessible to learners as it is today.
-* **HTML files** get ``allow_scripts=True`` (decision 8) if the course currently relies on them being rendered with scripts enabled, so that they keep working.
+* **python_lib.zip** automatically gets ``private`` mode (decision 9), so that it remains inaccessible to learners as it is today.
+* **HTML files** get ``allow_scripts=True`` (decision 10) if the course currently relies on them being rendered with scripts enabled, so that they keep working.
 
 Each course's Files are migrated in a single step, which also creates the run's learning package and ``CourseContent`` row (:ref:`openedx-content-adr-0012`, decision 3). A course is never in a mixed state: before the migration, all of its Files are in contentstore, and afterwards, contentstore is no longer consulted for that course.
 
-5. Human readable titles
+7. Human readable titles
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 All Assets (in fact, all PublishableEntities) have a mutable ``title`` which can be used to store a human-readable name for the entity, such as "Illustration of the Moon's Orbit (SVG)". The title is versioned (it's defined by :class:`PublishableEntityVersion`), so changing the title creates a new version.
 
 The title of an asset can be changed at any time, but the filename cannot be changed. (Changing the filename would break references/links to the file from the course content.)
 
-6. Assets are not part of the learner-facing outline
+8. Assets are not part of the learner-facing outline
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Assets are not children of the course container or any of its descendants. Putting them there would mean every asset upload creates a new version of an outline container.
 
-7. Asset permissions mode: "public", "locked", "private"
+9. Asset permissions mode: "public", "locked", "private"
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The ``Asset`` model will have a permissions column with an enum that allows values of ``public`` (default), ``locked``, and ``private``. The permissions mode is on the unversioned model (not part of versioning), because often authors will wish to lock down all versions of an asset, not just lock the current version while still allowing access to previous versions.
@@ -97,8 +137,8 @@ In **libraries**, these permissions checks have little effect, but indicate what
 
 This information must be preserved round-trip on course exports/import. The attributes like ``locked``, ``private``, ``allow_scripts``, and ``title`` need to go into ``policies/assets.json``. Private shared assets other than ``python_lib.zip`` will have to be exported to a separate folder outside of ``static/`` and will be silently ignored if imported into an older version of Open edX that doesn't support private assets.
 
-8. HTML Assets can be allowed to run scripts
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+10. HTML Assets can be allowed to run scripts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Some existing courses have HTML files in their Files (e.g. interactives, simulations, or games) that load JavaScript from other course files and are embedded as iframes within HTML XBlocks. These only work if the HTML document is allowed to run scripts, which the default ``Content-Security-Policy: sandbox`` header from :ref:`openedx-content-adr-0005` prevents. We must not break these courses when their Files are migrated.
 
@@ -108,7 +148,7 @@ Additional rules:
 
 - **The platform decides whether to honor the flag.** As required by :ref:`openedx-content-adr-0005`, ``openedx_content`` only stores the flag. The platform passes the relaxed policy into the serving API, and it can be disabled for a whole site (or course) with a platform-level setting, in which case flagged Assets are served with the normal ``sandbox`` policy.
 - **Flagged Assets bypass the proxy's forced headers.** The reverse proxy forces ``Content-Security-Policy: sandbox`` on the internal ``X-Accel-Redirect`` location, so flagged Assets are served using the Django-streamed fallback (or a separate internal proxy location with the relaxed policy), as anticipated in :ref:`openedx-content-adr-0005`.
-- **The flag is not limited to migrated Assets.** It is set automatically by the migration from contentstore (decision 4), but it can also be turned on later for any HTML Asset, including newly uploaded ones, and it can be cleared at any time.
+- **The flag is not limited to migrated Assets.** It is set automatically by the migration from contentstore (decision 6), but it can also be turned on later for any HTML Asset, including newly uploaded ones, and it can be cleared at any time.
 
 We will likely continue to support this flag until, and unless, the platform has a way to prevent authors from putting arbitrary HTML (including scripts) directly into HTML components. See Consequences below.
 
@@ -130,6 +170,10 @@ However, a library XBlock Component that in turn uses a library Asset still has 
 **Many more rows per course.** Each course file goes from one Mongo document to about nine rows: ``PublishableEntity``, ``Asset``, ``PublishableEntityVersion``, ``AssetVersion``, ``Draft``, ``Published``, ``Media``, a ``DraftChangeLogRecord`` and a ``PublishLogRecord`` (plus the ``DraftChangeLog`` and ``PublishLog`` themselves, which can be shared by all files uploaded or migrated together). For a course with 2,000 assets that's about 18,000 rows. Per :ref:`openedx-content-adr-0012`, most of those rows would need to be copied each time the course is rerun.
 
 **Legacy asset key URLs must be mapped to Assets.** Once a course's Files are migrated, contentstore is no longer consulted for that course, but its content (and external sites) will still contain asset key URLs like ``/asset-v1:{course}+type@asset+block@{name}`` (see :ref:`openedx-content-adr-0014`). We must implement a handler (e.g. in the contentserver middleware) that resolves such URLs for migrated courses to the Asset with the corresponding filename in the run's learning package, and serves or redirects to it. The mapping must account for how contentstore encodes paths in asset keys, so that files that were in subfolders still resolve.
+
+**A shared Asset is served under many URLs.** Because shared Assets used by Components are served at each Component's own file URL (decision 4), a shared Asset used by 50 Components has 50 different URLs (per draft/published version), each of which is cached separately by browsers and CDNs. Each of these requests also requires a permissions check on the Component, even for ``public`` Assets. We could mitigate this by making non-HTML assets served via redirects, since HTML assets are thought to be the only ones that require relative links to work.
+
+**Strict mode can't be turned on for existing courses right away.** Relative references between existing course Files were never declared as dependencies, so they would break in strict mode. Before a course can be switched to strict mode, these dependencies must be added, e.g. by scanning HTML Assets for relative references and adding the referenced Assets as dependencies of each Component that uses the HTML Asset. The same applies when legacy course content containing such references is imported into a (strict mode) library.
 
 **Tiny text-based course files can be stored within MySQL.** Just as OLX for XBlocks can be stored within MySQL rows in the ``text`` column instead of on object storage like S3, small uploads (under 50,000 characters) like .svg or .js files *could* be stored entirely within MySQL if we wanted to do so (although in general we probably don't).
 
@@ -198,6 +242,11 @@ Other names for Assets
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 "Make all assets locked" and "don't implement locking at all" are rejected for lack of backwards compatibility and lack of the strong buy-in required for removing a feature. "Make new assets locked by default" is worth considering in the future; it was previously not done only for performance reasons which may or may not be as relevant in the future.
+
+Serving shared Assets only at a learning-package-level URL
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An earlier draft of this ADR rewrote ``/static/`` references to shared Assets directly to the learning-package-level URL (decision 5), and handled relative references from a Component's files to shared Assets with a redirect to that URL. This gives each shared Asset a single URL, which is better for caching. It was rejected because the ``/static/`` rewriting code would need to know whether each file is attached to the Component or shared, and because relative references between shared Assets could never be tied to the Component using them: they would never be tracked as dependencies or included when copying a library Component into a course, and their permissions could only be checked at the learning package level.
 
 Only allow relative links for HTML files
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

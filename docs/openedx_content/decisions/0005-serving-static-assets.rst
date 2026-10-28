@@ -109,13 +109,15 @@ Shared Assets: ``https://{lms_or_studio_host}/...{context}.../assets/{version}/{
 
 A more concrete example: ``https://demo.openedx.org/assets/content_libraries/lib:Axim:200/assets/published/images/fig1.png``
 
-The literal ``assets`` segment cannot collide with a component key, since component keys always contain ``:``. Everything after the version segment is the Asset's filename, which may itself contain ``/``. Because every shared Asset of a learning package is served from the same directory for a given version, relative references between Assets resolve as ordinary relative URLs. A relative reference from a Component's file to a shared Asset is handled by a redirect.
+The literal ``assets`` segment cannot collide with a component key, since component keys always contain ``:``. Everything after the version segment is the Asset's filename, which may itself contain ``/``. Because every shared Asset of a learning package is served from the same directory for a given version, relative references between Assets resolve as ordinary relative URLs.
+
+Shared Assets that are used by a Component are also served (without a redirect) at that Component's own file URL, e.g. ``.../xblock.v1:html@intro/published/static/diagram.html``, if the Component doesn't have its own file with that name. All ``/static/`` references in a Component are rewritten to this form. This is described in :ref:`openedx-content-adr-0013`, decision 4, including the "strict mode" in which only shared Assets that are declared dependencies of the Component are served this way.
 
 The ``version`` can be:
 
 * ``draft`` indicating the latest draft version (viewed by authors in Studio).
 * ``published`` indicating the latest published version (viewed by students in the LMS)
-* If the ``version`` is ``draft``, then ``?v={num}`` can also be used to retrieve a specific version - e.g. ``?v=20`` for version 20. For shared Assets, this is the version of the requested Asset only, and the response is always sent as an attachment (see :ref:`openedx-content-adr-0013`, decision 3).
+* If the ``version`` is ``draft``, then ``?v={num}`` can also be used to retrieve a specific version - e.g. ``?v=20`` for version 20. For shared Assets, this is the version of the requested Asset only, and the response is always sent as an attachment (see :ref:`openedx-content-adr-0013`, decision 5).
 
 Response Headers
 ~~~~~~~~~~~~~~~~
@@ -131,7 +133,7 @@ This is the same policy the upstream contentserver now applies, so a course whos
 
 ``Content-Type`` is chosen by the serving code from the allowlist described in the security requirements, using the stored media type and file extension as inputs. Types outside the allowlist are served as ``application/octet-stream`` with ``Content-Disposition: attachment; filename="..."``, using the last segment of the file's path (its path within the component, or the shared Asset's filename) for the filename.
 
-**"Insecure Legacy Assets"**: The relaxed form ``sandbox allow-scripts allow-forms allow-popups`` would keep the opaque origin while letting scripts run, which would preserve the legacy pattern of iframing an uploaded HTML5 interactive from an HTML block. It is not adopted as the default. Its safety depends on the site's cookies being ``SameSite=Lax`` or stricter, but `the platform defaults to SameSite=None <https://github.com/openedx/openedx-platform/blob/aa5ec07c61a90ca4ef0ae05eebddc653e5d4e033/lms/envs/production.py#L140>`_. It is only used for shared HTML Assets that are explicitly flagged with ``allow_scripts`` (:ref:`openedx-content-adr-0013`, decision 8), and only when the platform chooses to honor that flag (in the spirit of ``course_assets.allow_unsafe_asset_rendering``) and passes the relaxation into the ``openedx_content`` serving API; ``openedx_content`` does not decide this itself.
+**"Insecure Legacy Assets"**: The relaxed form ``sandbox allow-scripts allow-forms allow-popups`` would keep the opaque origin while letting scripts run, which would preserve the legacy pattern of iframing an uploaded HTML5 interactive from an HTML block. It is not adopted as the default. Its safety depends on the site's cookies being ``SameSite=Lax`` or stricter, but `the platform defaults to SameSite=None <https://github.com/openedx/openedx-platform/blob/aa5ec07c61a90ca4ef0ae05eebddc653e5d4e033/lms/envs/production.py#L140>`_. It is only used for shared HTML Assets that are explicitly flagged with ``allow_scripts`` (:ref:`openedx-content-adr-0013`, decision 10), and only when the platform chooses to honor that flag (in the spirit of ``course_assets.allow_unsafe_asset_rendering``) and passes the relaxation into the ``openedx_content`` serving API; ``openedx_content`` does not decide this itself.
 
 Reverse Proxy Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~

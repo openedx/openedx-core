@@ -61,6 +61,8 @@ This means the existing side-effect machinery works unchanged: editing a draft A
 
 ⚠️ However, note that on its own, this cannot detect relative references among Assets. For example, if an Asset ``example.html`` references ``<img src="image.png">``, then there is a dependency between ``example.html`` and ``image.png`` that is not represented by a :class:`PublishableEntityVersionDependency`. We can attempt to reduce the occurrence of this by scanning HTML files for references as well, but that is not going to be particularly reliable and could also generate circular dependencies, which the ``set_version_dependencies`` API says should be avoided.
 
+To address this, shared Assets used by a Component are served relative to that Component, and in "strict mode" (used for content libraries), a shared Asset is only served for a Component if the Component declares it as a dependency (:ref:`openedx-content-adr-0013`, decision 4). In the example above, ``image.png`` would then have to be explicitly added as a dependency of each Component that uses ``example.html``. In "lenient mode" (used for courses, for now), undeclared relative references still work, and they're logged so they can be found.
+
 4. Unresolved references create placeholder Assets
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -98,9 +100,9 @@ Note: this cannot be implemented when course XBlocks are stored purely in module
 6. Editors should de-reference full URLs on save
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In the course of editing courseware, authors may use their browser's "Copy Image URL" to copy the URL of an image and paste it elsewhere, resulting in a full, rewritten URL like ``https://demo.openedx.org/assets/content_libraries/lib:Axim:200/assets/draft/images/fig1.png`` ending up in the OLX. If any such URLs are detected, they should be automatically rewritten to the ``/static/`` format (subject to some sanity checks to ensure it will still reference the correct asset).
+In the course of editing courseware, authors may use their browser's "Copy Image URL" to copy the URL of an image and paste it elsewhere, resulting in a full, rewritten URL like ``https://demo.openedx.org/assets/content_libraries/lib:Axim:200/xblock.v1:html@intro/draft/static/images/fig1.png`` or ``https://demo.openedx.org/assets/content_libraries/lib:Axim:200/assets/draft/images/fig1.png`` ending up in the OLX. If any such URLs are detected, they should be automatically rewritten to the ``/static/`` format (subject to some sanity checks to ensure it will still reference the correct asset).
 
-Note: Only rewrite full URLs that point to a shared asset in the same learning package, and don't conflict with any of the component's own asset files.
+Note: Only rewrite full URLs that resolve to a shared asset in the same learning package (whether through another component's file URL or the learning-package-level URL), or to the component's own file, and don't conflict with any of the component's own asset files.
 
 7. Versioning follows the library content model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
