@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
-from opaque_keys.edx.keys import UsageKey
+from opaque_keys.edx.keys import CourseKey, UsageKey
 from rest_framework import serializers
 
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile, LogicOperator
@@ -163,3 +163,39 @@ class CompetencyCriterionReadSerializer(serializers.ModelSerializer):
             "id", "group_id", "object_tag_id", "object_id",
             "rule_profile_id", "rule_type_override", "rule_payload_override",
         ]
+
+
+class BlockedCourseSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """
+    Read-only representation of a BlockedCourse, for the blocked-courses endpoint.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle.
+    """
+
+    course_key = serializers.CharField(read_only=True)
+    conflicting_tag_id = serializers.IntegerField(read_only=True)
+    conflicting_tag_value = serializers.CharField(read_only=True)
+
+
+class CompetencyBlockedCoursesQueryParamsSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+    """
+    Query params for the blocked-courses endpoint: an optional comma-separated ``course_keys`` filter.
+    """
+
+    course_keys = serializers.CharField(required=False)
+
+    def validate_course_keys(self, value: str) -> list[CourseKey]:
+        """Parse the comma-separated course keys, rejecting a filter that names none or an unparseable one."""
+        pieces = [piece.strip() for piece in value.split(",") if piece.strip()]
+        if not pieces:
+            raise serializers.ValidationError(_("course_keys must name at least one course key."))
+        course_keys = []
+        for piece in pieces:
+            try:
+                course_keys.append(CourseKey.from_string(piece))
+            except InvalidKeyError as exc:
+                raise serializers.ValidationError(
+                    _("'{course_key}' is not a valid course key.").format(course_key=piece)
+                ) from exc
+        return course_keys

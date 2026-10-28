@@ -5,6 +5,7 @@ Fixtures live in this directory's conftest.py. Several scenarios here create rul
 directly rather than through a live call, because no create or archive endpoint exists yet.
 """
 from typing import Any, Generator
+from urllib.parse import urlencode
 
 import pytest
 import rules
@@ -1480,3 +1481,346 @@ def test_the_same_tag_with_two_different_criteria_in_the_same_course_is_allowed(
     response = user_client.post(criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p2")}, format="json")
 
     assert response.status_code == status.HTTP_201_CREATED
+
+
+# ==============================================================================================
+# CompetencyBlockedCoursesView
+# ==============================================================================================
+
+
+def blocked_courses_url(tag_id: int, **params: str) -> str:
+    """Return the blocked-courses endpoint's path for `tag_id`, with `params` as its query string."""
+    url = reverse("cbe:blocked-courses", kwargs={"tag_id": tag_id})
+    return f"{url}?{urlencode(params)}" if params else url
+
+
+def make_leaf_criterion(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile, block_id: str,
+) -> CompetencyCriterion:
+    """Create a leaf group and one live CompetencyCriterion for `tag` in `course_run`."""
+    leaf = _create_leaf_group(tag, course_run)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, block_id), taxonomy=tag.taxonomy, tag=tag)
+    return CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+
+
+def collect_pages(client: APIClient, url: str) -> list[dict]:
+    """Follow `next` links from `url` and return every row across all pages."""
+    rows: list[dict] = []
+    next_url: str | None = url
+    while next_url:
+        response = client.get(next_url)
+        assert response.status_code == status.HTTP_200_OK
+        rows.extend(response.data["results"])
+        next_url = response.data["next"]
+    return rows
+
+
+def make_skill_family(taxonomy: CompetencyTaxonomy) -> tuple[Tag, Tag, Tag, Tag]:
+    """
+    Create "Cognitive Skills" > "Critical Thinking" > "Inference", plus "Analysis" as a sibling of "Inference".
+    """
+    cognitive_skills = make_tag(taxonomy, "Cognitive Skills")
+    critical_thinking = make_tag(taxonomy, "Critical Thinking", parent=cognitive_skills)
+    inference = make_tag(taxonomy, "Inference", parent=critical_thinking)
+    analysis = make_tag(taxonomy, "Analysis", parent=critical_thinking)
+    return cognitive_skills, critical_thinking, inference, analysis
+
+
+def test_blocked_courses_reports_an_ancestor_claim(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A course where an ancestor has a criterion is reported, with the conflicting tag's id and value."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["results"] == [{
+        "course_key": str(course_run.course_key),
+        "conflicting_tag_id": critical_thinking.id,
+        "conflicting_tag_value": "Critical Thinking",
+    }]
+
+
+def test_blocked_courses_reports_a_descendant_claim(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A course where a descendant has a criterion is reported, naming that descendant."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(inference, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(critical_thinking.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert [row["course_key"] for row in response.data["results"]] == [str(course_run.course_key)]
+    assert response.data["results"][0]["conflicting_tag_value"] == "Inference"
+
+
+def test_blocked_courses_reports_a_grandparent_claim(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """The block reaches a grandparent, and the grandparent is the tag reported."""
+    cognitive_skills, _, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(cognitive_skills, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert [row["course_key"] for row in response.data["results"]] == [str(course_run.course_key)]
+    assert response.data["results"][0]["conflicting_tag_value"] == "Cognitive Skills"
+
+
+def test_blocked_courses_reports_a_grandchild_claim(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """The block reaches a grandchild, and the grandchild is the tag reported."""
+    cognitive_skills, _, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(inference, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(cognitive_skills.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert [row["course_key"] for row in response.data["results"]] == [str(course_run.course_key)]
+    assert response.data["results"][0]["conflicting_tag_value"] == "Inference"
+
+
+def test_blocked_courses_ignores_a_sibling_claim(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A course claimed only by a sibling tag is not reported."""
+    _, _, inference, analysis = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(analysis, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["results"] == []
+
+
+def test_blocked_courses_ignores_an_unaffected_course(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A course with no relative's criterion is not reported, even when another course is blocked."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    course_y = make_course_run(organization, "Python200", "Fall2026")
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    returned_keys = [row["course_key"] for row in response.data["results"]]
+    assert str(course_y.course_key) not in returned_keys
+    assert returned_keys == [str(course_run.course_key)]
+
+
+def test_blocked_courses_narrows_to_requested_course_keys(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Only the requested courses come back, though a third course is blocked too."""
+    cognitive_skills, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    course_y = make_course_run(organization, "Python200", "Fall2026")
+    course_z = make_course_run(organization, "Python300", "Fall2026")
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    make_leaf_criterion(cognitive_skills, course_y, default_rule_profile, "p1")
+    make_leaf_criterion(critical_thinking, course_z, default_rule_profile, "p1")
+
+    response = user_client.get(
+        blocked_courses_url(inference.id, course_keys=f"{course_run.course_key},{course_y.course_key}"),
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert {row["course_key"] for row in response.data["results"]} == {
+        str(course_run.course_key), str(course_y.course_key),
+    }
+
+
+def test_blocked_courses_is_an_empty_200_when_nothing_is_claimed(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """No relative has a criterion anywhere: an empty collection, not a failure."""
+    _, _, inference, _ = make_skill_family(competency_taxonomy)
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["count"] == 0
+    assert response.data["results"] == []
+
+
+def test_blocked_courses_paginates_without_repeats_or_gaps(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Three blocked courses at two per page arrive across two pages, each exactly once."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    expected_keys = set()
+    for course_code in ("A100", "B200", "C300"):
+        course = make_course_run(organization, course_code, "Run1")
+        make_leaf_criterion(critical_thinking, course, default_rule_profile, "p1")
+        expected_keys.add(str(course.course_key))
+    url = blocked_courses_url(inference.id, page_size="2")
+
+    first_page = user_client.get(url)
+    rows = collect_pages(user_client, url)
+
+    assert first_page.data["count"] == 3
+    assert len(first_page.data["results"]) == 2
+    assert first_page.data["next"] is not None
+    keys = [row["course_key"] for row in rows]
+    assert len(keys) == len(set(keys)) == 3
+    assert set(keys) == expected_keys
+
+
+def test_blocked_courses_filters_before_paginating(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A narrowed result that spans two pages holds exactly the requested courses, and nothing outside them."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    requested_keys = []
+    for course_code in ("A100", "B200", "C300", "D400"):
+        course = make_course_run(organization, course_code, "Run1")
+        make_leaf_criterion(critical_thinking, course, default_rule_profile, "p1")
+        requested_keys.append(str(course.course_key))
+    outside_key = requested_keys.pop(1)
+    url = blocked_courses_url(inference.id, course_keys=",".join(requested_keys), page_size="2")
+
+    first_page = user_client.get(url)
+    rows = collect_pages(user_client, url)
+
+    assert first_page.data["count"] == 3
+    assert len(first_page.data["results"]) == 2
+    keys = [row["course_key"] for row in rows]
+    assert len(keys) == len(set(keys)) == 3
+    assert set(keys) == set(requested_keys)
+    assert outside_key not in keys
+
+
+def test_blocked_courses_unknown_tag_404s(user_client: APIClient) -> None:
+    """A tag_id that doesn't resolve is reported as not found."""
+    response = user_client.get(blocked_courses_url(999999))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_blocked_courses_tag_outside_a_competency_taxonomy_404s(user_client: APIClient) -> None:
+    """A real Tag that isn't on a CompetencyTaxonomy is reported as not found."""
+    plain_taxonomy = Taxonomy.objects.create(name="Plain Tags", export_id="plain-v1")
+    plain_tag = Tag.objects.create(taxonomy=plain_taxonomy, value="Not A Competency")
+
+    response = user_client.get(blocked_courses_url(plain_tag.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_blocked_courses_without_view_access_403s(
+    api_client: APIClient,
+    user,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A non-staff caller may not read blocked courses for a competency on a disabled taxonomy."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    competency_taxonomy.enabled = False
+    competency_taxonomy.save()
+    api_client.force_authenticate(user=user)
+
+    response = api_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert "results" not in response.data
+
+
+def test_blocked_courses_malformed_course_key_400s(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """An unparseable course key is rejected, and the error names it."""
+    _, _, inference, _ = make_skill_family(competency_taxonomy)
+
+    response = user_client.get(blocked_courses_url(inference.id, course_keys="not-a-key"))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "not-a-key" in str(response.data["course_keys"])
+
+
+@pytest.mark.parametrize("course_keys", ["", ",,"])
+def test_blocked_courses_empty_course_keys_400s(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, course_keys: str,
+) -> None:
+    """A course_keys filter that names no course is rejected rather than ignored."""
+    _, _, inference, _ = make_skill_family(competency_taxonomy)
+
+    response = user_client.get(blocked_courses_url(inference.id, course_keys=course_keys))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "course_keys" in response.data
+
+
+def test_blocked_courses_strips_whitespace_around_course_keys(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Spaces after the commas don't make a key unparseable."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    course_y = make_course_run(organization, "Python200", "Fall2026")
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    make_leaf_criterion(critical_thinking, course_y, default_rule_profile, "p1")
+
+    response = user_client.get(
+        blocked_courses_url(inference.id, course_keys=f"{course_run.course_key}, {course_y.course_key}"),
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert {row["course_key"] for row in response.data["results"]} == {
+        str(course_run.course_key), str(course_y.course_key),
+    }
+
+
+def test_blocked_courses_ignores_an_archived_claim(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A relative's archived criterion doesn't block the course."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    criterion = make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    CompetencyCriterion.objects.filter(pk=criterion.pk).update(archived=True)
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["results"] == []

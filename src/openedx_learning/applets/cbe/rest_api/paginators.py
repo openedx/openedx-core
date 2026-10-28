@@ -18,3 +18,12 @@ class CompetencyRuleProfilePagination(DefaultPagination):
 
     page_size = 100
     max_page_size = 500
+
+
+class CompetencyBlockedCoursesPagination(DefaultPagination):
+    """
+    Page size for a competency's blocked-courses collection, pinned for the same reason as the rule profiles'.
+    """
+
+    page_size = 100
+    max_page_size = 500

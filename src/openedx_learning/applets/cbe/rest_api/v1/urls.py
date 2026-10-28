@@ -27,4 +27,9 @@ urlpatterns = [
         views.CompetencyCriteriaTreeView.as_view(),
         name="criteria-tree",
     ),
+    path(
+        "competencies/<int:tag_id>/blocked-courses/",
+        views.CompetencyBlockedCoursesView.as_view(),
+        name="blocked-courses",
+    ),
 ]

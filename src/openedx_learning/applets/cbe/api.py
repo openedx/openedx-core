@@ -15,7 +15,7 @@ from django.db.models import F, Q, QuerySet
 from django.db.transaction import TransactionManagementError
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
-from opaque_keys.edx.keys import UsageKey
+from opaque_keys.edx.keys import CourseKey, UsageKey
 
 from openedx_catalog.api import get_course_run
 from openedx_catalog.models_api import CourseRun
@@ -44,6 +44,7 @@ __all__ = [
     "bulk_update_competency_criteria",
     "create_competency_criterion",
     "create_competency_taxonomy",
+    "get_blocked_courses",
     "get_competency_criteria_tree",
     "get_competency_rule_profiles",
     "get_courses_with_relative_criteria",
@@ -288,6 +289,41 @@ def get_courses_with_relative_criteria(
         assert group.parent.course is not None, f"CompetencyCriteriaGroup {group.id}'s parent has no course"
         result.setdefault(group.parent.course, group.tag)
     return result
+
+
+@dataclass
+class BlockedCourse:
+    """A course where a taxonomy relative of a competency already has a live CompetencyCriterion."""
+
+    course_key: CourseKey
+    conflicting_tag_id: int
+    conflicting_tag_value: str
+
+
+def get_blocked_courses(tag: Tag, course_keys: Iterable[CourseKey] | None = None) -> list[BlockedCourse]:
+    """
+    Return the courses where ``tag`` can't get a new criterion, because an ancestor or descendant has one there.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
+    behavior may change this function's shape without a deprecation cycle.
+
+    Narrowed to ``course_keys`` when given, and sorted by course key.
+    """
+    relative_ids = (
+        set(get_ancestor_tags(tag).values_list("id", flat=True))
+        | set(get_descendant_tags(tag).values_list("id", flat=True))
+    )
+    if not relative_ids:
+        return []
+    conflicts = get_courses_with_relative_criteria(relative_ids)
+    requested = set(course_keys) if course_keys is not None else None
+    rows = []
+    for course_run, conflicting_tag in conflicts.items():
+        # CourseRun.save() always derives course_key, so a saved row has one.
+        assert course_run.course_key is not None
+        if requested is None or course_run.course_key in requested:
+            rows.append(BlockedCourse(course_run.course_key, conflicting_tag.id, conflicting_tag.value))
+    return sorted(rows, key=lambda row: str(row.course_key))
 
 
 def _validate_containment(group: CompetencyCriteriaGroup, course: CourseRun) -> None:

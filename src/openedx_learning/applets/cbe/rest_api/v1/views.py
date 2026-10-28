@@ -24,14 +24,17 @@ from ...api import (
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
+    get_blocked_courses,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
     resolve_competency_tag,
 )
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile
-from ..paginators import CompetencyRuleProfilePagination
+from ..paginators import CompetencyBlockedCoursesPagination, CompetencyRuleProfilePagination
 from .permissions import CompetencyReadPermission, CompetencyRuleProfilePermissions
 from .serializers import (
+    BlockedCourseSerializer,
+    CompetencyBlockedCoursesQueryParamsSerializer,
     CompetencyCriteriaGroupSerializer,
     CompetencyCriterionBulkUpdateSerializer,
     CompetencyCriterionReadSerializer,
@@ -198,3 +201,35 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
             "groups": CompetencyCriteriaGroupSerializer(tree.groups, many=True).data,
             "criteria": CompetencyCriterionReadSerializer(tree.criteria, many=True).data,
         })
+
+
+class CompetencyBlockedCoursesView(generics.GenericAPIView):
+    """
+    GET-only. List the courses where a competency can't get a new criterion, paginated.
+
+    ``GET api/cbe/v1/competencies/<tag_id>/blocked-courses/`` returns every course where a
+    taxonomy ancestor or descendant of the competency already has a live criterion, sorted by
+    course key; ``course_keys`` (comma-separated) narrows it. The result is a hint for authoring:
+    the create-criterion endpoint still enforces the rule. 404 if ``tag_id`` isn't a competency
+    tag, 403 if the caller can't view its taxonomy, 400 for a malformed ``course_keys``.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle.
+    """
+
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated, CompetencyReadPermission]
+    pagination_class = CompetencyBlockedCoursesPagination
+
+    def get(self, request, tag_id):
+        """Return one page of the competency's blocked courses."""
+        try:
+            tag = resolve_competency_tag(tag_id)
+        except Tag.DoesNotExist as exc:
+            raise NotFound(str(exc)) from exc
+        self.check_object_permissions(request, tag)
+        params = CompetencyBlockedCoursesQueryParamsSerializer(data=request.query_params.dict())
+        params.is_valid(raise_exception=True)
+        rows = get_blocked_courses(tag, course_keys=params.validated_data.get("course_keys"))
+        page = self.paginate_queryset(rows)
+        return self.get_paginated_response(BlockedCourseSerializer(page, many=True).data)
