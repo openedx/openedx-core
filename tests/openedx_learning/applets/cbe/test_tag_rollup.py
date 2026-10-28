@@ -42,11 +42,13 @@ def _object_id(name: str) -> str:
     return f"block-v1:Org1+Python100+Fall2026+problem+{name}"
 
 
-def _earnable(tag: Tag, object_id: str, profile: CompetencyRuleProfile) -> SimpleNamespace:
-    """Give ``tag`` a root group with one criterion on ``object_id``."""
-    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+def _earnable(tag: Tag, object_id: str, profile: CompetencyRuleProfile, *, archived: bool = False) -> SimpleNamespace:
+    """Give ``tag`` a root group with one criterion on ``object_id``, both archived when ``archived`` is set."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, archived=archived)
     object_tag = ObjectTag.objects.create(object_id=object_id, taxonomy=tag.taxonomy, tag=tag)
-    criterion = CompetencyCriterion.objects.create(group=root, object_tag=object_tag, rule_profile=profile)
+    criterion = CompetencyCriterion.objects.create(
+        group=root, object_tag=object_tag, rule_profile=profile, archived=archived,
+    )
     return SimpleNamespace(root=root, criterion=criterion, object_id=object_id)
 
 
@@ -61,6 +63,11 @@ def _set_group_status(user, group: CompetencyCriteriaGroup, status: MasteryStatu
     StudentCompetencyCriteriaGroupStatus.objects.create(
         user=user, group=group, status_id=status, created=NOW, modified=NOW,
     )
+
+
+def _set_competency_status(user, tag: Tag, status: MasteryStatus) -> None:
+    """Store a competency status as an earlier rollup would have."""
+    StudentCompetencyStatus.objects.create(user=user, tag=tag, status_id=status, created=NOW, modified=NOW)
 
 
 def _competency_status(user, tag: Tag) -> int | None:
@@ -316,3 +323,64 @@ def test_competencies_graded_at_different_depths_converge_on_the_shared_ancestor
     assert _competency_status(user, middle) == DEMONSTRATED
     assert _competency_status(user, shallow) == DEMONSTRATED
     assert _competency_status(user, top) == DEMONSTRATED
+
+
+def test_a_parent_with_its_own_requirements_is_demonstrated_when_a_sub_competency_is_fully_archived(
+    user, family, default_rule_profile,
+) -> None:
+    own = _earnable(family.parent, _object_id("p"), default_rule_profile)
+    _set_group_status(user, own.root, DEMONSTRATED)
+    _earnable(family.children[0], _object_id("c1"), default_rule_profile, archived=True)
+    earnable = _earnable(family.children[1], _object_id("c2"), default_rule_profile)
+    _record(user, earnable, DEMONSTRATED)
+
+    _roll_up(user, earnable.object_id)
+
+    assert _competency_status(user, family.parent) == DEMONSTRATED
+    assert _competency_status(user, family.children[1]) == DEMONSTRATED
+
+
+def test_a_parent_with_no_requirements_of_its_own_stays_short_when_a_sub_competency_is_fully_archived(
+    user, competency_taxonomy, default_rule_profile,
+) -> None:
+    parent = _make_tag(competency_taxonomy, "Parent")
+    archived_child = _make_tag(competency_taxonomy, "Archived", parent)
+    live_child = _make_tag(competency_taxonomy, "Live", parent)
+    _earnable(archived_child, _object_id("a"), default_rule_profile, archived=True)
+    earnable = _earnable(live_child, _object_id("l"), default_rule_profile)
+    _record(user, earnable, DEMONSTRATED)
+
+    _roll_up(user, earnable.object_id)
+
+    assert _competency_status(user, live_child) == DEMONSTRATED
+    assert _competency_status(user, parent) == PARTIAL
+
+
+def test_an_archived_root_group_still_starts_the_parent_competency_walk(
+    user, competency_taxonomy, default_rule_profile,
+) -> None:
+    parent = _make_tag(competency_taxonomy, "Parent")
+    archived_child = _make_tag(competency_taxonomy, "Archived", parent)
+    live_child = _make_tag(competency_taxonomy, "Live", parent)
+    earnable = _earnable(archived_child, _object_id("a"), default_rule_profile, archived=True)
+    _set_competency_status(user, live_child, DEMONSTRATED)
+    _record(user, earnable, DEMONSTRATED)
+
+    _roll_up(user, earnable.object_id)
+
+    assert _competency_status(user, archived_child) is None
+    assert _competency_status(user, parent) == PARTIAL
+
+
+def test_a_parents_own_archived_root_still_counts_through_its_stored_status(
+    user, family, default_rule_profile,
+) -> None:
+    own = _earnable(family.parent, _object_id("p"), default_rule_profile, archived=True)
+    _set_group_status(user, own.root, DEMONSTRATED)
+    earnable = _earnable(family.children[0], _object_id("c1"), default_rule_profile)
+    _record(user, earnable, FAILED)
+
+    _roll_up(user, earnable.object_id)
+
+    assert _competency_status(user, family.children[0]) == PARTIAL
+    assert _competency_status(user, family.parent) == DEMONSTRATED
