@@ -140,7 +140,12 @@ Consumers (openedx-platform, plugins) import only from these modules of each app
 
 - `api.py`: the functions that create, modify and query data. All mutation goes through here.
   Functions not marked "UNSTABLE" in their docstring are stable; breaking them requires the
-  community DEPR process.
+  community DEPR process. This layer is plain Python, called from views, Celery tasks,
+  management commands, and other apps' APIs alike, so it must never assume an HTTP context: no
+  `get_object_or_404`, no `Http404`, no `rest_framework` imports, no `request` parameters. Report
+  failures by raising `Model.DoesNotExist`, Django's `ValidationError`, or an app-specific
+  exception, and leave it to the view to translate those into responses (the CBE views do this by
+  re-raising DRF `NotFound` / `ValidationError`).
 - `models_api.py`: the models callers may use as foreign-key targets, in type annotations, or to
   extend. Treat them as read-only from outside the app; never instantiate or save them directly.
 - `data.py` (where present): value objects / TypedDicts passed across the API boundary.
@@ -228,8 +233,11 @@ actually run; `SIMPLE_HISTORY_DATE_INDEX = False` in both settings files is one 
   primary key. Ask "is this a competency taxonomy?" via `openedx_learning.api`
   (`is_competency_taxonomy()` / `select_competency_taxonomies()`), never via
   `taxonomy.competencytaxonomy`, so tagging stays unaware of CBE.
-- Permissions use django-rules. `api.py` functions do not enforce permissions; views do, via
-  `has_perm`. A consuming project needs `rules.apps.AutodiscoverRulesConfig` in `INSTALLED_APPS`
+- Permissions use django-rules, always checked through `user.has_perm(...)` rather than by
+  calling a predicate directly, because openedx-platform swaps in org-aware rules via
+  `rules.set_perm` and a direct call skips them. Tagging's `api.py` enforces no permissions (its
+  views do); some CBE API functions take a `user` and raise Django's `PermissionDenied`
+  themselves. A consuming project needs `rules.apps.AutodiscoverRulesConfig` in `INSTALLED_APPS`
   and `rules.permissions.ObjectPermissionBackend` in `AUTHENTICATION_BACKENDS`; without them every
   non-superuser gets 403 with nothing in the logs, and testing as a superuser hides the problem.
 - REST APIs: tagging mounts `openedx_tagging.urls` (app_name `oel_tagging`); learning mounts
