@@ -154,7 +154,8 @@ Consumers (openedx-platform, plugins) import only from these modules of each app
 
 `openedx_catalog` additionally has an `isolated_apps` import-linter contract
 (`test_utils/isolated_apps_contract.py`): code outside it may import only its `api`,
-`models_api`, `data` and `tests` modules.
+`models_api`, `data` and `tests` modules. This is a pattern we want to work towards for
+all our apps.
 
 ### Applets inside openedx_content and openedx_learning
 
