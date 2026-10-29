@@ -61,15 +61,13 @@ When a Component is rendered, every ``/static/{filename}`` reference in it is re
 
 The rewriting code therefore doesn't need to know where the file lives. Instead, the serving endpoint resolves each request for a component file as follows:
 
-1. The platform checks permissions on the Component, and returns a 403 or 404 if access is denied.
-2. If the requested component version has an attached file ``static/{filename}``, that file is served.
-3. Otherwise, if the learning package has a shared Asset with that ``filename``, then:
+1. If the requested component version has an attached file ``static/{filename}``, the platform checks permissions on the Component (returning a 403 or 404 if access is denied) and serves that file. If there is no attached ``static/{filename}``, the platform skips Component permissions and moves on to the next step.
+2. If the learning package has a shared Asset with that ``filename`` and the user has permission to view that Asset (see decision 9), then:
 
-   * **Lenient mode**: the Asset is served.
-   * **Strict mode**: the Asset is served only if the requested component version has a :class:`PublishableEntityVersionDependency` on it (see :ref:`openedx-content-adr-0014`, decision 3).
-
-   In both modes, the Asset's own permissions mode (decision 9) is also enforced, and its ``allow_scripts`` flag (decision 10) determines the response's ``Content-Security-Policy``.
-4. Otherwise, the response is a 404.
+   * **Lenient mode**: the Asset is served
+   * **Strict mode**: the Asset is served only if the requested component version has a :class:`PublishableEntityVersionDependency` on it (see :ref:`openedx-content-adr-0014`, decision 3)
+  
+3. Otherwise, the response is a 403 or 404.
 
 The shared Asset is served directly at the component file URL, without a redirect, so that relative references from the shared Asset are resolved relative to the Component too. For example, if an HTML Component references ``/static/page.html`` (a shared Asset), and ``page.html`` references ``image.png`` (another shared Asset), the browser requests ``.../{component_key}/published/static/image.png``, which goes through the same resolution steps. Filenames containing ``/`` work the same way: ``images/diagram.html`` referencing ``../logo.png`` resolves to ``.../static/logo.png``. (References that climb above ``static/`` must not resolve to any component files outside ``static/``, which are not learner-accessible.)
 
