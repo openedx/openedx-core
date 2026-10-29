@@ -27,6 +27,7 @@ from ...api import (
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
+    delete_or_archive_competency_criteria_group,
     delete_or_archive_competency_criterion,
     get_blocked_courses,
     get_competency_criteria_tree,
@@ -351,3 +352,39 @@ class CompetencyBlockedCoursesView(generics.GenericAPIView):
         rows = get_blocked_courses(tag, course_keys=query_params.validated_data.get("course_keys"))
         page = self.paginate_queryset(rows)
         return self.get_paginated_response(BlockedCourseSerializer(page, many=True).data)
+class CompetencyCriteriaGroupDeleteView(generics.GenericAPIView):
+    """
+    DELETE-only. Hard-delete a CompetencyCriteriaGroup subtree, or archive it if learner status exists anywhere in it.
+
+    The view only resolves the group from the URL. Course resolution and the permission check happen in
+    :func:`delete_or_archive_competency_criteria_group`, so a refused user gets 403 and a root group gets 400.
+    """
+
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, *args, **kwargs):
+        """
+        Resolve the group scoped to both path segments, then delegate to the public API, which checks permission.
+
+        The lookup keeps archived groups, so a repeat DELETE on an archived subtree still returns 200.
+        """
+        group = get_object_or_404(
+            CompetencyCriteriaGroup, pk=self.kwargs["group_id"], tag_id=self.kwargs["tag_id"],
+        )
+        try:
+            result = delete_or_archive_competency_criteria_group(group.id, request.user)
+        except CompetencyCriteriaGroup.DoesNotExist as exc:
+            # Removed between the lookup above and the API call.
+            raise NotFound() from exc
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
+        return Response(
+            {
+                "id": result.id,
+                "archived": result.archived,
+                "cascaded_group_count": result.cascaded_group_count,
+                "cascaded_criteria_count": result.cascaded_criteria_count,
+            },
+            status=status.HTTP_200_OK,
+        )

@@ -49,3 +49,21 @@ class CriterionDeletionResult:
 
     id: int
     archived: bool
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupDeletionResult:
+    """
+    The outcome of removing a CompetencyCriteriaGroup subtree: hard-deleted or archived, with counts.
+
+    The counts cover the target subtree only: ``cascaded_group_count`` is the number of descendant
+    groups beneath the target and ``cascaded_criteria_count`` the number of criteria in the subtree.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle.
+    """
+
+    id: int
+    archived: bool
+    cascaded_group_count: int
+    cascaded_criteria_count: int

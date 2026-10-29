@@ -1,15 +1,19 @@
 """Tests for delete_or_archive_competency_criterion() and its ancestor-cascade helper, _cascade_remove_from_group()."""
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 import rules
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from rules.permissions import permissions as rule_permissions
 
 from openedx_learning.api import delete_or_archive_competency_criterion
+from openedx_learning.applets.cbe import api as cbe_api
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
     CompetencyCriterion,
@@ -448,6 +452,35 @@ def test_does_not_exist_for_an_unknown_criterion_id(user) -> None:
     """The API layer lets DoesNotExist propagate for an unknown criterion_id so each caller can map it itself."""
     with pytest.raises(CompetencyCriterion.DoesNotExist):
         delete_or_archive_competency_criterion(999999999, user)
+
+
+def test_a_criterion_removed_with_its_group_before_the_lock_raises_does_not_exist(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, monkeypatch,
+) -> None:
+    """
+    A concurrent group delete that removes the criterion and its ancestors after the function's
+    pre-lock read, but before its Tag lock, surfaces as CompetencyCriterion.DoesNotExist.
+
+    The race is simulated without threads: the ``transaction`` name the api module uses is swapped
+    for one whose ``atomic`` (the function's only use of it) first hard-deletes the group chain,
+    cascading to the criterion, and then opens the real transaction. That is the point between the
+    pre-lock read and the Tag lock.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    criterion = _make_criterion(group, object_tag, default_rule_profile)
+    real_atomic = transaction.atomic
+
+    @contextmanager
+    def delete_chain_then_atomic() -> Iterator[None]:
+        CompetencyCriteriaGroup.objects.filter(pk=root.pk).delete()
+        with real_atomic():
+            yield
+
+    monkeypatch.setattr(cbe_api, "transaction", SimpleNamespace(atomic=delete_chain_then_atomic))
+
+    with pytest.raises(CompetencyCriterion.DoesNotExist):
+        delete_or_archive_competency_criterion(criterion.id, user)
 
 
 # =================================================================================================
