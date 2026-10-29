@@ -1093,16 +1093,6 @@ def _group_has_learner_progress(group_id: int) -> bool:
     return StudentCompetencyCriteriaGroupStatus.objects.filter(group_id=group_id).exists()
 
 
-def _lineage_group_ids(group: CompetencyCriteriaGroup) -> list[int]:
-    """Return the ids of ``group`` and every ancestor up to the root, one query per level."""
-    ids = [group.pk]
-    parent_id = group.parent_id
-    while parent_id is not None:
-        ids.append(parent_id)
-        parent_id = CompetencyCriteriaGroup.objects.values_list("parent_id", flat=True).get(pk=parent_id)
-    return ids
-
-
 def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) -> CriterionDeletionResult:
     """
     Hard-delete ``criterion_id``, or archive it if a learner status row already references it.
@@ -1211,15 +1201,12 @@ def resolve_competency_criteria_group_course(group: CompetencyCriteriaGroup) -> 
     )
 
 
-def _lock_competency_criteria_subtree(
-    target: CompetencyCriteriaGroup, lineage_ids: list[int],
-) -> tuple[set[int], list[CompetencyCriterion]]:
+def _competency_criteria_subtree(target: CompetencyCriteriaGroup) -> tuple[set[int], list[CompetencyCriterion]]:
     """
-    Lock the groups involved in removing ``target``, then its subtree's criteria, and return both.
+    Return the ids of ``target`` and its descendant groups (found level by level), and the subtree's criteria.
 
-    Takes one ``select_for_update()`` over the target's ancestors, the target, and its descendants
-    (found level by level), ordered by primary key so concurrent writers cannot deadlock. Must run
-    inside a transaction that already holds the competency's Tag lock.
+    Must run inside a transaction that already holds the competency's Tag lock, so no tree change
+    for that competency can land between this read and the delete or archive that follows it.
     """
     subtree_ids = {target.pk}
     level_ids = [target.pk]
@@ -1228,15 +1215,7 @@ def _lock_competency_criteria_subtree(
             CompetencyCriteriaGroup.objects.filter(parent_id__in=level_ids).values_list("pk", flat=True)
         )
         subtree_ids.update(level_ids)
-    # Evaluated so the locks are taken now.
-    list(
-        CompetencyCriteriaGroup.objects.select_for_update()
-        .filter(pk__in=subtree_ids.union(lineage_ids))
-        .order_by("pk")
-    )
-    criteria = list(
-        CompetencyCriterion.objects.select_for_update().filter(group_id__in=subtree_ids).order_by("pk")
-    )
+    criteria = list(CompetencyCriterion.objects.filter(group_id__in=subtree_ids).order_by("pk"))
     return subtree_ids, criteria
 
 
@@ -1271,19 +1250,12 @@ def _delete_orphaned_object_tags(candidate_ids: set[int]) -> None:
 
     ``candidate_ids`` are the ObjectTag ids of the criteria in a deleted group subtree. Must run
     after those criteria are deleted, inside the transaction that holds the competency's Tag lock.
-    The candidate rows are locked last, in primary-key order. Inserting a criterion takes a foreign
-    key lock on its ObjectTag, so the reference check under this lock sees any criterion committed
-    for a candidate in the meantime, and that criterion keeps its ObjectTag. No other ObjectTag on
-    the object, in any taxonomy, is read or written.
+    No other ObjectTag on the object, in any taxonomy, is read or written.
     """
-    # Evaluated so the locks are taken now.
-    locked = list(ObjectTag.objects.select_for_update().filter(pk__in=candidate_ids).order_by("pk"))
     still_referenced = set(
         CompetencyCriterion.objects.filter(object_tag_id__in=candidate_ids).values_list("object_tag_id", flat=True)
     )
-    for object_tag in locked:
-        if object_tag.pk not in still_referenced:
-            object_tag.delete()
+    ObjectTag.objects.filter(pk__in=candidate_ids - still_referenced).delete()
 
 
 def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -> GroupDeletionResult:
@@ -1302,13 +1274,12 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
     if any does. Either way, each ancestor left with no live children is then hard-deleted or
     archived, as for a criterion delete (ADR-0002 Decision 2).
 
-    The whole operation runs in one transaction that locks the competency's Tag, then the target's
-    ancestors, the target and its descendants, then the subtree's criteria, then, on a hard delete,
-    the ObjectTags of those criteria that no other criterion references. Only those ObjectTags are
-    removed; no other tag on the object is touched. A concurrent create or criterion delete for the
-    same competency waits on the Tag lock. A learner-progress insert on any locked group or criterion
-    waits on that row's lock. At the READ COMMITTED isolation level, Django's default for MySQL and
-    PostgreSQL, the progress checks therefore cannot go stale, so no fallback or retry is needed.
+    On a hard delete, only the ObjectTags of the subtree's criteria that no other criterion
+    references are removed; no other tag on the object is touched.
+
+    The whole operation runs in one transaction that locks only the competency's Tag, the same lock
+    a create or a criterion delete for that competency takes first, so those wait until this call
+    commits.
 
     Raises CompetencyCriteriaGroup.DoesNotExist if no such group exists (including one deleted
     concurrently), Tag.DoesNotExist if its competency tag was deleted concurrently, PermissionDenied
@@ -1329,9 +1300,7 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
         Tag.objects.select_for_update().get(pk=tag_id)
         # Read under the Tag lock: a concurrent delete may have won, and DoesNotExist propagates.
         target_group = CompetencyCriteriaGroup.objects.get(pk=group_id)
-        # Reading the lineage and descendants before the group locks is safe: a group's parent never
-        # changes, and every tree change for this competency takes the Tag lock held here.
-        subtree_ids, criteria = _lock_competency_criteria_subtree(target_group, _lineage_group_ids(target_group))
+        subtree_ids, criteria = _competency_criteria_subtree(target_group)
         criterion_ids = [criterion.pk for criterion in criteria]
         has_progress = _subtree_has_learner_progress(subtree_ids, criterion_ids)
         if has_progress:
