@@ -231,25 +231,33 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
 
 class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
     """
-    PATCH-only. Change how one CompetencyCriteriaGroup combines the criteria and groups beneath it.
+    PATCH or DELETE one CompetencyCriteriaGroup.
 
-    **Example Request**
+    PATCH changes how the group combines the criteria and groups beneath it. DELETE hard-deletes
+    the group's subtree, or archives it if learner status exists anywhere in it.
+
+    **Example Requests**
         PATCH api/cbe/v1/competencies/<tag_id>/criteria-groups/<group_id>/
         ``{"logic_operator": "AND"}``
 
-    The response is the group as stored, in the criteria-tree endpoint's shape. ``logic_operator``
+        DELETE api/cbe/v1/competencies/<tag_id>/criteria-groups/<group_id>/
+
+    PATCH responds with the group as stored, in the criteria-tree endpoint's shape. ``logic_operator``
     is the only editable field. The body may also repeat any other field the group's representation
     carries, so a client can send back what it read, as long as each one matches what is stored.
 
-    A thin adapter: :func:`update_competency_criteria_group` makes every other refusal, including
-    the edit permission check, so an in-process caller is refused in the same cases. The body's
-    fixed fields are compared here, before that function runs, because only a REST body carries
-    them. Comparing them reveals what's stored, so a caller who can't read the competency's tree is
-    refused with 403 before the group is looked up.
+    For PATCH, the view is a thin adapter: :func:`update_competency_criteria_group` makes every other
+    refusal, including the edit permission check, so an in-process caller is refused in the same
+    cases. The body's fixed fields are compared here, before that function runs, because only a REST
+    body carries them. Comparing them reveals what's stored, so a caller who can't read the
+    competency's tree is refused with 403 before the group is looked up.
+
+    DELETE only resolves the group from the URL. Course resolution and the permission check happen in
+    :func:`delete_or_archive_competency_criteria_group`, so a refused user gets 403 and a root group gets 400.
     """
 
     serializer_class = CompetencyCriteriaGroupUpdateSerializer
-    http_method_names = ["patch"]
+    http_method_names = ["patch", "delete"]
     authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
     permission_classes = [IsAuthenticated, CompetencyReadPermission]
 
@@ -279,6 +287,32 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
         except CompetencyCriteriaGroupArchivedError as exc:
             raise CompetencyCriteriaConflict(str(exc)) from exc
         return Response(CompetencyCriteriaGroupSerializer(group).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, *args, **kwargs):
+        """
+        Resolve the group scoped to both path segments, then delegate to the public API, which checks permission.
+
+        The lookup keeps archived groups, so a repeat DELETE on an archived subtree still returns 200.
+        """
+        group = get_object_or_404(
+            CompetencyCriteriaGroup, pk=self.kwargs["group_id"], tag_id=self.kwargs["tag_id"],
+        )
+        try:
+            result = delete_or_archive_competency_criteria_group(group.id, request.user)
+        except (CompetencyCriteriaGroup.DoesNotExist, Tag.DoesNotExist) as exc:
+            # Removed between the lookup above and the API call, or while the call waited for the Tag lock.
+            raise NotFound() from exc
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
+        return Response(
+            {
+                "id": result.id,
+                "archived": result.archived,
+                "cascaded_group_count": result.cascaded_group_count,
+                "cascaded_criteria_count": result.cascaded_criteria_count,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class CompetencyCriterionDeleteView(generics.GenericAPIView):
@@ -352,39 +386,3 @@ class CompetencyBlockedCoursesView(generics.GenericAPIView):
         rows = get_blocked_courses(tag, course_keys=query_params.validated_data.get("course_keys"))
         page = self.paginate_queryset(rows)
         return self.get_paginated_response(BlockedCourseSerializer(page, many=True).data)
-class CompetencyCriteriaGroupDeleteView(generics.GenericAPIView):
-    """
-    DELETE-only. Hard-delete a CompetencyCriteriaGroup subtree, or archive it if learner status exists anywhere in it.
-
-    The view only resolves the group from the URL. Course resolution and the permission check happen in
-    :func:`delete_or_archive_competency_criteria_group`, so a refused user gets 403 and a root group gets 400.
-    """
-
-    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
-    permission_classes = [IsAuthenticated]
-
-    def delete(self, request, *args, **kwargs):
-        """
-        Resolve the group scoped to both path segments, then delegate to the public API, which checks permission.
-
-        The lookup keeps archived groups, so a repeat DELETE on an archived subtree still returns 200.
-        """
-        group = get_object_or_404(
-            CompetencyCriteriaGroup, pk=self.kwargs["group_id"], tag_id=self.kwargs["tag_id"],
-        )
-        try:
-            result = delete_or_archive_competency_criteria_group(group.id, request.user)
-        except CompetencyCriteriaGroup.DoesNotExist as exc:
-            # Removed between the lookup above and the API call.
-            raise NotFound() from exc
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
-        return Response(
-            {
-                "id": result.id,
-                "archived": result.archived,
-                "cascaded_group_count": result.cascaded_group_count,
-                "cascaded_criteria_count": result.cascaded_criteria_count,
-            },
-            status=status.HTTP_200_OK,
-        )

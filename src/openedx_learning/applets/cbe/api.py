@@ -1311,9 +1311,9 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
     PostgreSQL, the progress checks therefore cannot go stale, so no fallback or retry is needed.
 
     Raises CompetencyCriteriaGroup.DoesNotExist if no such group exists (including one deleted
-    concurrently), PermissionDenied if ``user`` may not tag the course's object, and
-    ValidationError (keyed "group_id") if `group_id` names a root CompetencyCriteriaGroup or a
-    group with no course-level group in its lineage.
+    concurrently), Tag.DoesNotExist if its competency tag was deleted concurrently, PermissionDenied
+    if ``user`` may not tag the course's object, and ValidationError (keyed "group_id") if `group_id`
+    names a root CompetencyCriteriaGroup or a group with no course-level group in its lineage.
     """
     group = CompetencyCriteriaGroup.objects.select_related("tag__taxonomy").get(pk=group_id)
     course = resolve_competency_criteria_group_course(group)

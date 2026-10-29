@@ -89,8 +89,8 @@ def criterion_delete_url(tag_id: int, criterion_id: int) -> str:
 
 
 def group_delete_url(tag_id: int, group_id: int) -> str:
-    """Return the delete-group endpoint's path for `tag_id`/`group_id`, resolved through the URL name."""
-    return reverse("cbe:group-delete", kwargs={"tag_id": tag_id, "group_id": group_id})
+    """Return the group detail endpoint's path for `tag_id`/`group_id`, which DELETE is sent to."""
+    return reverse("cbe:criteria-group-detail", kwargs={"tag_id": tag_id, "group_id": group_id})
 
 
 # What migration 0005 seeds the system default with. Asserted verbatim rather than imported, so
@@ -2034,11 +2034,11 @@ def test_update_group_from_an_unidentified_caller_is_401(
     assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
-@pytest.mark.parametrize("method", ["get", "put", "post", "delete"])
-def test_group_detail_offers_only_patch(
+@pytest.mark.parametrize("method", ["get", "put", "post"])
+def test_group_detail_offers_only_patch_and_delete(
     method: str, user_client: APIClient, tag: Tag, leaf: CompetencyCriteriaGroup,
 ) -> None:
-    """Every method other than PATCH, PUT included, is refused as not allowed."""
+    """Every method other than PATCH and DELETE, PUT included, is refused as not allowed."""
     response = getattr(user_client, method)(group_detail_url(tag.id, leaf.id), {}, format="json")
 
     assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
@@ -2580,7 +2580,7 @@ def test_archiving_a_criterion_whose_stored_payload_went_invalid_is_400_and_chan
     assert criterion.archived is False
 
 
-@pytest.mark.parametrize("endpoint", ["delete a criterion", "bulk update criteria", "update a group"])
+@pytest.mark.parametrize("endpoint", ["delete a criterion", "bulk update criteria", "update a group", "delete a group"])
 def test_a_competency_tag_deleted_while_the_request_waits_for_its_lock_is_404(
     endpoint: str,
     run_when_tag_lock_is_taken,
@@ -2600,16 +2600,18 @@ def test_a_competency_tag_deleted_while_the_request_waits_for_its_lock_is_404(
     elif endpoint == "bulk update criteria":
         body = {"criterion_ids": [criterion.id for criterion in batch], **NEW_RULE}
         response = user_client.patch(bulk_update_url(leaf.id), body, format="json")
-    else:
+    elif endpoint == "update a group":
         response = user_client.patch(
             group_detail_url(leaf.tag_id, leaf.id), {"logic_operator": LogicOperator.AND}, format="json",
         )
+    else:
+        response = user_client.delete(group_delete_url(leaf.tag_id, leaf.id))
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 # ==============================================================================================
-# CompetencyCriteriaGroupDeleteView (#675)
+# CompetencyCriteriaGroupDetailView DELETE (#675)
 # ==============================================================================================
 
 

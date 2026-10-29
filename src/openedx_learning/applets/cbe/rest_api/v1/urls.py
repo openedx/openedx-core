@@ -42,9 +42,4 @@ urlpatterns = [
         views.CompetencyBlockedCoursesView.as_view(),
         name="blocked-courses",
     ),
-    path(
-        "competencies/<int:tag_id>/criteria-groups/<int:group_id>/",
-        views.CompetencyCriteriaGroupDeleteView.as_view(),
-        name="group-delete",
-    ),
 ]
