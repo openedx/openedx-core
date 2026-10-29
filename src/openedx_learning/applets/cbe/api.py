@@ -664,10 +664,7 @@ def bulk_update_competency_criteria(
         # Locked for the same reason as the criteria below.
         lineage = [group.id, group.parent.id, group.parent.parent_id]
         archived_by_id = dict(
-            CompetencyCriteriaGroup.objects.select_for_update()
-            .filter(pk__in=lineage)
-            .order_by("pk")
-            .values_list("pk", "archived")
+            CompetencyCriteriaGroup.objects.select_for_update().filter(pk__in=lineage).values_list("pk", "archived")
         )
         archived_group_id = next((pk for pk in lineage if archived_by_id.get(pk)), None)
         if archived_group_id is not None:
@@ -943,16 +940,6 @@ def _group_has_learner_progress(group_id: int) -> bool:
     return StudentCompetencyCriteriaGroupStatus.objects.filter(group_id=group_id).exists()
 
 
-def _lineage_group_ids(group: CompetencyCriteriaGroup) -> list[int]:
-    """Return the ids of ``group`` and every ancestor up to the root, one query per level."""
-    ids = [group.pk]
-    parent_id = group.parent_id
-    while parent_id is not None:
-        ids.append(parent_id)
-        parent_id = CompetencyCriteriaGroup.objects.values_list("parent_id", flat=True).get(pk=parent_id)
-    return ids
-
-
 def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) -> CriterionDeletionResult:
     """
     Hard-delete `criterion_id`, or archive it if a learner status row already references it.
@@ -974,11 +961,8 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     On a hard delete, the criterion's own ObjectTag is deleted too, and only when no other
     criterion references it. No other ObjectTag on the object is touched.
 
-    The whole operation runs in one transaction that locks the competency's Tag, then the
-    criterion's group and every ancestor group, then the criterion, then its ObjectTag. A concurrent
-    create for the same competency waits on the Tag lock. A learner-progress insert on the criterion or on any
-    ancestor group waits on that row's lock. The progress checks therefore cannot go stale, so
-    no fallback or retry is needed.
+    The whole operation runs in one transaction that locks only the competency's Tag, the same lock
+    a create for that competency takes first, so a concurrent create waits until this call commits.
     """
     criterion = CompetencyCriterion.objects.select_related("group__tag__taxonomy", "object_tag").get(pk=criterion_id)
     # A group's tag is always a competency tag, so its taxonomy is always set.
@@ -991,23 +975,16 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     tag_id = criterion.group.tag_id
     with transaction.atomic():
         Tag.objects.select_for_update().get(pk=tag_id)
-        lineage_ids = _lineage_group_ids(criterion.group)
-        # Evaluated so the locks are taken now, in primary-key order to avoid deadlocks between writers.
-        list(CompetencyCriteriaGroup.objects.select_for_update().filter(pk__in=lineage_ids).order_by("pk"))
-        # A concurrent delete may have won; DoesNotExist propagates to the caller.
-        criterion = CompetencyCriterion.objects.select_for_update().get(pk=criterion_id)
+        # Re-read under the Tag lock: a concurrent delete may have won; DoesNotExist propagates to the caller.
+        criterion = CompetencyCriterion.objects.get(pk=criterion_id)
         if _criterion_has_learner_progress(criterion_id):
             _archive_criterion(criterion, user)
             return CriterionDeletionResult(id=criterion_id, archived=True)
         group = criterion.group
         object_tag = criterion.object_tag
         criterion.delete()
-        # Only this criterion's own ObjectTag is a candidate, and its lock comes last. Inserting a
-        # criterion takes a foreign key lock on its ObjectTag, so the re-check under this lock sees
-        # any criterion committed for it in the meantime, and that criterion keeps its ObjectTag.
-        locked_object_tag = ObjectTag.objects.select_for_update().filter(pk=object_tag.id).first()
-        still_referenced = CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists()
-        if locked_object_tag is not None and not still_referenced:
-            locked_object_tag.delete()
+        # Only this criterion's own ObjectTag is a candidate, and only while no other criterion uses it.
+        if not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists():
+            ObjectTag.objects.filter(pk=object_tag.id).delete()
         _cascade_from_group(group, "delete", user)
         return CriterionDeletionResult(id=criterion_id, archived=False)
