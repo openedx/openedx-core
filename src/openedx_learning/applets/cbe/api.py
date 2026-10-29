@@ -889,21 +889,31 @@ def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete",
     Checking both relations (`criteria` and `child_groups`) at every level is harmless: the one that
     does not apply is an empty queryset, and it avoids a separate leaf/non-leaf code path.
 
-    The walk stops at a group that is already archived. Everything above it was handled when it was
-    archived, so writing it again would only add a redundant history row.
+    An archived group is never written again: everything above it was handled when it was archived,
+    so a second write would only add a redundant history row. A delete event can still remove it. If
+    the delete left it with no criteria, no child groups and no group-level status, it is deleted and
+    the walk continues upward, so no empty group stays persisted. Otherwise the walk stops there.
     """
+    parent = group.parent
+    next_event: Literal["delete", "archive"]
     if group.archived:
+        if event == "archive" or group.criteria.exists() or group.child_groups.exists():
+            return
+        if _group_has_learner_progress(group.id):
+            return
+        group.delete()
+        if parent is not None:
+            _cascade_from_group(parent, "delete", user)
         return
     has_live_child = (
         group.criteria.filter(archived=False).exists() or group.child_groups.filter(archived=False).exists()
     )
-    parent = group.parent
     if has_live_child:
         return
     if event == "delete" and not group.criteria.exists() and not group.child_groups.exists():
         if _group_has_learner_progress(group.id):
             _archive_group(group, user)
-            next_event: Literal["delete", "archive"] = "archive"
+            next_event = "archive"
         else:
             group.delete()
             next_event = "delete"

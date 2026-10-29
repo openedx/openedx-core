@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 import rules
 from django.apps import apps
+from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from rules.permissions import permissions as rule_permissions
 
@@ -477,3 +478,74 @@ def test_cascade_stops_at_a_group_that_is_already_archived(
         _history_count("HistoricalCompetencyCriteriaGroup", leaf.id),
         _history_count("HistoricalCompetencyCriteriaGroup", root.id),
     )
+
+
+def test_delete_after_the_learner_is_gone_deletes_the_emptied_archived_groups(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    Once the learner whose status archived a criterion is deleted, a repeat delete hard-deletes the
+    criterion, and every archived group it leaves with nothing in it is deleted too: no empty group stays.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    criterion = _make_criterion(leaf, object_tag, default_rule_profile)
+    learner = get_user_model().objects.create(username="departing-learner")
+    StudentCompetencyCriterionStatus.objects.create(
+        user=learner, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    assert delete_or_archive_competency_criterion(criterion.id, user).archived is True
+    learner.delete()
+
+    result = delete_or_archive_competency_criterion(criterion.id, user)
+
+    assert result.archived is False
+    assert not CompetencyCriterion.objects.filter(pk=criterion.id).exists()
+    assert not CompetencyCriteriaGroup.objects.filter(pk__in=[leaf.id, root.id]).exists()
+
+
+def test_delete_leaves_an_archived_group_that_still_holds_an_archived_criterion(
+    user, tag: Tag, competency_taxonomy: CompetencyTaxonomy, object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A hard delete under an archived group that still holds another criterion leaves that group and its
+    parent as they are, archived and with no new historical row.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, archived=True)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root, archived=True)
+    kept = _make_criterion(leaf, object_tag, default_rule_profile)
+    kept.archived = True
+    kept.save()
+    other_object_tag = _make_object_tag(competency_taxonomy, tag, "block-v1:Org1+Python100+Fall2026+problem+p2")
+    deleted = _make_criterion(leaf, other_object_tag, default_rule_profile)
+    counts = (
+        _history_count("HistoricalCompetencyCriteriaGroup", leaf.id),
+        _history_count("HistoricalCompetencyCriteriaGroup", root.id),
+    )
+
+    result = delete_or_archive_competency_criterion(deleted.id, user)
+
+    assert result.archived is False
+    assert CompetencyCriteriaGroup.objects.filter(pk__in=[leaf.id, root.id], archived=True).count() == 2
+    assert counts == (
+        _history_count("HistoricalCompetencyCriteriaGroup", leaf.id),
+        _history_count("HistoricalCompetencyCriteriaGroup", root.id),
+    )
+
+
+def test_delete_leaves_an_emptied_archived_group_that_has_its_own_status(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """An archived group left empty by a hard delete stays when a learner group status still references it."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, archived=True)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root, archived=True)
+    criterion = _make_criterion(leaf, object_tag, default_rule_profile)
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=leaf, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    result = delete_or_archive_competency_criterion(criterion.id, user)
+
+    assert result.archived is False
+    assert CompetencyCriteriaGroup.objects.filter(pk__in=[leaf.id, root.id], archived=True).count() == 2
