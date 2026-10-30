@@ -34,6 +34,7 @@ class Subsection(Container):
 
     type_code = "subsection"
     olx_tag_name = "sequential"  # Serializes to OLX as `<sequential>...</sequential>`.
+    validate_entity_select_related = ("container__container_type",)
 
     container = models.OneToOneField(
         Container,
