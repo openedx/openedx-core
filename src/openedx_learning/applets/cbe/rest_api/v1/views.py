@@ -26,6 +26,7 @@ from ...api import (
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
+    delete_or_archive_competency_criterion,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
     resolve_competency_tag,
@@ -254,3 +255,38 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
         except CompetencyCriteriaGroupArchivedError as exc:
             raise CompetencyCriteriaConflict(str(exc)) from exc
         return Response(CompetencyCriteriaGroupSerializer(group).data, status=status.HTTP_200_OK)
+
+
+class CompetencyCriterionDeleteView(generics.GenericAPIView):
+    """
+    DELETE-only. Remove a CompetencyCriterion: hard-delete, or archive if learner status exists.
+
+    Does not call self.check_object_permissions(): the public API function checks
+    oel_tagging.can_tag_object itself and raises Django's PermissionDenied, which becomes a 403.
+    """
+
+    serializer_class = CompetencyCriterionSerializer
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, *args, **kwargs):
+        """
+        Resolve the criterion scoped to both path segments, then delegate to the public API, which checks permission.
+
+        The URL is scoped by tag_id, not group_id, because its caller (#710) sends exactly
+        ``DELETE .../competencies/<tag_id>/criteria/<criterion_id>/`` and has no group id. The
+        lookup deliberately does not filter `archived=False`, so a repeat
+        DELETE against an already-archived row still resolves (200), and a mismatched tag_id or a
+        nonexistent criterion_id both 404 the same way, via this one get_object_or_404 call.
+        """
+        criterion = get_object_or_404(
+            CompetencyCriterion, pk=self.kwargs["criterion_id"], group__tag_id=self.kwargs["tag_id"],
+        )
+        try:
+            result = delete_or_archive_competency_criterion(criterion.id, request.user)
+        except CompetencyCriterion.DoesNotExist as exc:
+            # Removed between the lookup above and the API call.
+            raise NotFound() from exc
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
+        return Response({"id": result.id, "archived": result.archived}, status=status.HTTP_200_OK)

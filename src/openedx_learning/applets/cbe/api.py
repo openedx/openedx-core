@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Literal, Sequence, cast
 
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
 from django.db import connection, transaction
@@ -23,7 +23,7 @@ from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descenda
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 from openedx_tagging.rules import ObjectTagPermissionItem, UserType
 
-from .data import GradedObjectScore
+from .data import CriterionDeletionResult, GradedObjectScore
 from .models import (
     CompetencyCourseRun,
     CompetencyCriteriaGroup,
@@ -32,6 +32,7 @@ from .models import (
     CompetencyTaxonomy,
     LogicOperator,
     MasteryStatus,
+    StudentCompetencyCriteriaGroupStatus,
     StudentCompetencyCriterionStatus,
 )
 from .rule_payloads import evaluate_rule
@@ -40,11 +41,13 @@ __all__ = [
     "CompetencyCriteriaGroupArchivedError",
     "CompetencyCriteriaTree",
     "CompetencyCriterionArchivedError",
+    "CriterionDeletionResult",
     "GradedObjectScore",
     "associate_competency_criterion",
     "bulk_update_competency_criteria",
     "create_competency_criterion",
     "create_competency_taxonomy",
+    "delete_or_archive_competency_criterion",
     "get_competency_criteria_tree",
     "get_competency_rule_profiles",
     "get_courses_with_relative_criteria",
@@ -869,3 +872,129 @@ def update_competency_criteria_group(
         # Never QuerySet.update(): it skips post_save, so simple_history would record nothing.
         group.save(update_fields=["logic_operator"])
         return group
+
+
+def _archive_group(group: CompetencyCriteriaGroup, user: UserType) -> None:
+    """Archive ``group``, writing only the flag and recording ``user`` in its history."""
+    group.archived = True
+    # Set on the instance so attribution doesn't depend on simple_history's request middleware.
+    group._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    group.save(update_fields=["archived"])
+
+
+def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete", "archive"], user: UserType) -> None:
+    """
+    Walk `group` and its ancestors, collapsing/archiving any left with no live children.
+
+    Checking both relations (`criteria` and `child_groups`) at every level is harmless: the one that
+    does not apply is an empty queryset, and it avoids a separate leaf/non-leaf code path.
+
+    An archived group is never written again: everything above it was handled when it was archived,
+    so a second write would only add a redundant history row. A delete event can still remove it. If
+    the delete left it with no criteria, no child groups and no group-level status, it is deleted and
+    the walk continues upward, so no empty group stays persisted. Otherwise the walk stops there.
+    """
+    parent = group.parent
+    next_event: Literal["delete", "archive"]
+    if group.archived:
+        if event == "archive" or group.criteria.exists() or group.child_groups.exists():
+            return
+        if _group_has_learner_progress(group.id):
+            return
+        group.delete()
+        if parent is not None:
+            _cascade_from_group(parent, "delete", user)
+        return
+    has_live_child = (
+        group.criteria.filter(archived=False).exists() or group.child_groups.filter(archived=False).exists()
+    )
+    if has_live_child:
+        return
+    if event == "delete" and not group.criteria.exists() and not group.child_groups.exists():
+        if _group_has_learner_progress(group.id):
+            _archive_group(group, user)
+            next_event = "archive"
+        else:
+            group.delete()
+            next_event = "delete"
+    else:
+        # Only archived children remain.
+        _archive_group(group, user)
+        next_event = "archive"
+    if parent is not None:
+        _cascade_from_group(parent, next_event, user)
+
+
+def _archive_criterion(criterion: CompetencyCriterion, user: UserType) -> None:
+    """
+    Archive ``criterion`` in place and cascade the archive to any ancestor left with no live children.
+
+    Does nothing if ``criterion`` is already archived, so a repeat call writes no history.
+    """
+    if criterion.archived:
+        return
+    criterion.archived = True
+    # Set on the instance so attribution doesn't depend on simple_history's request middleware.
+    criterion._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    criterion.save(update_fields=["archived"])
+    _cascade_from_group(criterion.group, "archive", user)
+
+
+def _criterion_has_learner_progress(criterion_id: int) -> bool:
+    """Return whether a learner status row references ``criterion_id``."""
+    return StudentCompetencyCriterionStatus.objects.filter(criterion_id=criterion_id).exists()
+
+
+def _group_has_learner_progress(group_id: int) -> bool:
+    """Return whether a learner group-level status row references ``group_id``."""
+    return StudentCompetencyCriteriaGroupStatus.objects.filter(group_id=group_id).exists()
+
+
+def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) -> CriterionDeletionResult:
+    """
+    Hard-delete `criterion_id`, or archive it if a learner status row already references it.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
+    and archive behavior may change this function's shape without a deprecation cycle.
+
+    ``user`` must hold ``oel_tagging.can_tag_object`` for the criterion's object, as
+    :func:`bulk_update_competency_criteria` requires; otherwise Django's ``PermissionDenied`` is
+    raised before anything is locked or changed.
+
+    An ancestor :class:`CompetencyCriteriaGroup` left with no live children by this call is
+    cascaded in turn: hard-deleted if it carries no group-level status of its own, archived
+    otherwise. See ADR-0002 Decision 2.
+
+    Raises CompetencyCriterion.DoesNotExist if no such criterion exists (including one deleted
+    concurrently) and PermissionDenied if ``user`` may not tag the criterion's object.
+
+    On a hard delete, the criterion's own ObjectTag is deleted too, and only when no other
+    criterion references it. No other ObjectTag on the object is touched.
+
+    The whole operation runs in one transaction that locks only the competency's Tag, the same lock
+    a create for that competency takes first, so a concurrent create waits until this call commits.
+    """
+    criterion = CompetencyCriterion.objects.select_related("group__tag__taxonomy", "object_tag").get(pk=criterion_id)
+    # A group's tag is always a competency tag, so its taxonomy is always set.
+    assert criterion.group.tag.taxonomy is not None
+    perm_obj = ObjectTagPermissionItem(taxonomy=criterion.group.tag.taxonomy, object_id=criterion.object_tag.object_id)
+    # The rules-based permission takes an ObjectTagPermissionItem, but django-stubs types the
+    # has_perm object argument as a Model.
+    if not user.has_perm("oel_tagging.can_tag_object", cast(Any, perm_obj)):
+        raise PermissionDenied()
+    tag_id = criterion.group.tag_id
+    with transaction.atomic():
+        Tag.objects.select_for_update().get(pk=tag_id)
+        # Re-read under the Tag lock: a concurrent delete may have won; DoesNotExist propagates to the caller.
+        criterion = CompetencyCriterion.objects.get(pk=criterion_id)
+        if _criterion_has_learner_progress(criterion_id):
+            _archive_criterion(criterion, user)
+            return CriterionDeletionResult(id=criterion_id, archived=True)
+        group = criterion.group
+        object_tag = criterion.object_tag
+        criterion.delete()
+        # Only this criterion's own ObjectTag is a candidate, and only while no other criterion uses it.
+        if not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists():
+            ObjectTag.objects.filter(pk=object_tag.id).delete()
+        _cascade_from_group(group, "delete", user)
+        return CriterionDeletionResult(id=criterion_id, archived=False)

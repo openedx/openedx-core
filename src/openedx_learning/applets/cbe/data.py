@@ -36,3 +36,16 @@ class GradedObjectScore:
         # NaN and Infinity, actually raise the documented ValueError.
         if not self.fraction.is_finite() or not 0 <= self.fraction <= 1:
             raise ValueError(f"fraction must be finite and between 0 and 1 inclusive, not {self.fraction!r}")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CriterionDeletionResult:
+    """
+    The outcome of removing a CompetencyCriterion: whether its row was hard-deleted or archived.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle.
+    """
+
+    id: int
+    archived: bool
