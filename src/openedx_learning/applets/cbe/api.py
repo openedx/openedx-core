@@ -1318,6 +1318,9 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
         raise PermissionDenied()
     tag_id = group.tag_id
     with transaction.atomic():
+        # The same lock associate_competency_criterion() takes first. Without it, a create could add a criterion
+        # to this subtree after it is read, or reuse an ObjectTag this call deletes as orphaned. The foreign keys
+        # would only turn either into an IntegrityError on one side, not order the two.
         Tag.objects.select_for_update().get(pk=tag_id)
         # Read under the Tag lock: a concurrent delete may have won, and DoesNotExist propagates.
         target_group = CompetencyCriteriaGroup.objects.get(pk=group_id)
