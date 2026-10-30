@@ -66,7 +66,7 @@ The rewriting code therefore doesn't need to know where the file lives. Instead,
 
    * **Lenient mode**: the Asset is served
    * **Strict mode**: the Asset is served only if the requested component version has a :class:`PublishableEntityVersionDependency` on it (see :ref:`openedx-content-adr-0014`, decision 3)
-  
+
 3. Otherwise, the response is a 403 or 404.
 
 The shared Asset is served directly at the component file URL, without a redirect, so that relative references from the shared Asset are resolved relative to the Component too. For example, if an HTML Component references ``/static/page.html`` (a shared Asset), and ``page.html`` references ``image.png`` (another shared Asset), the browser requests ``.../{component_key}/published/static/image.png``, which goes through the same resolution steps. Filenames containing ``/`` work the same way: ``images/diagram.html`` referencing ``../logo.png`` resolves to ``.../static/logo.png``. (References that climb above ``static/`` must not resolve to any component files outside ``static/``, which are not learner-accessible.)

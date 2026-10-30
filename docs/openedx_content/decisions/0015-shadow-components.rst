@@ -126,10 +126,12 @@ An explicit ``is_shadow`` flag
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A boolean on :class:`Component` would make Shadow Components easier to query than checking for ``block.xml``. It was rejected to avoid adding a column to a heavily used table for a temporary transition state, and because the flag could disagree with the actual content of the latest version. If querying for the absence of ``block.xml`` turns out to be too slow, a side table can be added later.
+
 Mirroring the full XBlock, not just its assets
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Since Shadow Components already follow the XBlock's lifecycle (decision 5), we considered going further and keeping the XBlock's title and OLX in sync too, so that each modulestore XBlock would have a complete mirror in ``openedx_content``. This was rejected because the extra lifecycle hooks are the cheap part; the expensive parts are elsewhere. Modulestore has no OLX, so a serialization layer would be needed to produce a faithful ``block.xml`` on every edit, and Shadow Components say nothing about hierarchy, so the open questions about representing the course outline in ``openedx_content`` would remain. Full mirroring is therefore better done as part of the course content migration itself.
+
 Open Questions
 --------------
 
