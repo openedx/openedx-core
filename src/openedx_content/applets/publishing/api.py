@@ -246,7 +246,7 @@ def create_publishable_entity_version(
             ):
                 raise ValidationError("Dependencies must be from the same learning package")
             # Store dependencies:
-            set_version_dependencies(version.id, dependencies)
+            _set_version_dependencies(version.id, entity_id, dependencies)
 
         set_draft_version(
             entity_id,
@@ -308,17 +308,66 @@ def set_version_dependencies(
        code will still work if you build from the top-down, but we'll end up
        doing many redundant re-calculations, since every change to a lower layer
        will cause recalculation to the higher levels that depend on it.
-    3. Do not create circular dependencies.
+    3. Do not create circular dependencies. A ValidationError is raised if the
+       new dependencies would create a cycle through the current draft or
+       published versions of the referenced entities.
     """
+    entity_id = PublishableEntityVersion.objects.values_list("entity_id", flat=True).get(pk=version_id)
+    _set_version_dependencies(version_id, entity_id, dependencies)
+
+
+def _set_version_dependencies(
+    version_id: int,  # PublishableEntityVersion.id
+    entity_id: PublishableEntity.ID,  # The entity that version_id belongs to
+    dependencies: list[PublishableEntity.ID],
+) -> None:
+    """
+    Implementation of set_version_dependencies(), for callers that already
+    know the version's entity_id and can save a query.
+    """
+    dependency_set = set(dependencies)  # dependencies have no ordering
+    _validate_no_dependency_cycles(entity_id, dependency_set)
     PublishableEntityVersionDependency.objects.bulk_create(
         [
             PublishableEntityVersionDependency(
                 referring_version_id=version_id,
                 referenced_entity_id=dep_entity_id,
             )
-            for dep_entity_id in set(dependencies)  # dependencies have no ordering
+            for dep_entity_id in dependency_set
         ],
     )
+
+
+def _validate_no_dependency_cycles(
+    entity_id: PublishableEntity.ID,
+    dependencies: set[PublishableEntity.ID],
+) -> None:
+    """
+    Raise ValidationError if making ``entity_id`` depend on ``dependencies``
+    would create a cycle.
+
+    We crawl the dependency graph one layer at a time, starting from the
+    proposed dependencies and following the dependencies of each entity's
+    current Draft and Published versions (the same relationships that side-
+    effect propagation follows). If we ever get back to ``entity_id``, there's a
+    cycle.
+    """
+    visited: set[PublishableEntity.ID] = set()
+    frontier = set(dependencies)
+    while frontier:
+        if entity_id in frontier:
+            raise ValidationError(
+                f"Cannot set dependencies of entity {entity_id}: doing so would create a dependency cycle."
+            )
+        visited |= frontier
+        draft_version_ids = Draft.objects.filter(entity_id__in=frontier).values("version_id")
+        published_version_ids = Published.objects.filter(entity_id__in=frontier).values("version_id")
+        frontier = set(
+            PublishableEntityVersionDependency.objects.filter(
+                Q(referring_version_id__in=draft_version_ids)
+                | Q(referring_version_id__in=published_version_ids)
+            ).values_list("referenced_entity_id", flat=True)
+        ) - visited
 
 
 def get_publishable_entity(publishable_entity_id: PublishableEntity.ID, /) -> PublishableEntity:
