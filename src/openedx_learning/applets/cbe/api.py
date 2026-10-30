@@ -658,10 +658,9 @@ def bulk_update_competency_criteria(
 
         # Archiving a group doesn't archive its criteria, yet ADR 0002 Decision 2 closes them to authoring.
         # An archived ancestor counts too: it stands in for a delete that would have cascaded to this leaf.
-        # Locked for the same reason as the criteria below.
         lineage = [group.id, group.parent.id, group.parent.parent_id]
         archived_by_id = dict(
-            CompetencyCriteriaGroup.objects.select_for_update().filter(pk__in=lineage).values_list("pk", "archived")
+            CompetencyCriteriaGroup.objects.filter(pk__in=lineage).values_list("pk", "archived")
         )
         archived_group_id = next((pk for pk in lineage if archived_by_id.get(pk)), None)
         if archived_group_id is not None:
@@ -671,9 +670,12 @@ def bulk_update_competency_criteria(
                 )
             )
 
-        # Locked so a concurrent archive can't slip in after the archived check, and so a concurrent
-        # identical request waits and then sees nothing to change instead of writing a second history row.
-        criteria_by_id = CompetencyCriterion.objects.select_for_update().filter(group=group).in_bulk(criterion_ids)
+        # These reads take no row locks. The lineage includes the competency's root group, a row every
+        # course using the competency shares, so locking it would serialize every bulk update for the
+        # competency and block criterion inserts under it. An archive path added later owns its own
+        # locking. Each extra identical concurrent request costs one redundant history row, since
+        # _apply_rule_source() compares before saving.
+        criteria_by_id = CompetencyCriterion.objects.filter(group=group).in_bulk(criterion_ids)
         missing_ids = [criterion_id for criterion_id in criterion_ids if criterion_id not in criteria_by_id]
         if missing_ids:
             raise CompetencyCriterion.DoesNotExist(
@@ -695,7 +697,9 @@ def bulk_update_competency_criteria(
         # every criterion in a leaf shares the group's tag, so they all resolve to the same profile.
         applicable = _get_applicable_rule_profile(group.tag.taxonomy.id) if rule_profile_id is None else None
         criteria = [criteria_by_id[criterion_id] for criterion_id in criterion_ids]
-        for criterion in criteria:
+        # Saves run in primary-key order. Each save() takes an exclusive row lock, so two overlapping
+        # requests saving in their own request order could each wait on the other's row.
+        for criterion in sorted(criteria, key=lambda item: item.pk):
             _apply_rule_source(
                 criterion,
                 rule_profile_id,
