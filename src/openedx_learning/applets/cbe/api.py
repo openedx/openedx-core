@@ -19,7 +19,8 @@ from opaque_keys.edx.keys import CourseKey, UsageKey
 
 from openedx_catalog.api import get_course_run, get_course_run_ids
 from openedx_catalog.models_api import CourseRun
-from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags, get_object_tags, tag_object
+from openedx_tagging import api as tagging_api
+from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 from openedx_tagging.rules import ObjectTagPermissionItem, UserType
 
@@ -486,10 +487,11 @@ def create_competency_criterion(
     UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
     and archive behavior may change this function's shape without a deprecation cycle.
 
-    ``tag_object()`` replaces an object's full tag list for a taxonomy rather than appending, so
-    this reads the object's existing tags first and unions in the new one, rather than silently
-    dropping a sibling competency's tag under the same taxonomy. Raises ValidationError (keyed
-    "object_id") when the taxonomy refuses the tag, e.g. it allows only one tag per object.
+    Adds only this competency's ObjectTag to the object, reusing it if it already exists. Other tags
+    on the object, including other competencies' tags in the same taxonomy, are never read or
+    changed, so a concurrent create or delete for another competency cannot be undone by this one.
+    Raises ValidationError (keyed "object_id") when the taxonomy allows one tag per object and the
+    object already has a tag in it, or when the object is at the tag limit.
 
     When no rule fields are supplied, resolves to the live profile scoped to the tag's taxonomy,
     else the live system default, rather than persisting null: ADR-0002 Decision 4 always
@@ -509,16 +511,28 @@ def create_competency_criterion(
     tag = group.tag
     # tag.taxonomy_id is nullable at the model level; already guaranteed set by the caller.
     assert tag.taxonomy_id is not None
+    assert tag.taxonomy is not None
     _validate_containment(group, course_run)
 
-    existing_values = [existing_tag.value for existing_tag in get_object_tags(object_id, taxonomy_id=tag.taxonomy_id)]
-    if tag.value not in existing_values:
-        existing_values.append(tag.value)
-    try:
-        tag_object(object_id, tag.taxonomy, existing_values)
-    except ValueError as exc:
-        raise ValidationError({"object_id": str(exc)}) from exc
-    object_tag = ObjectTag.objects.get(object_id=object_id, taxonomy_id=tag.taxonomy_id, tag_id=tag.id)
+    object_tag = ObjectTag.objects.filter(object_id=object_id, taxonomy_id=tag.taxonomy_id, tag_id=tag.id).first()
+    if object_tag is None:
+        # These are the checks tag_object() applies when adding one tag, without its replace-the-list write.
+        if not tag.taxonomy.allow_multiple and ObjectTag.objects.filter(
+            object_id=object_id, taxonomy_id=tag.taxonomy_id,
+        ).exists():
+            raise ValidationError({
+                "object_id": _("Taxonomy ({name}) only allows one tag per object.").format(name=tag.taxonomy.name),
+            })
+        limit = tagging_api.OBJECT_MAX_TAGS
+        if ObjectTag.objects.filter(object_id=object_id).count() + 1 > limit:
+            raise ValidationError({
+                "object_id": _("Cannot add more than {limit} tags to ({object_id}).").format(
+                    object_id=object_id, limit=limit,
+                ),
+            })
+        object_tag = ObjectTag(taxonomy=tag.taxonomy, object_id=object_id, tag=tag)
+        object_tag.full_clean()
+        object_tag.save()
 
     if rule_profile_id is None and rule_type_override is None and rule_payload_override is None:
         profile = _get_applicable_rule_profile(tag.taxonomy_id)
