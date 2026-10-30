@@ -111,13 +111,13 @@ A more concrete example: ``https://demo.openedx.org/assets/content_libraries/lib
 
 The literal ``assets`` segment cannot collide with a component key, since component keys always contain ``:``. Everything after the version segment is the Asset's filename, which may itself contain ``/``. Because every shared Asset of a learning package is served from the same directory for a given version, relative references between Assets resolve as ordinary relative URLs.
 
-Shared Assets that are used by a Component are also served (without a redirect) at that Component's own file URL, e.g. ``.../xblock.v1:html@intro/published/static/diagram.html``, if the Component doesn't have its own file with that name. All ``/static/`` references in a Component are rewritten to this form. This is described in :ref:`openedx-content-adr-0013`, decision 4, including the "strict mode" in which only shared Assets that are declared dependencies of the Component are served this way.
-
-The ``version`` can be:
+For these shared asset URLs, the ``version`` can be:
 
 * ``draft`` indicating the latest draft version (viewed by authors in Studio).
 * ``published`` indicating the latest published version (viewed by students in the LMS)
 * If the ``version`` is ``draft``, then ``?v={num}`` can also be used to retrieve a specific version - e.g. ``?v=20`` for version 20. For shared Assets, this is the version of the requested Asset only, and the response is always sent as an attachment (see :ref:`openedx-content-adr-0013`, decision 5).
+
+Shared Assets that are used by a Component are also served (without a redirect) at that Component's own file URL, e.g. ``.../xblock.v1:html@intro/published/static/diagram.html``, if the Component doesn't have its own file with that name. All ``/static/`` references in a Component are rewritten to this form. This is described in :ref:`openedx-content-adr-0013`, decision 4, including the "strict mode" in which only shared Assets that are declared dependencies of the Component are served this way.
 
 Response Headers
 ~~~~~~~~~~~~~~~~
