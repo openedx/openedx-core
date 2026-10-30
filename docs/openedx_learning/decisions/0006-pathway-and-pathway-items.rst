@@ -1,4 +1,4 @@
-.. _openedx-learning-adr-0005:
+.. _openedx-learning-adr-0006:
 
 5. Pathways: The Boundary Between Pathway and Pathway Item
 ==========================================================
@@ -25,7 +25,7 @@ Decisions
 2. A Pathway Item has its own identity and lifecycle. An Item may be fulfilled by one thing today (e.g. passing a
    course) and by something else tomorrow (e.g. a competency attainment, or an admin override) without changing its
    identity - and therefore without changing the Pathway that contains it. How fulfillment is modeled is a separate
-   decision (:ref:`openedx-learning-adr-0006`).
+   decision (:ref:`openedx-learning-adr-0007`).
 
 3. Pathway to Item relationships do not break new ground structurally. We already have precedent for modeling
    parent-child relations in ``openedx_content`` containers; Pathway/PathwayItem will not use Container directly,
@@ -35,7 +35,7 @@ Decisions
    fulfillment rules; the Pathway's completion is computed from Item completion.
 
 5. In the MVP, Pathway completion is not configurable: a Pathway is complete when *all* of its Items are complete.
-   Because every Item is fulfilled by passing a course (:ref:`openedx-learning-adr-0006`), this means the learner has
+   Because every Item is fulfilled by passing a course (:ref:`openedx-learning-adr-0007`), this means the learner has
    passed every course in the Pathway, with grade and passed/failed state read directly from each course. Configurable
    criteria (e.g. "complete 4 of these 5 Items") are expected in later iterations, and the intent is for them to be
    expressed in terms of Item completion rather than the Pathway-specific definition of what fulfills each Item.
