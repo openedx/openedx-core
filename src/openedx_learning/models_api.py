@@ -13,6 +13,12 @@ from .models import (
     CompetencyRuleProfile,
     CompetencyTaxonomy,
     MasteryStatus,
+    Pathway,
+    PathwayItem,
+    PathwayItemCourseRun,
+    PathwayItemVersion,
+    PathwayVersion,
+    PathwayVersionItem,
     RuleType,
     StudentCompetencyCriterionStatus,
 )

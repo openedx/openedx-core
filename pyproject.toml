@@ -55,6 +55,9 @@ multi_line_output = 3
 [tool.ruff]
 line-length = 120
 
+[tool.ruff.lint]
+ignore = ["RUF012"]
+
 [tool.setuptools_scm]
 version_scheme = "only-version"
 local_scheme = "no-local-version"
