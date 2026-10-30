@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from functools import partial
-from typing import ContextManager, NamedTuple, Optional
+from typing import ContextManager, Iterable, NamedTuple, Optional
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
@@ -1968,10 +1968,45 @@ def get_published_version_as_of(
             entity_id=entity_id,
             publish_log_id__lte=publish_log_id,
         )
+        .select_related("new_version")
         .order_by("-publish_log_id")
         .first()
     )
     return record.new_version if record else None
+
+
+def get_published_versions_as_of(
+    entity_ids: Iterable[PublishableEntity.ID],
+    publish_log_id: int,
+) -> dict[PublishableEntity.ID, PublishableEntityVersion | None]:
+    """
+    Bulk version of get_published_version_as_of(), in a single query.
+
+    Returns a mapping of entity ID -> the PublishableEntityVersion that was
+    published for that entity as of the given PublishLog ID. The value is None
+    for an entity whose published state at that point was a soft-delete.
+    Entities that had not been published at all as of that point are left out
+    of the mapping.
+
+    This is a semi-private function, only available to other apps in the
+    authoring package.
+    """
+    entity_ids = list(entity_ids)
+    if not entity_ids:
+        return {}
+    # For each entity, the most recent PublishLogRecord as of publish_log_id:
+    latest_record_ids = (
+        PublishLogRecord.objects
+        .filter(entity_id=OuterRef("entity_id"), publish_log_id__lte=publish_log_id)
+        .order_by("-publish_log_id")
+        .values("id")[:1]
+    )
+    records = (
+        PublishLogRecord.objects
+        .filter(entity_id__in=entity_ids, id=Subquery(latest_record_ids))
+        .select_related("new_version")
+    )
+    return {record.entity_id: record.new_version for record in records}
 
 
 def bulk_draft_changes_for(
