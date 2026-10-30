@@ -34,7 +34,9 @@ from .models import (
     MasteryStatus,
     StudentCompetencyCriterionStatus,
 )
+from .rollup import roll_up_competency_statuses
 from .rule_payloads import evaluate_rule
+from .statuses import raise_status
 
 __all__ = [
     "CompetencyCriteriaGroupArchivedError",
@@ -52,6 +54,7 @@ __all__ = [
     "record_graded_object_statuses",
     "resolve_competency_tag",
     "resolve_supplied_leaf_group",
+    "roll_up_competency_statuses",
     "select_competency_taxonomies",
     "update_competency_criteria_group",
 ]
@@ -778,24 +781,6 @@ def _effective_rule(criterion: CompetencyCriterion) -> tuple[str, Any]:
     return criterion.rule_type_override, criterion.rule_payload_override
 
 
-def _raise_leaf_status(user_id: int, criterion_id: int, status: MasteryStatus, now: datetime) -> int:
-    """
-    Create or raise a learner's leaf status row for one criterion; never lowers a stored status.
-
-    Returns the count of rows created or raised (0 or 1), matching the semantics of
-    ``QuerySet.update()``'s own return value.
-    """
-    row, created = StudentCompetencyCriterionStatus.objects.get_or_create(
-        user_id=user_id, criterion_id=criterion_id,
-        defaults={"status_id": status, "created": now, "modified": now},
-    )
-    if created:
-        return 1
-    return StudentCompetencyCriterionStatus.objects.filter(
-        pk=row.pk, status_id__lt=status,
-    ).update(status_id=status, modified=now)
-
-
 def record_graded_object_statuses(*, user_id: int, scores: Sequence[GradedObjectScore]) -> int:
     """
     Record a learner's leaf-level competency status for each graded object in ``scores``.
@@ -852,7 +837,12 @@ def record_graded_object_statuses(*, user_id: int, scores: Sequence[GradedObject
             )
             continue
         status = MasteryStatus.DEMONSTRATED if demonstrated else MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
-        changed += _raise_leaf_status(user_id, criterion.pk, status, now)
+        changed += raise_status(
+            StudentCompetencyCriterionStatus.objects,
+            lookup={"user_id": user_id, "criterion_id": criterion.pk},
+            status=status,
+            now=now,
+        )
 
     return changed
 

@@ -8,7 +8,14 @@ from organizations.models import Organization
 from rest_framework.test import APIClient
 
 from openedx_catalog.models import CatalogCourse, CourseRun
-from openedx_learning.models import CompetencyCriteriaGroup, CompetencyRuleProfile, CompetencyTaxonomy
+from openedx_learning.models import (
+    CompetencyCriteriaGroup,
+    CompetencyMasteryStatus,
+    CompetencyRuleProfile,
+    CompetencyTaxonomy,
+    MasteryStatus,
+    RuleType,
+)
 from openedx_tagging.models import ObjectTag, Tag
 
 
@@ -68,6 +75,24 @@ def _default_rule_profile() -> CompetencyRuleProfile:
         organization__isnull=True,
         course__isnull=True,
         competency_taxonomy__isnull=True,
+    )
+
+
+@pytest.fixture(name="migration_seed_rows")
+def _migration_seed_rows() -> None:
+    """Recreate the rows migrations 0005 and 0009 seed, which a transactional test's flush deletes."""
+    labels = {
+        MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED: "AttemptedNotDemonstrated",
+        MasteryStatus.PARTIALLY_ATTEMPTED: "PartiallyAttempted",
+        MasteryStatus.DEMONSTRATED: "Demonstrated",
+    }
+    for status, label in labels.items():
+        CompetencyMasteryStatus.objects.get_or_create(id=status.value, defaults={"status": label})
+    CompetencyRuleProfile.objects.get_or_create(
+        organization=None,
+        course=None,
+        competency_taxonomy=None,
+        defaults={"rule_type": RuleType.GRADE, "rule_payload": {"op": "gte", "value": 0.8, "scale": "percent"}},
     )
 
 

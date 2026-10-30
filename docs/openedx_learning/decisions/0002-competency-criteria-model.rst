@@ -76,7 +76,7 @@ Decision
    - A group belongs to one competency (``oel_tagging_tag_id``) and optional course scope (``course_id``).
    - A group can have child groups.
    - ``logic_operator`` (``AND``, ``OR``, or null) defines how children are combined; null occurs only for a group with a single child, where combining logic is moot, and the application layer treats null the same as ``OR`` (the default when there's nothing to disambiguate).
-   - ``ordering`` defines deterministic sibling evaluation sequence during group recomputation and enables short-circuit evaluation.
+   - ``ordering`` gives a group's children a stable order in the read API. Evaluation combines a group's children as a set (Decision 6), so ``ordering`` plays no part in it.
 
    This new database table will have the following columns:
 
@@ -85,25 +85,25 @@ Decision
    3. ``oel_tagging_tag_id``: The ``oel_tagging_tag.id`` for the competency represented by this criteria tree. Immutable after creation.
    4. ``course_id``: Nullable foreign key for the course that scopes a course-scoped subtree. Only the course-level group carries it; the groups below it leave ``course_id`` null and belong to the course through that ancestor. Immutable after creation. Root groups always have ``course_id`` null.
    5. ``name``: string
-   6. ``ordering``: Indicates evaluation sequence number for this criteria group. This defines deterministic evaluation order for siblings during read-time evaluation and event-driven recomputation, and enables short-circuit evaluation.
+   6. ``ordering``: A sibling sort key. The read API returns a group's children ordered by ``(ordering, id)`` so a tree comes back in a stable order. Evaluation ignores it, because the result of ``AND`` or ``OR`` over a group's children cannot depend on the order they are read in.
    7. ``logic_operator``: Either “AND” or “OR” or null. This determines how children are combined at a group node ("AND" or "OR").
    8. ``archived``: Boolean, defaults to false. Set instead of deleting a group once a student status exists for it. Archived groups are hidden from authoring and new associations but remain queryable, so existing ``CompetencyCriteria`` rows and learner status rows stay resolvable. For MVP, archiving a group or a criterion is permanent, with the root as the one reversible exception: a new criterion for an archived root's competency reactivates that root instead of creating a second one, because archiving it for good would remove the ability to ever associate criteria with that competency again. Archiving a course-level group blocks that course for that competency; archiving a leaf closes only that leaf to new criteria. More unarchival capabilities may be added after MVP.
    9. ``scope_code``: Derived from ``oel_tagging_tag_id``, set on the root group and null on every other group, whether or not the root is archived. It exists so the database can hold at most one root per competency, the same way Decision 3's derived ``scope_code`` holds at most one live profile per scope.
 
    Example: A root group uses "OR" with two child groups.
 
-   - Child group A (``ordering=1``) requires "AND" across Assignment 1 and Assignment 2.
-   - Child group B (``ordering=2``) requires "AND" across Final Exam and Lab Assignment 3.
-   - If group A evaluates to true, group B is not evaluated.
-   - ``ordering`` complements learner-status materialization: progress is still persisted at leaf/group/root levels, and ``ordering`` only defines child scan order when a parent recomputes after a leaf status change.
+   - Child group A requires "AND" across Assignment 1 and Assignment 2.
+   - Child group B requires "AND" across Final Exam and Lab Assignment 3.
+   - The root is ``Demonstrated`` as soon as either child group is, whichever one the learner completes first.
+   - Progress is persisted at leaf, group, and root level, so a recompute reads the stored statuses of a group's children instead of re-evaluating the leaves beneath them.
 
-   Concrete event example (materialization + ordered recompute):
+   Concrete event example (materialization + set-based recompute):
 
-   - Root group uses ``AND`` with Group A (``ordering=1``) and Group B (``ordering=2``).
+   - Root group uses ``AND`` with Group A and Group B.
    - Group A status is currently ``AttemptedNotDemonstrated``; Group B status is currently ``PartiallyAttempted``; root is ``AttemptedNotDemonstrated``.
    - New event: learner completes one remaining leaf criterion under Group B, so that leaf row changes to ``Demonstrated``.
    - Bottom-up materialization updates Group B first. Group B now becomes ``Demonstrated``.
-   - Recompute the root ``AND`` group in ``ordering`` sequence: Group A is evaluated first and is still ``AttemptedNotDemonstrated``, so root is determined immediately and Group B does not need to be checked for root recomputation.
+   - Recompute the root ``AND`` group from the set of its children's stored statuses, which is now {``AttemptedNotDemonstrated``, ``Demonstrated``}. An ``AND`` group with any child at ``AttemptedNotDemonstrated`` is ``AttemptedNotDemonstrated``, so the root's result is unchanged.
    - Persist changed rows only: the updated leaf row and Group B row. Root remains ``AttemptedNotDemonstrated`` and is not rewritten.
 
    Boundaries and intended behavior:
@@ -265,10 +265,11 @@ Decision
 
    Intended update flow (bottom-up materialization):
 
-   - A learner event updates one ``StudentCompetencyCriteriaStatus`` row.
-   - Recompute ancestor ``CompetencyCriteriaGroup`` statuses upward to the root.
-   - At each group, evaluate children in ``ordering`` sequence and short-circuit when the group's result is already determined by its ``logic_operator``.
-   - Persist only rows whose status changed.
+   - A grade event writes the learner's ``StudentCompetencyCriteriaStatus`` row for each graded criterion inside the grade's own transaction. Everything below runs afterwards, in an asynchronous task (:ref:`openedx-learning-adr-0004`).
+   - Recompute ancestor ``CompetencyCriteriaGroup`` statuses upward to the root, one level at a time. At each level, read the stored status of every child (child groups and criteria) in one batch and combine them as a set under the group's ``logic_operator``. An ``AND`` group is ``Demonstrated`` only when every child is, and ``AttemptedNotDemonstrated`` as soon as any child is. An ``OR`` group is ``Demonstrated`` as soon as any child is, and ``AttemptedNotDemonstrated`` only when every child is. Any other mix is ``PartiallyAttempted``, and a group none of whose children has a status gets none. Sibling order and ``ordering`` play no part, and there is no short-circuit: the batch read costs the same whatever the result.
+   - When a root group is recomputed, write the competency's ``StudentCompetencyStatus`` from it, mapping ``AttemptedNotDemonstrated`` to ``PartiallyAttempted`` because that table holds only ``Demonstrated`` and ``PartiallyAttempted``.
+   - Then recompute each parent competency up the taxonomy, one level at a time. A parent's status is the better of two inputs: its own criteria result, which is its root group's status mapped the same way, and its sub-competency result, which is ``Demonstrated`` when every direct sub-competency is ``Demonstrated`` and ``PartiallyAttempted`` when at least one has a status. A competency with no criteria tree of its own gets a status row only through its sub-competencies; a competency with neither a root group nor a sub-competency with a status gets no row.
+   - Every write only ever raises a stored status, and each level commits before the next is read. :ref:`openedx-learning-adr-0004` records why.
 
    1. Add new database table for ``CompetencyMasteryStatuses`` with these columns:
 
@@ -345,8 +346,8 @@ Content objects:
 3. ``CompetencyCriteriaGroup``:
 
    - Root group uses ``OR``
-   - Group A (``ordering=1``) uses ``AND``
-   - Group B (``ordering=2``) uses ``AND``
+   - Group A uses ``AND``
+   - Group B uses ``AND``
 
 4. ``CompetencyCriteria``:
 
@@ -481,3 +482,11 @@ Changelog
   the one reversible exception, and added Rejected Alternative 7. Corrected ``course_id`` and the root scope: only
   the course-level group carries ``course_id``, which supersedes the 2026-09-04 entry's statement
   that every group in a course-scoped subtree does. That entry is left as originally written.
+
+2026-10-30:
+
+* Amended Decisions 2 and 6 for issue #643. Evaluation combines a group's children as a set
+  and ignores ``ordering``, which only gives the read API a stable sibling order; this
+  supersedes the ordered, short-circuited evaluation the earlier text described. Decision 6's update flow now continues past the root group to the
+  competency's own status row and up through parent competencies, and states what a
+  competency with no criteria tree of its own receives.
