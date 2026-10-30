@@ -37,6 +37,7 @@ from .permissions import CompetencyReadPermission, CompetencyRuleProfilePermissi
 from .serializers import (
     CompetencyCriteriaGroupSerializer,
     CompetencyCriteriaGroupUpdateSerializer,
+    CompetencyCriteriaQueryParamsSerializer,
     CompetencyCriterionBulkUpdateSerializer,
     CompetencyCriterionReadSerializer,
     CompetencyCriterionSerializer,
@@ -185,6 +186,17 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
     for client-side reconstruction: each group carries its parent_id, and each criterion its
     group_id. An empty tree (the tag exists but nothing has been authored under it yet) is a
     valid 200 with two empty arrays; a 404 is reserved for tag resolution failure only.
+
+    The optional ``course_keys`` query parameter (comma-separated course keys) scopes the tree by
+    course run. A course run's groups are its course-level group and every group nested below it.
+    Omitting the parameter returns every reachable group. Supplying it returns the groups above
+    any course plus the groups of the named runs, ordered with the groups above any course first
+    and then by the order requested; keys that match no run are ignored, and an empty value
+    returns only the groups above any course. The parameter may be supplied once.
+
+    ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is the number
+    under every reachable group regardless of ``course_keys``, so a client scoped down to zero
+    criteria can still tell the competency is not empty.
     """
 
     authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
@@ -197,10 +209,17 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
         except Tag.DoesNotExist as exc:
             raise NotFound(str(exc)) from exc
         self.check_object_permissions(request, tag)
-        tree = get_competency_criteria_tree(tag)
+        if len(request.query_params.getlist("course_keys")) > 1:
+            raise DRFValidationError({"course_keys": _("Supply course_keys once, as a comma-separated list.")})
+        query_params = CompetencyCriteriaQueryParamsSerializer(data=request.query_params.dict())
+        query_params.is_valid(raise_exception=True)
+        course_keys = query_params.validated_data.get("course_keys")
+        tree = get_competency_criteria_tree(tag, course_keys)
         return Response({
             "groups": CompetencyCriteriaGroupSerializer(tree.groups, many=True).data,
             "criteria": CompetencyCriterionReadSerializer(tree.criteria, many=True).data,
+            "criteria_count": tree.criteria_count,
+            "total_criteria_count": tree.total_criteria_count,
         })
 
 

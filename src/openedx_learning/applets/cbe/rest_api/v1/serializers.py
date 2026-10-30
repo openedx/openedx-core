@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
-from opaque_keys.edx.keys import UsageKey
+from opaque_keys.edx.keys import CourseKey, UsageKey
 from rest_framework import serializers
 
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile, LogicOperator
@@ -171,6 +171,46 @@ class CompetencyCriteriaGroupUpdateSerializer(serializers.Serializer):  # pylint
         if changed:
             raise serializers.ValidationError({key: "This field cannot be changed." for key in changed})
         return attrs
+
+
+MAX_COURSE_KEYS = 100
+
+
+class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
+    """Query params for the criteria-tree read endpoint."""
+
+    course_keys = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_course_keys(self, value: str) -> list[CourseKey]:
+        """
+        Parse a comma-separated course_keys value into a deduplicated list of CourseKey.
+
+        Stray separators (trailing, doubled, or all-commas) are ignored, not rejected. Raises
+        a validation error if more than MAX_COURSE_KEYS entries remain after splitting, checked
+        before dedup so repeating a key can't dodge the cap, or if any entry isn't a valid key.
+        """
+        entries = [entry for entry in (entry.strip() for entry in value.split(",")) if entry]
+        if len(entries) > MAX_COURSE_KEYS:
+            raise serializers.ValidationError(
+                _("No more than %(max)s course_keys may be requested at once.") % {"max": MAX_COURSE_KEYS}
+            )
+        parsed = []
+        for entry in entries:
+            try:
+                parsed.append(CourseKey.from_string(entry))
+            except InvalidKeyError as exc:
+                raise serializers.ValidationError(
+                    _("'%(entry)s' is not a valid course key.") % {"entry": entry}
+                ) from exc
+        return list(dict.fromkeys(parsed))
+
+    def create(self, validated_data):
+        """Not supported: this serializer only validates query parameters."""
+        raise NotImplementedError
+
+    def update(self, instance, validated_data):
+        """Not supported: this serializer only validates query parameters."""
+        raise NotImplementedError
 
 
 class CompetencyCriterionReadSerializer(serializers.ModelSerializer):

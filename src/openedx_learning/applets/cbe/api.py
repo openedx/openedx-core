@@ -15,9 +15,9 @@ from django.db.models import F, Q, QuerySet
 from django.db.transaction import TransactionManagementError
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
-from opaque_keys.edx.keys import UsageKey
+from opaque_keys.edx.keys import CourseKey, UsageKey
 
-from openedx_catalog.api import get_course_run
+from openedx_catalog.api import get_course_run, get_course_run_ids
 from openedx_catalog.models_api import CourseRun
 from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags, get_object_tags, tag_object
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
@@ -167,52 +167,110 @@ class CompetencyCriteriaTree:
     UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
     deprecation cycle. ``groups`` and ``criteria`` are flat lists: each group carries its
     ``parent_id`` and each criterion its ``group_id``, and both always name a group in ``groups``.
+
+    ``criteria_count`` is ``len(criteria)``. ``total_criteria_count`` counts the criteria under
+    every reachable group before any course scoping.
     """
 
     groups: list[CompetencyCriteriaGroup]
     criteria: list[CompetencyCriterion]
+    criteria_count: int
+    total_criteria_count: int
 
 
-def get_competency_criteria_tree(tag: Tag) -> CompetencyCriteriaTree:
+def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None = None) -> CompetencyCriteriaTree:
     """
     Return the non-archived CompetencyCriteriaGroup tree and CompetencyCriterion leaves for ``tag``.
 
-    A group is returned only if it and every ancestor up to its root are non-archived, and a
-    criterion only if it and its group are returned, so the result always forms one tree: no
-    returned ``parent_id`` or ``group_id`` names a row that was left out. Groups come back
-    root first, then ordered by ``(parent_id, ordering, id)``; criteria by ``(group_id, id)``.
-
     UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
     behavior may change this function's shape without a deprecation cycle.
+
+    A group is reachable only if it and every ancestor up to its root are non-archived. A
+    criterion is returned only if it is non-archived and its group is returned, so the result
+    always forms one tree: no returned ``parent_id`` or ``group_id`` names a row that was left out.
+
+    ``course_keys`` scopes the result by course run. A course run's groups are its course-level
+    group (the group whose ``course`` is that run) and every group nested below it, at any depth.
+    The groups above any course are the ones not nested in any course-level group.
+
+    - ``None`` (the default) returns every reachable group.
+    - A list returns the groups above any course plus the groups of the named course runs.
+      ``[]`` returns only the groups above any course.
+    - A key that matches no course run is dropped, and a repeated key counts once, at its
+      first position. A list in which no key resolves returns only the groups above any course.
+
+    Groups come back with the groups above any course first, then the named courses in the order
+    requested, and within each of those by ``(parent_id, ordering, id)`` with root-level rows first.
+    Criteria are ordered by their group's position in ``groups``, then ``id``.
+
+    ``criteria_count`` is ``len(criteria)``. ``total_criteria_count`` is the number of criteria
+    under every reachable group before ``course_keys`` is applied, so a caller scoped down to
+    zero criteria can still tell the competency is not empty.
     """
     groups = list(
         CompetencyCriteriaGroup.objects.filter(tag=tag, archived=False)
         .select_related("course")
         .order_by(F("parent_id").asc(nulls_first=True), "ordering", "id")
     )
+    if not groups:
+        return CompetencyCriteriaTree(groups=[], criteria=[], criteria_count=0, total_criteria_count=0)
 
     # Walk down from the roots instead of relying on row order. A group's parent is fixed once
     # saved, but a QuerySet.update() can still give a group a parent with a larger id, and
     # ordering by parent_id would then visit that child before its parent.
-    children_by_parent_id: dict[int | None, list[int]] = {}
+    groups_by_parent_id: dict[int | None, list[CompetencyCriteriaGroup]] = {}
     for group in groups:
-        children_by_parent_id.setdefault(group.parent_id, []).append(group.id)
-    kept_group_ids: set[int] = set()
-    pending = list(children_by_parent_id.get(None, []))
+        groups_by_parent_id.setdefault(group.parent_id, []).append(group)
+    # Maps each reachable group id to the course run id of its branch, or None above any course.
+    branch_course_ids: dict[int, int | None] = {}
+    pending = [(group, group.course_id) for group in groups_by_parent_id.get(None, [])]
     while pending:
-        group_id = pending.pop()
-        kept_group_ids.add(group_id)
-        pending.extend(children_by_parent_id.get(group_id, []))
+        group, branch_course_id = pending.pop()
+        branch_course_ids[group.id] = branch_course_id
+        for child in groups_by_parent_id.get(group.id, []):
+            pending.append((child, branch_course_id if branch_course_id is not None else child.course_id))
+    reachable_groups = [group for group in groups if group.id in branch_course_ids]
 
+    if course_keys is None:
+        scoped_groups = reachable_groups
+    else:
+        run_ids_by_key = get_course_run_ids(course_keys)
+        rank_by_run_id = {
+            run_ids_by_key[key]: rank
+            for rank, key in enumerate((key for key in dict.fromkeys(course_keys) if key in run_ids_by_key), start=1)
+        }
+        # Groups above any course rank 0, so a scoped tree never orphans a child from its parent, and
+        # a branch ranks by its course. A branch whose course was not requested is left out.
+        # sorted() is stable, so each rank keeps the query order.
+        ranked_groups = []
+        for group in reachable_groups:
+            group_course_id = branch_course_ids[group.id]
+            if group_course_id is None:
+                ranked_groups.append((0, group))
+            elif group_course_id in rank_by_run_id:
+                ranked_groups.append((rank_by_run_id[group_course_id], group))
+        scoped_groups = [group for _, group in sorted(ranked_groups, key=lambda ranked: ranked[0])]
+
+    position_by_group_id = {group.id: position for position, group in enumerate(scoped_groups)}
     criteria = list(
-        CompetencyCriterion.objects.filter(group_id__in=kept_group_ids, archived=False)
+        CompetencyCriterion.objects.filter(group_id__in=position_by_group_id.keys(), archived=False)
         .select_related("object_tag")
         .order_by("group_id", "id")
     )
+    # sort() is stable, so criteria of one group keep their id order.
+    criteria.sort(key=lambda criterion: position_by_group_id[criterion.group_id])
+    if course_keys is None:
+        total_criteria_count = len(criteria)
+    else:
+        total_criteria_count = CompetencyCriterion.objects.filter(
+            group_id__in=branch_course_ids.keys(), archived=False,
+        ).count()
 
     return CompetencyCriteriaTree(
-        groups=[group for group in groups if group.id in kept_group_ids],
+        groups=scoped_groups,
         criteria=criteria,
+        criteria_count=len(criteria),
+        total_criteria_count=total_criteria_count,
     )
 
 
