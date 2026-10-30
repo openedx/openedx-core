@@ -7,6 +7,7 @@ import their modules, but that broke code introspection.
 
 # pylint: disable=wildcard-import
 
+from .applets.assets.models import *
 from .applets.backup_restore.models import *
 from .applets.collections.models import *
 from .applets.components.models import *

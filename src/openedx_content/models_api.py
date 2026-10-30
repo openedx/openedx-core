@@ -8,6 +8,7 @@ consistent.
 
 # These wildcard imports are okay because these modules declare __all__.
 # pylint: disable=wildcard-import
+from .applets.assets.models import *
 from .applets.collections.models import *
 from .applets.components.models import *
 from .applets.containers.models import *
