@@ -44,9 +44,10 @@ class CompetencyCriteriaGroup(models.Model):
     A single Competency Criteria tree is one root CompetencyCriteriaGroup plus all of its
     descendant groups and leaf :class:`CompetencyCriterion` rows. ``logic_operator`` says how
     this group's own children combine. ``ordering`` gives this group's own position among its
-    siblings under their shared parent, which read-time evaluation and event-driven recomputation
-    rely on for deterministic, short-circuiting evaluation order. A group's children can be a mix
-    of child groups and leaf criteria, and only CompetencyCriteriaGroup carries an ``ordering``
+    siblings under their shared parent: the read API returns a parent's child groups ordered by
+    ``(ordering, id)``, and evaluation ignores it because ``AND`` or ``OR`` over a group's
+    children cannot depend on the order they are read in. A group's children can be a mix of
+    child groups and leaf criteria, and only CompetencyCriteriaGroup carries an ``ordering``
     field, so that mix has no total order; #641 accepts this deliberately. See ADR-0002 Decision 2.
 
     ``scope_code`` is derived in ``save()``, so writes that skip ``save()`` (``bulk_create()``,
