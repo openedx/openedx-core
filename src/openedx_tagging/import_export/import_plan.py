@@ -345,18 +345,20 @@ class TagImportPlan:
         tags: list[TagItem],
         existing: dict[str, ExistingTag],
         parent_of: dict[str, str | None],
-        pk_of: dict[str, int],
         row_of: dict[str, int],
     ) -> None:
         """
         Reject a parent cycle, and a tree deeper than the taxonomy allows.
 
-        A cycle is reported once, on its first row in the file. A cycle made only of
-        new tags is left to ``_validate_parent``, which reports one of them as an
-        unknown parent. A parent_id that is no tag of the final tree counts as a root
+        Every cycle with a row in the file is reported once, on its first row. Its rows
+        are recorded as 1-based numbers in ``indexed_actions["_rows_on_a_cycle"]``, so
+        that ``_validate_parent`` does not also report an unknown parent for them.
+
+        A parent_id that is no tag of the final tree counts as a root
         here: it is unknown, which ``_validate_parent`` reports, or deleted without a
         row reclaiming it, and the delete phase promotes its children.
         """
+        rows_on_a_cycle: set[int] = set()
         depth_of: dict[str, int] = {}
         unresolved: set[str] = set()  # on a cycle, or below one
         for start in parent_of:
@@ -374,7 +376,8 @@ class TagImportPlan:
             if node is not None and node in path:
                 cycle = path[path.index(node):]
                 rows = [row_of[key] for key in cycle if key in row_of]
-                if rows and any(pk_of[key] != NEW_TAG for key in cycle):
+                if rows:
+                    rows_on_a_cycle.update(row + 1 for row in rows)
                     position = min(rows)
                     self.errors.append(ParentCycleError(position + 1, tags[position].parent_id or ""))
             if node is None or node in depth_of:
@@ -386,6 +389,8 @@ class TagImportPlan:
                 # The walk closed a cycle, or reached a key on or below one: no key on
                 # the path has a depth.
                 unresolved.update(path)
+
+        self.indexed_actions["_rows_on_a_cycle"] = rows_on_a_cycle
 
         too_deep = [key for key, depth in depth_of.items() if depth > TAXONOMY_MAX_DEPTH]
         if too_deep:
@@ -517,7 +522,7 @@ class TagImportPlan:
 
         # Reject a cycle or an overflow of the final tree, then detach every moved tag.
         parent_of, pk_of, row_of = self._end_state(tags, existing)
-        self._validate_hierarchy(tags, existing, parent_of, pk_of, row_of)
+        self._validate_hierarchy(tags, existing, parent_of, row_of)
         self._build_detach_actions(existing, parent_of, pk_of)
 
         for position in self._order_rows_parent_first(tags, existing):

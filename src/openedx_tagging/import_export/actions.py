@@ -124,6 +124,11 @@ class ImportAction:
 
         A row that names its own parent's pre-import id while this file renames that parent
         is always rejected, because that id then names nothing or, in a swap, another tag.
+
+        A row on a parent cycle, listed in ``indexed_actions["_rows_on_a_cycle"]``, gets no
+        unknown parent error: every parent on the cycle is a tag of the final tree, and
+        ``_validate_hierarchy`` already rejects the import with one parent cycle error on
+        the cycle's first row.
         """
         vacated_pks: dict[int, str] = indexed_actions.get("_vacated_pks", {})
         parent_tag = self.taxonomy.tag_set.filter(external_id=self.tag.parent_id).first()
@@ -149,6 +154,8 @@ class ImportAction:
                     "import the id changes and the move as two separate files."
                 ).format(parent_id=self.tag.parent_id)
         else:
+            if self.row in indexed_actions.get("_rows_on_a_cycle", set()):
+                return None
             message = _(
                 "Unknown parent tag ({parent_id}). "
                 "Add a row for the parent to your file."
