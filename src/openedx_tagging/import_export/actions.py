@@ -148,16 +148,14 @@ class ImportAction:
                     "To move under the tag that takes the id {parent_id} in this file instead, "
                     "import the id changes and the move as two separate files."
                 ).format(parent_id=self.tag.parent_id)
-            if self.row is not None:
-                message = _("Row {row}: {message}").format(row=self.row, message=message)
-            return ImportActionError(action=self, message=message)
-        return ImportActionError(
-            action=self,
-            message=_(
+        else:
+            message = _(
                 "Unknown parent tag ({parent_id}). "
                 "Add a row for the parent to your file."
-            ).format(parent_id=self.tag.parent_id),
-        )
+            ).format(parent_id=self.tag.parent_id)
+        if self.row is not None:
+            message = _("Row {row}: {message}").format(row=self.row, message=message)
+        return ImportActionError(action=self, message=message)
 
     def _was_parent_before_import(self, parent_tag: Tag) -> bool:
         """

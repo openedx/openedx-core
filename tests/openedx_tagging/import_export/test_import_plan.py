@@ -1,6 +1,8 @@
 """
 Test for import_plan functions
 """
+import re
+
 import ddt  # type: ignore[import]
 from django.db import transaction
 from django.test.testcases import TestCase
@@ -272,7 +274,7 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             "Each row's id must be unique within a single import.\n"
             "Conflict with 'create' (#3) and action #2: Duplicated external_id tag.\n"
             "Action error in 'rename' (#4): Duplicated tag value with tag in database (external_id=tag_2).\n"
-            "Action error in 'update_parent' (#5): Unknown parent tag (tag_100). "
+            "Action error in 'update_parent' (#5): Row 4: Unknown parent tag (tag_100). "
             "Add a row for the parent to your file.\n"
             "Conflict with 'create' (#6) and action #3: Duplicated tag value.\n"
             "Conflict with 'rename' (#8) and action #2: Duplicated tag value.\n"
@@ -959,6 +961,20 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             [str(error) for error in self.import_plan.errors],
             ["This import would leave tag n6 more than 6 levels deep."],
         )
+
+    def test_generate_actions_unknown_parent_names_each_row(self) -> None:
+        tags = [
+            TagItem(id='new_tag', value='New Tag', parent_id='tag_100'),
+            TagItem(id='tag_4', value='Tag 4', parent_id='tag_100'),
+            TagItem(id='tag_50', value='Tag 3', previous_id='tag_3', parent_id='tag_100'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        messages = [str(error) for error in self.import_plan.errors]
+        self.assertEqual(len(messages), 3, messages)
+        for position, step_name in ((1, 'create'), (2, 'update_parent'), (3, 'rename_external_id')):
+            pattern = rf"Action error in '{step_name}' \(#\d+\): Row {position}: Unknown parent tag \(tag_100\)\."
+            matching = [m for m in messages if re.search(pattern, m)]
+            self.assertEqual(len(matching), 1, messages)
 
     def test_generate_actions_cycle_of_new_tags_reports_an_unknown_parent_once(self) -> None:
         """

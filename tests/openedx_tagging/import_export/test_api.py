@@ -3,6 +3,7 @@ Test for import/export API
 """
 import csv
 import json
+import re
 from collections.abc import Sequence
 from contextlib import contextmanager
 from io import BytesIO, StringIO
@@ -1534,6 +1535,46 @@ class TestImportAcceptanceScenarios(TestCase):
                     error_count=2,
                     parser_format=parser_format,
                 )
+
+    def test_unknown_parent_names_its_row_not_its_step(self) -> None:
+        """
+        An unknown parent error names the row in the file. The seeded tags that the file omits
+        are deleted first, so the row's step number in the Plan differs from its row number.
+        """
+        self._seed([TagItem(id="OLD-1", value="Old one"), TagItem(id="OLD-2", value="Old two")])
+        rows = [
+            TagItem(id="NEW-1", value="New one"),
+            TagItem(id="NEW-2", value="New two"),
+            TagItem(id="NEW-3", value="New three"),
+            TagItem(id="NEW-4", value="New four", parent_id="tag_100"),
+        ]
+        for order in self._orders(len(rows)):
+            with self.subTest(order=order):
+                file_rows = [rows[i] for i in order]
+                position = file_rows.index(rows[3]) + 1
+                self._assert_rejected(
+                    file_rows,
+                    messages=[
+                        f"Row {position}: Unknown parent tag (tag_100). Add a row for the parent to your file."
+                    ],
+                    error_count=1,
+                )
+
+    def test_rows_naming_the_same_unknown_parent_are_told_apart(self) -> None:
+        self._seed([TagItem(id="MOVED", value="Moved"), TagItem(id="OLD-ID", value="Renamed")])
+        created = TagItem(id="CREATED", value="Created", parent_id="tag_100")
+        moved = TagItem(id="MOVED", value="Moved", parent_id="tag_100")
+        renamed = TagItem(id="NEW-ID", value="Renamed", previous_id="OLD-ID", parent_id="tag_100")
+        rows = [created, moved, renamed]
+        step_name = {"CREATED": "create", "MOVED": "update_parent", "NEW-ID": "rename_external_id"}
+        for order in self._orders(len(rows)):
+            with self.subTest(order=order):
+                file_rows = [rows[i] for i in order]
+                log = self._assert_rejected(file_rows, messages=[], error_count=3)
+                for row in rows:
+                    position = file_rows.index(row) + 1
+                    pattern = rf"Action error in '{step_name[row.id]}' \(#\d+\): Row {position}: Unknown parent tag"
+                    assert re.search(pattern, log), pattern
 
     def test_swap_child_naming_parent_id_in_another_case(self) -> None:
         """
