@@ -2185,6 +2185,42 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         # Neither rejected request should have created a new tag:
         assert self.small_taxonomy.tag_set.count() == tag_count_before
 
+    def test_create_tag_with_archived_value_returns_archived_message(self):
+        self.client.force_authenticate(user=self.staff)
+        Tag.objects.filter(taxonomy=self.small_taxonomy, value="Archaea").update(archived=True)
+        tag_count_before = self.small_taxonomy.tag_set.count()
+
+        response = self.client.post(self.small_taxonomy_url, {"tag": "Archaea"}, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data == {
+            "tag": ['Tag value "Archaea" belongs to an archived tag in this taxonomy. Use a different value.']
+        }
+        assert self.small_taxonomy.tag_set.count() == tag_count_before
+
+    def test_create_tag_with_unarchived_duplicate_value_keeps_message(self):
+        self.client.force_authenticate(user=self.staff)
+
+        response = self.client.post(self.small_taxonomy_url, {"tag": "Archaea"}, format="json")
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data == {"tag": ['Tag value "Archaea" already exists in this taxonomy.']}
+
+    def test_update_tag_to_archived_value_returns_archived_message(self):
+        self.client.force_authenticate(user=self.staff)
+        Tag.objects.filter(taxonomy=self.small_taxonomy, value="Archaea").update(archived=True)
+
+        response = self.client.put(
+            self.small_taxonomy_url,
+            {"tag": "Bacteria", "updated_tag_value": "Archaea"},
+            format="json",
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data["updated_tag_value"] == [
+            'Tag value "Archaea" belongs to an archived tag in this taxonomy. Use a different value.'
+        ]
+
     def test_create_tag_in_invalid_taxonomy(self):
         self.client.force_authenticate(user=self.staff)
         new_tag_value = "New Tag"
