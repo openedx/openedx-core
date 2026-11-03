@@ -1,6 +1,8 @@
 """
 Test for import_plan functions
 """
+import re
+
 import ddt  # type: ignore[import]
 from django.db import transaction
 from django.test.testcases import TestCase
@@ -272,7 +274,7 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             "Each row's id must be unique within a single import.\n"
             "Conflict with 'create' (#3) and action #2: Duplicated external_id tag.\n"
             "Action error in 'rename' (#4): Duplicated tag value with tag in database (external_id=tag_2).\n"
-            "Action error in 'update_parent' (#5): Unknown parent tag (tag_100). "
+            "Action error in 'update_parent' (#5): Row 4: Unknown parent tag (tag_100). "
             "Add a row for the parent to your file.\n"
             "Conflict with 'create' (#6) and action #3: Duplicated tag value.\n"
             "Conflict with 'rename' (#8) and action #2: Duplicated tag value.\n"
@@ -928,6 +930,82 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             True,
             "Row 2's parent_id (tag_2)",
         ),
+        # Two new tags name each other.
+        (
+            [
+                TagItem(id='new_a', value='New A', parent_id='new_b'),
+                TagItem(id='new_b', value='New B', parent_id='new_a'),
+            ],
+            False,
+            "Row 1's parent_id (new_b)",
+        ),
+        # A new tag under itself.
+        ([TagItem(id='new_a', value='New A', parent_id='new_a')], False, "Row 1's parent_id (new_a)"),
+        # Three new tags in a ring.
+        (
+            [
+                TagItem(id='new_a', value='New A', parent_id='new_b'),
+                TagItem(id='new_b', value='New B', parent_id='new_c'),
+                TagItem(id='new_c', value='New C', parent_id='new_a'),
+            ],
+            False,
+            "Row 1's parent_id (new_b)",
+        ),
+        # A renamed tag and a new tag name each other, the rename row first.
+        (
+            [
+                TagItem(id='tag_50', value='Tag 1', previous_id='tag_1', parent_id='new_x'),
+                TagItem(id='new_x', value='New X', parent_id='tag_50'),
+            ],
+            False,
+            "Row 1's parent_id (new_x)",
+        ),
+        # The same two rows, the new tag first.
+        (
+            [
+                TagItem(id='new_x', value='New X', parent_id='tag_50'),
+                TagItem(id='tag_50', value='Tag 1', previous_id='tag_1', parent_id='new_x'),
+            ],
+            False,
+            "Row 1's parent_id (tag_50)",
+        ),
+        # An existing tag and a new tag name each other, the existing tag first.
+        (
+            [
+                TagItem(id='tag_1', value='Tag 1', parent_id='new_x'),
+                TagItem(id='new_x', value='New X', parent_id='tag_1'),
+            ],
+            False,
+            "Row 1's parent_id (new_x)",
+        ),
+        # A cycle whose parent_id is spelled in another case.
+        (
+            [
+                TagItem(id='new_a', value='New A', parent_id='NEW_B'),
+                TagItem(id='new_b', value='New B', parent_id='new_a'),
+            ],
+            False,
+            "Row 1's parent_id (NEW_B)",
+        ),
+        # A row below a cycle is not on it: the cycle is reported on its own first row.
+        (
+            [
+                TagItem(id='new_c', value='New C', parent_id='new_a'),
+                TagItem(id='new_a', value='New A', parent_id='new_b'),
+                TagItem(id='new_b', value='New B', parent_id='new_a'),
+            ],
+            False,
+            "Row 2's parent_id (new_b)",
+        ),
+        (
+            [
+                TagItem(id='new_a', value='New A', parent_id='new_b'),
+                TagItem(id='new_b', value='New B', parent_id='new_a'),
+                TagItem(id='new_c', value='New C', parent_id='new_a'),
+            ],
+            False,
+            "Row 1's parent_id (new_b)",
+        ),
     )
     @ddt.unpack
     def test_generate_actions_parent_cycle_rejected_once(
@@ -960,19 +1038,70 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             ["This import would leave tag n6 more than 6 levels deep."],
         )
 
-    def test_generate_actions_cycle_of_new_tags_reports_an_unknown_parent_once(self) -> None:
-        """
-        New tags that name each other as parent get the existing "Unknown parent"
-        error for one of them, and no cycle error on top.
-        """
+    def test_generate_actions_unknown_parent_names_each_row(self) -> None:
         tags = [
-            TagItem(id='new_a', value='New A', parent_id='new_b'),
-            TagItem(id='new_b', value='New B', parent_id='new_a'),
+            TagItem(id='new_tag', value='New Tag', parent_id='tag_100'),
+            TagItem(id='tag_4', value='Tag 4', parent_id='tag_100'),
+            TagItem(id='tag_50', value='Tag 3', previous_id='tag_3', parent_id='tag_100'),
         ]
         self.import_plan.generate_actions(tags=tags, replace=False)
         messages = [str(error) for error in self.import_plan.errors]
-        self.assertEqual(len(messages), 1, messages)
-        self.assertIn("Unknown parent tag", messages[0])
+        self.assertEqual(len(messages), 3, messages)
+        for position, step_name in ((1, 'create'), (2, 'update_parent'), (3, 'rename_external_id')):
+            pattern = rf"Action error in '{step_name}' \(#\d+\): Row {position}: Unknown parent tag \(tag_100\)\."
+            matching = [m for m in messages if re.search(pattern, m)]
+            self.assertEqual(len(matching), 1, messages)
+
+    def test_generate_actions_cycle_and_unknown_parent_outside_it(self) -> None:
+        tags = [
+            TagItem(id='new_a', value='New A', parent_id='new_b'),
+            TagItem(id='new_b', value='New B', parent_id='new_a'),
+            TagItem(id='new_q', value='New Q', parent_id='tag_100'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        messages = [str(error) for error in self.import_plan.errors]
+        self.assertEqual(len(messages), 2, messages)
+        self.assertIn("Row 1's parent_id (new_b) creates a parent cycle.", messages)
+        self.assertEqual(
+            len([m for m in messages if "Row 3: Unknown parent tag (tag_100). "
+                 "Add a row for the parent to your file." in m]),
+            1,
+            messages,
+        )
+
+    def test_generate_actions_two_cycles_reported_separately(self) -> None:
+        tags = [
+            TagItem(id='new_a', value='New A', parent_id='new_b'),
+            TagItem(id='new_b', value='New B', parent_id='new_a'),
+            TagItem(id='new_c', value='New C', parent_id='new_d'),
+            TagItem(id='new_d', value='New D', parent_id='new_c'),
+        ]
+        self.import_plan.generate_actions(tags=tags, replace=False)
+        messages = [str(error) for error in self.import_plan.errors]
+        self.assertEqual(len(messages), 2, messages)
+        self.assertIn("Row 1's parent_id (new_b) creates a parent cycle.", messages)
+        self.assertIn("Row 3's parent_id (new_d) creates a parent cycle.", messages)
+
+    def test_generate_actions_cycle_keeps_stale_parent_error(self) -> None:
+        """
+        A row on a cycle that names a parent this file renames still gets the stale-parent error.
+        """
+        plan = self._plan_for_tree({'tag_1': None, 'tag_2': 'tag_1', 'tag_3': None})
+        tags = [
+            TagItem(id='tag_3', value='tag_1', previous_id='tag_1', parent_id=None),
+            TagItem(id='tag_1', value='tag_3', previous_id='tag_3', parent_id='tag_2'),
+            TagItem(id='tag_2', value='tag_2', parent_id='tag_1'),
+        ]
+        plan.generate_actions(tags=tags, replace=True)
+        messages = [str(error) for error in plan.errors]
+        self.assertEqual(len(messages), 2, messages)
+        self.assertEqual(len([m for m in messages if m.endswith("creates a parent cycle.")]), 1, messages)
+        stale = [
+            m for m in messages
+            if "Row 3: " in m
+            and "Parent tag tag_1 is renamed to tag_3 in this file; use tag_3 as the parent_id." in m
+        ]
+        self.assertEqual(len(stale), 1, messages)
 
     FOUR_LEVELS: dict[str, str | None] = {
         'other_1': None, 'other_2': 'other_1', 'other_3': 'other_2', 'other_4': 'other_3',
