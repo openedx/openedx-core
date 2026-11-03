@@ -488,21 +488,84 @@ def test_archived_criterion_is_skipped(
     user, group: CompetencyCriteriaGroup, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile
 ) -> None:
     """
-    An archived criterion neither gets a new status row nor has an existing one raised, per ADR-0002
-    Decision 4: archiving removes it from the tree.
+    An archived criterion is never evaluated again: it gets no new status row, and a row recorded
+    before archiving keeps its status, `created`, and `modified`.
     """
+    first_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    second_time = datetime(2026, 1, 2, tzinfo=timezone.utc)
     tag = object_tag.tag
     other_object_tag = ObjectTag.objects.create(
         object_id="block-v1:Org1+Python100+Fall2026+problem+other", taxonomy=object_tag.taxonomy, tag=tag,
     )
     with_status = _make_criterion(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
     without_status = _make_criterion(group=group, object_tag=other_object_tag, rule_profile=default_rule_profile)
-    record_graded_object_statuses(
-        user_id=user.id, scores=[GradedObjectScore(object_id=object_tag.object_id, fraction=Decimal("0.1"))],
-    )
+    with freeze_time(first_time):
+        record_graded_object_statuses(
+            user_id=user.id, scores=[GradedObjectScore(object_id=object_tag.object_id, fraction=Decimal("0.1"))],
+        )
     for criterion in (with_status, without_status):
         criterion.archived = True
         criterion.save()
+
+    with freeze_time(second_time):
+        changed = record_graded_object_statuses(
+            user_id=user.id,
+            scores=[
+                GradedObjectScore(object_id=object_tag.object_id, fraction=Decimal("1")),
+                GradedObjectScore(object_id=other_object_tag.object_id, fraction=Decimal("1")),
+            ],
+        )
+
+    assert changed == 0
+    row = StudentCompetencyCriterionStatus.objects.get(criterion=with_status)
+    assert row.status_id == MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
+    assert row.created == first_time
+    assert row.modified == first_time
+    assert not StudentCompetencyCriterionStatus.objects.filter(criterion=without_status).exists()
+
+
+def test_active_criterion_on_a_shared_tag_is_evaluated(
+    user, group: CompetencyCriteriaGroup, object_tag: ObjectTag, rule_profile_75: CompetencyRuleProfile,
+) -> None:
+    """
+    Archiving one of two criteria that share a single ObjectTag leaves the other evaluated at its
+    own threshold: the filter reads `CompetencyCriterion.archived`, nothing on `ObjectTag`. No
+    authoring endpoint puts two criteria on one ObjectTag, so the test builds that state directly.
+    """
+    child_group = CompetencyCriteriaGroup.objects.create(tag=group.tag, parent=group)
+    active = _make_criterion(group=group, object_tag=object_tag, rule_profile=rule_profile_75)
+    archived = _make_criterion(
+        group=child_group, object_tag=object_tag,
+        override=(RuleType.GRADE, {"op": "gte", "value": 0.9, "scale": "percent"}),
+    )
+    archived.archived = True
+    archived.save()
+
+    changed = record_graded_object_statuses(
+        user_id=user.id, scores=[GradedObjectScore(object_id=object_tag.object_id, fraction=Decimal("0.8"))],
+    )
+
+    assert changed == 1
+    assert StudentCompetencyCriterionStatus.objects.get(criterion=active).status_id == MasteryStatus.DEMONSTRATED
+    assert not StudentCompetencyCriterionStatus.objects.filter(criterion=archived).exists()
+
+
+def test_criterion_archived_with_its_group_is_skipped(
+    user, group: CompetencyCriteriaGroup, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A criterion archived together with its group is skipped like one archived directly, while a
+    criterion under the non-archived root is evaluated.
+    """
+    tag = group.tag
+    archived_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=group, archived=True)
+    cascaded = _make_criterion(group=archived_group, object_tag=object_tag, rule_profile=default_rule_profile)
+    cascaded.archived = True
+    cascaded.save()
+    other_object_tag = ObjectTag.objects.create(
+        object_id="block-v1:Org1+Python100+Fall2026+problem+active", taxonomy=object_tag.taxonomy, tag=tag,
+    )
+    active = _make_criterion(group=group, object_tag=other_object_tag, rule_profile=default_rule_profile)
 
     changed = record_graded_object_statuses(
         user_id=user.id,
@@ -512,9 +575,6 @@ def test_archived_criterion_is_skipped(
         ],
     )
 
-    assert changed == 0
-    assert (
-        StudentCompetencyCriterionStatus.objects.get(criterion=with_status).status_id
-        == MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
-    )
-    assert not StudentCompetencyCriterionStatus.objects.filter(criterion=without_status).exists()
+    assert changed == 1
+    assert not StudentCompetencyCriterionStatus.objects.filter(criterion=cascaded).exists()
+    assert StudentCompetencyCriterionStatus.objects.get(criterion=active).status_id == MasteryStatus.DEMONSTRATED
