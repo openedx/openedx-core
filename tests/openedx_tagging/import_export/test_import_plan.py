@@ -1112,11 +1112,41 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         assert errors[1].startswith("Row 4's id (tag_3)")
         assert not self.import_plan.actions
 
+    @ddt.data(
+        ('Straße', 'STRASSE'),  # casefold folds these; SQLite NOCASE does not
+        ('Café', 'Cafe'),  # MySQL's collation folds these; casefold does not
+    )
+    @ddt.unpack
+    def test_generate_actions_archived_match_follows_db_collation(self, archived_value: str, row_value: str) -> None:
+        archived = self.taxonomy.add_tag(archived_value)
+        Tag.objects.filter(pk=archived.pk).update(archived=True)
+        collides = self.taxonomy.tag_set.filter(value=row_value).exists()
+
+        self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value=row_value)])
+
+        assert bool(self.import_plan.errors) == collides
+
+    @ddt.data(
+        ('id', TagItem(id='tag_4', value='Renamed Tag 4')),
+        ('value', TagItem(id='tag_50', value='Tag 4')),
+        ('parent_id', TagItem(id='tag_50', value='Fifty', parent_id='tag_4')),
+    )
+    @ddt.unpack
+    def test_generate_actions_tag_under_archived_tag_rejected(self, field: str, row: TagItem) -> None:
+        self._archive('tag_3')  # tag_4 stays unarchived, under it
+        self.import_plan.generate_actions(tags=[row])
+        value = getattr(row, field)
+        assert [str(error) for error in self.import_plan.errors] == [
+            f"Row 1's {field} ({value}) belongs to a tag under an archived tag in this taxonomy. "
+            f"Use a different {field}."
+        ]
+        assert not self.import_plan.actions
+
     def test_generate_actions_replace_keeps_archived_tags(self) -> None:
         self._archive('tag_3')
         tags = [TagItem(id='tag_1', value='Tag 1'), TagItem(id='tag_2', value='Tag 2', parent_id='tag_1')]
         self.import_plan.generate_actions(tags=tags, replace=True)
         assert not self.import_plan.errors
         deleted_ids = {action.tag.id for action in self.import_plan.actions if isinstance(action, DeleteTag)}
-        # tag_4 is not archived, but it sits under the archived tag_3, so it is out of the taxonomy too:
+        # tag_4 is not archived, but it sits under the archived tag_3, so it is out of the taxonomy too.
         assert not deleted_ids
