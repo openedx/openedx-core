@@ -16,13 +16,17 @@ digraph pathway_catalog_content {
     }
 
     subgraph cluster_content {
-        label="openedx_content (versioned)";
+        label="openedx_learning (versioned)";
+        labelloc="b";
         fontsize=10;
         fontcolor="#4d4d4d";
         style=dashed;
         color="#b3b3b3";
-        v1 [label="content v1\n\nItems, criteria"];
-        v2 [label="content v2\n\nItems, criteria\n(currently published)"];
+        pathway [label="Pathway"];
+        v1 [label="version 1\n\nItems, criteria"];
+        v2 [label="version 2\n\nItems, criteria\n(currently published)"];
+        pathway -> v1 [style=dotted, color="#808080", arrowsize=0.7];
+        pathway -> v2 [style=dotted, color="#808080", arrowsize=0.7];
         v1 -> v2 [style=dotted, color="#808080", arrowsize=0.7, label="revision"];
     }
 
@@ -33,8 +37,8 @@ digraph pathway_catalog_content {
     enrollment -> catalog [label="enrolled in"];
     enrollment -> v2 [label="progress evaluated\nagainst the currently\npublished version", style=dashed, color="#808080", fontcolor="#4d4d4d"];
 
-    v2 -> catalog [label="implements"];
+    pathway -> catalog [label="implements\n(one-to-one, fixed)"];
     v2 -> courserun [label="Items reference"];
 
-    direction [label="dependency direction:\nopenedx_content knows about\nopenedx_catalog, never the reverse", shape=plaintext, fontsize=10, fontcolor="#4d4d4d"];
+    direction [label="dependency direction:\nthe content side knows about\nopenedx_catalog, never the reverse", shape=plaintext, fontsize=10, fontcolor="#4d4d4d"];
 }
