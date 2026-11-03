@@ -251,6 +251,19 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
         )
         assert not self.taxonomy.tag_set.filter(value="New Tag").exists()
 
+    def test_add_tag_with_unarchived_duplicate_external_id_keeps_message(self) -> None:
+        archaea = self.taxonomy.tag_set.get(value="Archaea")
+        with pytest.raises(ValueError) as exc:
+            tagging_api.add_tag_to_taxonomy(self.taxonomy, "New Tag", external_id=archaea.external_id)
+        assert str(exc.value) == f"Tag with external_id '{archaea.external_id}' already exists for taxonomy."
+
+    def test_add_tag_under_a_tag_under_an_archived_tag_is_refused(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Eukaryota").update(archived=True)
+        with pytest.raises(ValueError) as exc:
+            tagging_api.add_tag_to_taxonomy(self.taxonomy, "New Tag", parent_tag_value="Animalia")
+        assert str(exc.value) == "Cannot add a tag under the archived tag 'Eukaryota'."
+        assert not self.taxonomy.tag_set.filter(value="New Tag").exists()
+
     def test_add_tag_with_unarchived_duplicate_keeps_message(self) -> None:
         with pytest.raises(ValueError) as exc:
             tagging_api.add_tag_to_taxonomy(self.taxonomy, "Archaea")

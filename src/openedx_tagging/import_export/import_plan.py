@@ -6,7 +6,8 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from attrs import define
-from django.db import transaction
+from django.db import models, transaction
+from django.db.models import Q
 
 from ..models import Tag, TagImportTask, Taxonomy
 from ..models.base import TAXONOMY_MAX_DEPTH
@@ -94,6 +95,9 @@ class TagImportPlan:
     indexed_actions: dict
     actions_dict: dict
     taxonomy: Taxonomy
+
+    # Keeps each `__in` list under SQLite's limit on query parameters.
+    IN_CHUNK_SIZE = 500
 
     def __init__(self, taxonomy: Taxonomy):
         self.actions = []
@@ -246,30 +250,51 @@ class TagImportPlan:
             if rename_row is not None:
                 self.errors.append(StaleIdTargetedByPlainRowError(tag.id, position, rename_row))
 
+    def _out_of_taxonomy_tags(self) -> models.QuerySet[Tag]:
+        """
+        Return the archived tags and every tag under one, which keep their value and id but left the taxonomy.
+        """
+        lineages = self.taxonomy.tag_set.filter(archived=True).values_list("lineage", flat=True)
+        under_archived = Q()
+        for lineage in lineages:
+            under_archived |= Q(lineage__startswith=lineage)
+        return self.taxonomy.tag_set.filter(under_archived) if under_archived else self.taxonomy.tag_set.none()
+
     def _validate_no_row_targets_an_archived_tag(self, tags: list[TagItem]) -> bool:
         """
-        Reject every row whose value, id, previous_id or parent_id matches an archived tag.
+        Reject every row whose value, id, previous_id or parent_id matches an archived tag or a tag under one.
 
-        Return whether any row was rejected. An archived tag is no longer part of the taxonomy, so a row may not
-        update it, rename it, reuse its value or id, or add a tag under it.
-        Value and external_id are case-insensitive in the DB, so matching casefolds too.
+        Return whether any row was rejected. Matching happens in the DB, so it follows the column collation
+        exactly as the unique constraints and the actions' own lookups do. The common case, no match, costs
+        one query per chunk of rows.
         """
-        archived_ids: set[str] = set()
-        archived_values: set[str] = set()
-        for external_id, value in self.taxonomy.tag_set.filter(archived=True).values_list("external_id", "value"):
-            archived_ids.add(external_id.casefold())
-            archived_values.add(value.casefold())
+        out_of_taxonomy = self._out_of_taxonomy_tags()
+        if not out_of_taxonomy.exists():
+            return False
+        if not any(
+            out_of_taxonomy.filter(
+                Q(value__in=[tag.value for tag in chunk])
+                | Q(external_id__in=[key for tag in chunk for key in (tag.id, tag.previous_id, tag.parent_id) if key])
+            ).exists()
+            for chunk in (tags[i:i + self.IN_CHUNK_SIZE] for i in range(0, len(tags), self.IN_CHUNK_SIZE))
+        ):
+            return False
 
         found = False
         for position, tag in enumerate(tags, start=1):
-            for field, value, archived_keys in (
-                ("value", tag.value, archived_values),
-                ("id", tag.id, archived_ids),
-                ("previous_id", tag.previous_id, archived_ids),
-                ("parent_id", tag.parent_id, archived_ids),
+            for field, value, lookup in (
+                ("value", tag.value, "value"),
+                ("id", tag.id, "external_id"),
+                ("previous_id", tag.previous_id, "external_id"),
+                ("parent_id", tag.parent_id, "external_id"),
             ):
-                if value and value.casefold() in archived_keys:
-                    self.errors.append(ArchivedTagCollisionError(position, field, value))
+                if not value:
+                    continue
+                match = out_of_taxonomy.filter(**{lookup: value}).first()
+                if match:
+                    self.errors.append(
+                        ArchivedTagCollisionError(position, field, value, under_archived=not match.archived)
+                    )
                     found = True
         return found
 
@@ -489,7 +514,12 @@ class TagImportPlan:
 
         Validates each action and create respective errors
         If `replace` is True, then creates the delete action for tags
-        that are in the existing taxonomy but not the new tags list.
+        that are in the existing taxonomy but not the new tags list,
+        leaving out archived tags and the tags under them.
+
+        A row that targets an archived tag, or a tag under one, is an error,
+        and no actions are built at all: they would only be planned against
+        tags the import may not touch.
 
         TODO: Join/reduce actions. Ex. A tag may have no changes,
         but then its parent needs to be updated because its parent is deleted.
@@ -510,21 +540,17 @@ class TagImportPlan:
         # _validate_no_plain_row_targets_a_vacated_id).
         self._validate_no_plain_row_targets_a_vacated_id(tags)
 
-        # Building actions would only add misleading ones against the archived rows.
         if self._validate_no_row_targets_an_archived_tag(tags):
             return
 
         tags_for_delete = {}
 
         if replace:
-            # An archived tag's subtree is out of the taxonomy (and out of its export), so it is never
-            # "missing from the file". A descendant's lineage starts with its ancestor's lineage.
-            existing_tags = list(self.taxonomy.tag_set.all())
-            archived_lineages = tuple(tag.lineage for tag in existing_tags if tag.archived)
+            # An archived subtree is also left out of the export, so its absence from the file
+            # is no reason to delete it.
             tags_for_delete = {
                 self._get_tag_id(tag): tag
-                for tag in existing_tags
-                if not tag.lineage.startswith(archived_lineages)
+                for tag in self.taxonomy.tag_set.exclude(pk__in=self._out_of_taxonomy_tags().values("pk"))
             }
             # external_id is case-insensitive in the DB, so both pops below
             # must match regardless of case too.

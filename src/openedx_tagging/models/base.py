@@ -639,9 +639,8 @@ class Taxonomy(models.Model):
         exists in the Taxonomy, an exception is raised, otherwise the newly
         created Tag is returned
 
-        Raises ValueError if the taxonomy is archived, or if `parent_tag_value` is an archived tag.
-        A value or `external_id` held by an archived tag is refused with its own message, since
-        archived tags are no longer part of the taxonomy but still occupy their value and id.
+        Raises ValueError if the taxonomy is archived, or if `parent_tag_value` is an archived tag or under one.
+        A value or `external_id` held by an archived tag is refused with its own message.
         """
         if self.allow_free_text:
             raise ValueError(
@@ -680,8 +679,10 @@ class Taxonomy(models.Model):
             # Get parent tag from taxonomy, raises Tag.DoesNotExist if doesn't
             # belong to taxonomy
             parent = self.tag_set.get(value__iexact=parent_tag_value)
-            if parent.archived:
-                raise ValueError(f"Cannot add a tag under the archived tag '{parent.value}'.")
+            # The lineage holds the values of the parent and its ancestors, so this also finds an archived ancestor.
+            archived = self.tag_set.filter(archived=True, value__in=parent.lineage.split("\t")[:-1]).first()
+            if archived:
+                raise ValueError(f"Cannot add a tag under the archived tag '{archived.value}'.")
 
         tag = Tag.objects.create(
             taxonomy=self, value=tag_value, parent=parent, external_id=external_id

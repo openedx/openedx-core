@@ -74,11 +74,11 @@ def import_tags(
     Set `replace` to True to delete all not readed Tag of the given taxonomy.
     Ex. Given a taxonomy with `tag_1`, `tag_2` and `tag_3`. If there is only `tag_1`
     in the file (regardless of action), then `tag_2` and `tag_3` will be deleted
-    if `replace=True`. Archived tags and their descendants are never deleted this way.
+    if `replace=True`. Archived tags and the tags under them are never deleted this way.
     An archived tag whose parent is deleted is moved to the root.
 
     A file row whose value, id, previous_id or parent_id belongs to an archived
-    tag is reported as an error, and nothing is imported.
+    tag, or to a tag under one, is reported as an error, and nothing is imported.
 
     Set `plan_only` to True to only generate the actions and not execute them.
     """

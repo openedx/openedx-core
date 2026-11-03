@@ -2198,6 +2198,22 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         }
         assert self.small_taxonomy.tag_set.count() == tag_count_before
 
+    def test_create_tag_with_archived_external_id_returns_archived_message(self):
+        self.client.force_authenticate(user=self.staff)
+        archaea = self.small_taxonomy.tag_set.get(value="Archaea")
+        Tag.objects.filter(pk=archaea.pk).update(archived=True)
+
+        response = self.client.post(
+            self.small_taxonomy_url, {"tag": "New Tag", "external_id": archaea.external_id}, format="json",
+        )
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data == [
+            f"Tag external_id '{archaea.external_id}' belongs to an archived tag in this taxonomy. "
+            "Use a different external_id."
+        ]
+        assert not self.small_taxonomy.tag_set.filter(value="New Tag").exists()
+
     def test_create_tag_with_unarchived_duplicate_value_keeps_message(self):
         self.client.force_authenticate(user=self.staff)
 

@@ -1134,7 +1134,7 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert archived.value == "Tag 3"
 
     def test_replace_import_promotes_archived_child_of_deleted_tag(self) -> None:
-        # The alternative is the delete cascading to the archived child; #780 decides when deletes archive instead.
+        # The alternative is the delete cascading to the archived child.
         Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_4").update(archived=True)
         file = self._json_file([
             {"id": "tag_1", "value": "Tag 1"},

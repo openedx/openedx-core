@@ -238,7 +238,7 @@ def validate_tag_value(value, context, original_value=None):
     """
     Validates the incoming request early:
     - This tag is unique, not a duplicate. (The model only validates this if you call `full_clean()`.)
-      A value held by an archived tag gets its own message, since that tag is not visible anywhere.
+      A value held by an archived tag gets its own message, since that tag is not shown in the taxonomy's tag lists.
     - There are no forbidden / reserved characters present. There is an additional
     model-side validation for this as well, but we are keeping this so we can validate
     the incoming request immediately.
@@ -253,7 +253,6 @@ def validate_tag_value(value, context, original_value=None):
         if tag_id:
             queryset = queryset.exclude(pk=tag_id)
 
-        # Check if tag value already exists within this taxonomy. If so, raise a validation error.
         existing = queryset.first()
         if existing and existing.archived:
             raise serializers.ValidationError(
