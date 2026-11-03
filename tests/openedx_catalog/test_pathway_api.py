@@ -9,12 +9,13 @@ import pytest
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import ProtectedError
+from django.db.models.signals import post_save
 from django.db.utils import IntegrityError
 from freezegun import freeze_time
 from organizations.api import ensure_organization  # type: ignore[import]
 
 from openedx_catalog import api as catalog_api
-from openedx_catalog.models import CatalogPathway, PathwayCategory
+from openedx_catalog.models import CatalogPathway, PathwayCategory, PathwayEnrollment
 
 User = get_user_model()
 
@@ -313,6 +314,25 @@ def test_unenrolling_twice_does_not_bump_modified(data_science, learner) -> None
 
     row = catalog_api.get_pathway_enrollments(learner.id, include_inactive=True).get()
     assert row.modified == datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+
+def test_enrolling_and_unenrolling_send_post_save(data_science, learner) -> None:
+    """Every change of `is_active` goes through `save()`, so `post_save` listeners (e.g. analytics sinks) see it."""
+    saved: list[tuple[int, bool]] = []
+
+    def receiver(sender, instance, **kwargs):
+        saved.append((instance.id, instance.is_active))
+
+    post_save.connect(receiver, sender=PathwayEnrollment)
+    try:
+        enrollment = catalog_api.enroll_in_pathway(learner.id, data_science)
+        catalog_api.unenroll_from_pathway(learner.id, data_science)
+        catalog_api.unenroll_from_pathway(learner.id, data_science)  # No-op: no signal.
+        catalog_api.enroll_in_pathway(learner.id, data_science)
+    finally:
+        post_save.disconnect(receiver, sender=PathwayEnrollment)
+
+    assert saved == [(enrollment.id, True), (enrollment.id, False), (enrollment.id, True)]
 
 
 def test_deleting_a_pathway_keeps_enrollment_history(data_science, learner) -> None:
