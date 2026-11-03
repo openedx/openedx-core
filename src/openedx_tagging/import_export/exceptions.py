@@ -80,6 +80,23 @@ class StaleIdTargetedByPlainRowError(TagImportError):
         ).format(tag_id=tag_id, plain_row=plain_row, rename_row=rename_row)
 
 
+class ArchivedTagCollisionError(TagImportError):
+    """
+    Exception raised when a row's value, id, previous_id or parent_id matches an archived tag.
+
+    An archived tag is no longer part of the taxonomy, but it still holds its value and id.
+    ``row`` is the 1-based position of the row among the file's data rows, as
+    in DuplicateFinalIdError.
+    """
+
+    def __init__(self, row: int, field: str, value: str, **kargs):
+        super().__init__(**kargs)
+        self.message = _(
+            "Row {row}'s {field} ({value}) belongs to an archived tag in this taxonomy. "
+            "Use a different {field}."
+        ).format(row=row, field=field, value=value)
+
+
 class ParentCycleError(TagImportError):
     """
     Exception raised when a row's parent_id would make its tag its own ancestor.

@@ -1084,6 +1084,73 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         )
         assert result
 
+    def _snapshot(self, taxonomy: Taxonomy) -> set[tuple]:
+        return set(taxonomy.tag_set.values_list("external_id", "value", "parent__external_id", "archived"))
+
+    def _json_file(self, tags: list[dict]) -> BytesIO:
+        return BytesIO(json.dumps({"tags": tags}).encode())
+
+    def test_import_archived_value_changes_nothing(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_3").update(archived=True)
+        before = self._snapshot(self.taxonomy)
+        file = self._json_file([
+            {"id": "tag_50", "value": "Fifty"},
+            {"id": "tag_51", "value": "Tag 3"},
+            {"id": "tag_52", "value": "Fifty Two"},
+            {"id": "tag_53", "value": "Fifty Three", "parent_id": "tag_50"},
+        ])
+
+        result, _task, _plan = import_export_api.import_tags(self.taxonomy, file, self.parser_format)
+
+        assert not result
+        assert "belongs to an archived tag" in import_export_api.get_last_import_log(self.taxonomy)
+        assert self._snapshot(self.taxonomy) == before
+
+    def test_import_archived_id_does_not_revive_tag(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_3").update(archived=True)
+        before = self._snapshot(self.taxonomy)
+        file = self._json_file([{"id": "tag_3", "value": "Revived Tag 3"}, {"id": "tag_50", "value": "Fifty"}])
+
+        result, _task, _plan = import_export_api.import_tags(self.taxonomy, file, self.parser_format)
+
+        assert not result
+        assert "Row 1's id (tag_3) belongs to an archived tag" in import_export_api.get_last_import_log(self.taxonomy)
+        assert self._snapshot(self.taxonomy) == before
+
+    def test_replace_import_leaves_archived_tags(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_3").update(archived=True)
+        file = self._json_file([
+            {"id": "tag_1", "value": "Tag 1"},
+            {"id": "tag_2", "value": "Tag 2", "parent_id": "tag_1"},
+        ])
+
+        result, _task, _plan = import_export_api.import_tags(
+            self.taxonomy, file, self.parser_format, replace=True,
+        )
+
+        assert result
+        archived = self.taxonomy.tag_set.get(external_id="tag_3")
+        assert archived.archived
+        assert archived.value == "Tag 3"
+
+    def test_replace_import_promotes_archived_child_of_deleted_tag(self) -> None:
+        # The alternative is the delete cascading to the archived child; #780 decides when deletes archive instead.
+        Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_4").update(archived=True)
+        file = self._json_file([
+            {"id": "tag_1", "value": "Tag 1"},
+            {"id": "tag_2", "value": "Tag 2", "parent_id": "tag_1"},
+        ])
+
+        result, _task, _plan = import_export_api.import_tags(
+            self.taxonomy, file, self.parser_format, replace=True,
+        )
+
+        assert result
+        assert not self.taxonomy.tag_set.filter(external_id="tag_3").exists()
+        archived = self.taxonomy.tag_set.get(external_id="tag_4")
+        assert archived.archived
+        assert archived.parent is None
+
 
 class TestImportAcceptanceScenarios(TestCase):
     """
