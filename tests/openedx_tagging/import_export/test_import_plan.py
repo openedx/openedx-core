@@ -5,8 +5,8 @@ import ddt  # type: ignore[import]
 from django.db import transaction
 from django.test.testcases import TestCase
 
-from openedx_tagging.import_export.actions import CreateTag
-from openedx_tagging.import_export.exceptions import TagImportError
+from openedx_tagging.import_export.actions import CreateTag, DeleteTag
+from openedx_tagging.import_export.exceptions import ArchivedTagCollisionError, TagImportError
 from openedx_tagging.import_export.import_plan import TagImportPlan, TagItem
 from openedx_tagging.models import Tag, TagImportTask, Taxonomy
 
@@ -1053,3 +1053,70 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         error = str(self.import_plan.errors[0])
         self.assertIn("tag_1", error)
         self.assertIn("file rows 1, 3", error)
+
+    def _archive(self, external_id: str) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, external_id=external_id).update(archived=True)
+
+    def test_generate_actions_archived_value_rejected(self) -> None:
+        self._archive('tag_3')
+        self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value='Tag 3')])
+        assert len(self.import_plan.errors) == 1
+        error = self.import_plan.errors[0]
+        assert isinstance(error, ArchivedTagCollisionError)
+        assert str(error) == (
+            "Row 1's value (Tag 3) belongs to an archived tag in this taxonomy. Use a different value."
+        )
+        assert not self.import_plan.actions
+
+    def test_generate_actions_archived_value_different_case_rejected(self) -> None:
+        self._archive('tag_3')
+        self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value='TAG 3')])
+        assert [str(error) for error in self.import_plan.errors] == [
+            "Row 1's value (TAG 3) belongs to an archived tag in this taxonomy. Use a different value."
+        ]
+
+    def test_generate_actions_archived_id_rejected(self) -> None:
+        self._archive('tag_3')
+        self.import_plan.generate_actions(tags=[TagItem(id='TAG_3', value='Brand New')])
+        assert [str(error) for error in self.import_plan.errors] == [
+            "Row 1's id (TAG_3) belongs to an archived tag in this taxonomy. Use a different id."
+        ]
+        assert not self.import_plan.actions
+
+    def test_generate_actions_archived_previous_id_rejected(self) -> None:
+        self._archive('tag_3')
+        self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value='Brand New', previous_id='tag_3')])
+        assert [str(error) for error in self.import_plan.errors] == [
+            "Row 1's previous_id (tag_3) belongs to an archived tag in this taxonomy. Use a different previous_id."
+        ]
+
+    def test_generate_actions_archived_parent_id_rejected(self) -> None:
+        self._archive('tag_3')
+        self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value='Brand New', parent_id='tag_3')])
+        assert [str(error) for error in self.import_plan.errors] == [
+            "Row 1's parent_id (tag_3) belongs to an archived tag in this taxonomy. Use a different parent_id."
+        ]
+
+    def test_generate_actions_reports_every_archived_collision(self) -> None:
+        self._archive('tag_3')
+        tags = [
+            TagItem(id='tag_50', value='Fifty'),
+            TagItem(id='tag_51', value='Tag 3'),
+            TagItem(id='tag_52', value='Fifty Two'),
+            TagItem(id='tag_3', value='Fifty Three'),
+        ]
+        self.import_plan.generate_actions(tags=tags)
+        errors = [str(error) for error in self.import_plan.errors]
+        assert len(errors) == 2
+        assert errors[0].startswith("Row 2's value (Tag 3)")
+        assert errors[1].startswith("Row 4's id (tag_3)")
+        assert not self.import_plan.actions
+
+    def test_generate_actions_replace_keeps_archived_tags(self) -> None:
+        self._archive('tag_3')
+        tags = [TagItem(id='tag_1', value='Tag 1'), TagItem(id='tag_2', value='Tag 2', parent_id='tag_1')]
+        self.import_plan.generate_actions(tags=tags, replace=True)
+        assert not self.import_plan.errors
+        deleted_ids = {action.tag.id for action in self.import_plan.actions if isinstance(action, DeleteTag)}
+        # tag_4 is not archived, but it sits under the archived tag_3, so it is out of the taxonomy too:
+        assert not deleted_ids
