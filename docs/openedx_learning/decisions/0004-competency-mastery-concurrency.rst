@@ -70,7 +70,7 @@ Decision
    on the ``StudentCompetencyCriteriaGroupStatus`` row for that learner and the competency's root
    criteria group, the group with no parent; no other learner-status writer takes a lock. Criterion
    authoring writers (create, delete, bulk update, and group update) serialize per competency on
-   the competency's ``Tag`` row, each taking that lock first and no other group or criterion row lock.
+   the competency's ``Tag`` row, each taking that lock first and no other explicit locking read on groups or criteria.
 
 
 

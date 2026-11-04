@@ -108,7 +108,7 @@ Decision
 
    Boundaries and intended behavior:
 
-   - Empty groups: Persisted criteria definitions should not contain empty groups. Authoring flows may temporarily create empty groups while editing. The delete cascade enforces this rule: when a criterion delete leaves its group, or an ancestor above it, with no children, that group is deleted, or archived when learner progress references it, in the same transaction, so no empty group persists.
+   - Empty groups: Persisted criteria definitions should not contain empty groups. Authoring flows may temporarily create empty groups while editing. The criterion delete path enforces this rule for the groups it empties: such a group is deleted, or archived when learner progress references it or when only archived children remain, in the same transaction, so that path persists no empty group. Writers outside this path are not covered by it.
    - Mixed tree depths: Backend supports deeply nested groups. Current frontend authoring constraint is a maximum depth of 3 layers total, using zero-indexed depth (``0=root``, ``1=course-scope group``, ``2=leaf criteria/group``).
    - Retrieval scope: A read always includes the root group, plus any selected subset of course-scoped groups, each returned as a complete subtree, never truncated.
    - Practical size and growth: Total rows in ``CompetencyCriteriaGroup`` are expected to grow over time as course runs are added; this ADR sets no global DB row cap. No max total node-count cap is required per root group. Each course-scoped subtree is expected to stay small (realistically <=500 nodes).
@@ -494,6 +494,6 @@ Changelog
 2026-11-04:
 
 * Amended Decisions 2 and 7 for issue #674: the criterion delete cascade, not a backend validation
-  rejection, keeps empty groups out of the database, and it checks
+  rejection, keeps the groups it empties out of the database, and it checks
   ``StudentCompetencyCriteriaGroupStatus`` directly before hard-deleting a group, as #674's
   acceptance criteria require.

@@ -776,8 +776,9 @@ def bulk_update_competency_criteria(
         # every criterion in a leaf shares the group's tag, so they all resolve to the same profile.
         applicable = _get_applicable_rule_profile(group.tag.taxonomy.id) if rule_profile_id is None else None
         criteria = [criteria_by_id[criterion_id] for criterion_id in criterion_ids]
-        # Saves run in primary-key order because each save() takes an exclusive row lock and the grading
-        # write locks criteria in ascending order; two different orders would deadlock.
+        # Saves run in ascending primary-key order because the grading write inserts status rows in ascending
+        # criterion-pk order, and each insert takes an implicit shared foreign-key lock on its criterion row;
+        # a different order here could deadlock with it.
         for criterion in sorted(criteria, key=lambda item: item.pk):
             _apply_rule_source(
                 criterion,
@@ -820,6 +821,10 @@ def record_graded_object_statuses(*, user_id: int, scores: Sequence[GradedObject
     status is only ever raised, never lowered. The return value is the count of leaf rows created or
     raised, where ``0`` means nothing changed. This function performs no authorization check of its
     own; as with ``openedx_tagging.api``, the caller is responsible for enforcing permissions.
+
+    Call this at most once per transaction. Its implicit criterion-row locks are taken in ascending
+    primary-key order within one call, and two calls in one transaction would form two ascending runs
+    that can deadlock with a concurrent bulk update.
 
     :raises TransactionManagementError: if called outside an atomic block.
     """
@@ -1039,10 +1044,11 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     criterion references it. No other ObjectTag on the object is touched.
 
     Raises ``CompetencyCriterion.DoesNotExist`` if no such criterion exists (including one deleted
-    concurrently), ``Tag.DoesNotExist`` if its competency tag was deleted concurrently, and Django's
-    ``PermissionDenied`` if ``user`` fails the permission check.
+    concurrently), ``Tag.DoesNotExist`` if its competency tag was deleted concurrently, Django's
+    ``PermissionDenied`` if ``user`` fails the permission check, and Django's ``ValidationError`` if
+    the archive path's ``full_clean()`` rejects an invalid stored rule payload.
 
-    The first read and the permission check run before the transaction. The rest runs in one
+    The first read and the permission check run before the lock. The rest runs in one
     transaction that locks only the competency's Tag row, the lock every writer of its criteria takes
     first, so a concurrent create waits until this call commits. The lock prevents three races that
     follow from Django's Python-side cascade. A create that commits a new leaf and criterion between
@@ -1054,11 +1060,8 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     the request commits, so other authoring writers for this competency, and inserts that reference
     its Tag row, wait meanwhile.
 
-    The code relies on the READ COMMITTED isolation level: the re-read after the lock and the
-    ancestor walk's ``exists()`` checks must see concurrent commits. Under REPEATABLE READ the re-read
-    would see the snapshot from before the lock, so a racing duplicate delete would return success and
-    write a second deletion history row, and two sibling deletes could leave an empty group, all
-    without an error.
+    The re-read under the lock and the ancestor walk's ``exists()`` checks rely on READ COMMITTED, the
+    isolation level this repo always runs (see ``AGENTS.md``): they must see concurrent commits.
 
     A learner's grade saved at the same moment as a hard delete fails one side with an error. The delete
     checks for a status row and then deletes the criterion, and a grade write that inserts a status row
