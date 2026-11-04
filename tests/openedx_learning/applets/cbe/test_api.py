@@ -1041,6 +1041,64 @@ def test_bulk_update_rolls_back_every_criterion_if_one_save_fails(
     assert snapshot(batch) == before
 
 
+def test_bulk_update_saves_in_primary_key_order_and_returns_request_order(
+    monkeypatch: pytest.MonkeyPatch,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    default_rule_profile: CompetencyRuleProfile,
+    user,
+) -> None:
+    """Each save takes a row lock, so the saves run in ascending pk order however the ids were requested."""
+    c1, c2 = batch
+    c3 = make_criterion(leaf, "p3", rule_profile=default_rule_profile)
+    original_save = CompetencyCriterion.save
+    saves: list[int] = []
+
+    def _record_save(self, *args, **kwargs) -> None:
+        saves.append(self.pk)
+        original_save(self, *args, **kwargs)
+
+    monkeypatch.setattr(CompetencyCriterion, "save", _record_save)
+
+    result = bulk_update_competency_criteria([c3.id, c1.id, c2.id], leaf.id, user=user, **NEW_RULE)
+
+    assert saves == [c1.id, c2.id, c3.id]
+    assert [criterion.id for criterion in result] == [c3.id, c1.id, c2.id]
+
+
+def test_bulk_update_checks_archived_state_under_the_tag_lock(
+    run_when_tag_lock_is_taken,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+) -> None:
+    """A group archived while the update waits for the Tag lock refuses the batch, so the check reads after the lock."""
+    run_when_tag_lock_is_taken(lambda: CompetencyCriteriaGroup.objects.filter(pk=leaf.pk).update(archived=True))
+    before = snapshot(batch)
+
+    with pytest.raises(CompetencyCriterionArchivedError, match=f"group {leaf.id}"):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_reads_the_criteria_under_the_tag_lock(
+    run_when_tag_lock_is_taken,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+) -> None:
+    """A criterion archived while the update waits for the Tag lock refuses the batch, so the criteria read after it."""
+    archived = batch[1]
+    run_when_tag_lock_is_taken(lambda: CompetencyCriterion.objects.filter(pk=archived.pk).update(archived=True))
+    before = snapshot(batch)
+
+    with pytest.raises(CompetencyCriterionArchivedError, match=rf"criteria cannot be edited: {archived.id}\."):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    assert snapshot(batch) == before
+
+
 # ==============================================================================================
 # get_competency_criteria_tree
 # ==============================================================================================
@@ -1952,6 +2010,20 @@ def test_create_competency_criterion_uses_the_callers_course_run(
     assert criterion.group_id == group.id
 
 
+def test_create_competency_criterion_takes_the_tag_lock_itself(
+    run_when_tag_lock_is_taken, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    A caller outside associate_competency_criterion() is still serialized with a delete of the competency's
+    criteria: the lock is taken before anything else, so a tag deleted while the call waits for it is seen.
+    """
+    group = _create_leaf_group(tag, course_run)
+    run_when_tag_lock_is_taken(lambda: Tag.objects.filter(pk=tag.pk).delete())
+
+    with pytest.raises(Tag.DoesNotExist):
+        cbe_api.create_competency_criterion(group, usage_key(course_run, "p1"), course_run=course_run)
+
+
 def test_associate_competency_criterion_creates_the_course_runs_cbe_row(
     tag: Tag, course_run: CourseRun,
 ) -> None:
@@ -2235,6 +2307,19 @@ def test_update_raises_does_not_exist_for_an_unknown_group(user) -> None:
     """An unknown group id raises CompetencyCriteriaGroup.DoesNotExist."""
     with pytest.raises(CompetencyCriteriaGroup.DoesNotExist):
         update_competency_criteria_group(999999, logic_operator=LogicOperator.AND, user=user)
+
+
+def test_group_update_re_reads_the_group_under_the_tag_lock(
+    run_when_tag_lock_is_taken, leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """A group archived while the update waits for the Tag lock is refused, not written onto."""
+    run_when_tag_lock_is_taken(lambda: CompetencyCriteriaGroup.objects.filter(pk=leaf.pk).update(archived=True))
+
+    with pytest.raises(CompetencyCriteriaGroupArchivedError):
+        update_competency_criteria_group(leaf.id, logic_operator=LogicOperator.AND, user=user)
+
+    leaf.refresh_from_db()
+    assert leaf.logic_operator == LogicOperator.OR
 
 
 @pytest.mark.parametrize("level", ["course-level", "leaf"])
