@@ -68,7 +68,9 @@ Decision
    rows above it are recalculated and overwritten rather than merged. A later grade change can raise
    what an edit lowered, but never lower what an edit raised.    The staff correction takes a row lock
    on the ``StudentCompetencyCriteriaGroupStatus`` row for that learner and the competency's root
-   criteria group, the group with no parent; no other path takes a lock.
+   criteria group, the group with no parent; no other learner-status writer takes a lock. Criterion
+   authoring writers (create, delete, bulk update, and group update) serialize per competency on
+   the competency's ``Tag`` row, each taking that lock first and no other group or criterion row lock.
 
 
 
@@ -162,3 +164,11 @@ Rejected Alternatives
           before the write completes.
         - It also only checks for a race at the moment each parent is read. If the worker crashes mid-cascade before reaching the next read,
           nothing notices the rollup was left unfinished. Decision 5's manual recovery mechanism exists to catch that case.
+
+Changelog
+---------
+
+2026-11-04:
+
+* Amended Decision 6 for issue #674: the rule that no other path takes a lock covers learner-status
+  writers only. Criterion authoring writers serialize per competency on the ``Tag`` row.

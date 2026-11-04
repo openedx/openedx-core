@@ -108,7 +108,7 @@ Decision
 
    Boundaries and intended behavior:
 
-   - Empty groups: Persisted criteria definitions should not contain empty groups. Authoring flows may temporarily create empty groups while editing, but backend validation must reject them.
+   - Empty groups: Persisted criteria definitions should not contain empty groups. Authoring flows may temporarily create empty groups while editing. The delete cascade enforces this rule: when deleting a criterion leaves its group with no children, that group is deleted, or archived when learner progress references it, in the same transaction, so no empty group persists.
    - Mixed tree depths: Backend supports deeply nested groups. Current frontend authoring constraint is a maximum depth of 3 layers total, using zero-indexed depth (``0=root``, ``1=course-scope group``, ``2=leaf criteria/group``).
    - Retrieval scope: A read always includes the root group, plus any selected subset of course-scoped groups, each returned as a complete subtree, never truncated.
    - Practical size and growth: Total rows in ``CompetencyCriteriaGroup`` are expected to grow over time as course runs are added; this ADR sets no global DB row cap. No max total node-count cap is required per root group. Each course-scoped subtree is expected to stay small (realistically <=500 nodes).
@@ -311,7 +311,7 @@ Decision
 
    - If no related row exists in ``StudentCompetencyCriteriaStatus`` (the leaf-level learner status table, Decision 6) for a competency definition, delete behaves as it does today: a hard delete that cascades through competency metadata tables.
    - Once a related row exists in ``StudentCompetencyCriteriaStatus``, deletion of the associated competency definition row still succeeds, but as an archive (soft delete) instead of a hard delete: the row is hidden from authoring and new associations but remains queryable, so existing learner status rows stay resolvable. This archive-vs-hard-delete rule applies to ``oel_tagging_tag``, ``oel_tagging_taxonomy``, ``CompetencyTaxonomy``, ``oel_tagging_objecttag``, ``CompetencyCriteriaGroup``, and ``CompetencyCriteria``; see :ref:`openedx-learning-adr-0003` Decision 3 for ``oel_tagging_objecttag``'s own archive rule and traceability exception.
-   - ``StudentCompetencyCriteriaStatus`` is what determines whether a record is protected. ``StudentCompetencyCriteriaGroupStatus`` and ``StudentCompetencyStatus`` are roll-up tables derived from it (Decision 6) and are not independently checked for this purpose: :ref:`openedx-learning-adr-0004` writes the leaf table synchronously with the grade but rolls the two roll-up tables up later via an asynchronous task, which can lag behind the leaf or, per that ADR's Decision 5, need manual recovery. Checking only the roll-up tables could therefore miss real learner progress that has not rolled up yet.
+   - ``StudentCompetencyCriteriaStatus`` is what determines whether a record is protected. ``StudentCompetencyCriteriaGroupStatus`` and ``StudentCompetencyStatus`` are roll-up tables derived from it (Decision 6) and are not independently checked for this purpose, with one exception: the criterion delete cascade checks ``StudentCompetencyCriteriaGroupStatus`` directly before hard-deleting a group, because a group row about to be deleted cannot wait for the roll-up to catch up. :ref:`openedx-learning-adr-0004` writes the leaf table synchronously with the grade but rolls the two roll-up tables up later via an asynchronous task, which can lag behind the leaf or, per that ADR's Decision 5, need manual recovery. Checking only the roll-up tables could therefore miss real learner progress that has not rolled up yet.
    - Direct deletion of a ``CompetencyRuleProfile`` is never a hard delete; retirement is always archive-only, via a normal update to its ``archived`` column (Decision 3). However, if a taxonomy or course that is associated with a taxonomy- or course-scoped profile is deleted, then this profile will be deleted along with it.
    - For MVP, archiving a ``CompetencyCriteriaGroup`` or a ``CompetencyCriteria`` row is permanent, with one exception: an archived root ``CompetencyCriteriaGroup`` is reactivated when a new criterion is added for its competency (Decision 2). ``oel_tagging_objecttag`` follows :ref:`openedx-learning-adr-0003` Decision 3 instead.
 
@@ -490,3 +490,10 @@ Changelog
   supersedes the ordered, short-circuited evaluation the earlier text described. Decision 6's update flow now continues past the root group to the
   competency's own status row and up through parent competencies, and states what a
   competency with no criteria tree of its own receives.
+
+2026-11-04:
+
+* Amended Decisions 2 and 7 for issue #674: the criterion delete cascade, not a backend validation
+  rejection, keeps empty groups out of the database, and it checks
+  ``StudentCompetencyCriteriaGroupStatus`` directly before hard-deleting a group, as #674's
+  acceptance criteria require.
