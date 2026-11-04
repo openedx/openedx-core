@@ -293,8 +293,8 @@ class CompetencyCriterionDeleteView(generics.GenericAPIView):
         Resolve the criterion scoped to both path segments, then delegate to the public API, which checks permission.
 
         The URL is scoped by tag_id, not group_id, because its caller (#710) sends exactly
-        ``DELETE .../competencies/<tag_id>/criteria/<criterion_id>/`` and has no group id. The
-        lookup deliberately does not filter `archived=False`, so a repeat
+        ``DELETE .../competencies/<tag_id>/criteria/<criterion_id>/`` and has no group id.
+        The lookup deliberately does not filter `archived=False`, so a repeat
         DELETE against an already-archived row still resolves (200), and a mismatched tag_id or a
         nonexistent criterion_id both 404 the same way, via this one get_object_or_404 call.
         """
