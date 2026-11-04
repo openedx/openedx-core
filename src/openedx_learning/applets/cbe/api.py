@@ -965,6 +965,7 @@ def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete",
             return
         if _group_has_learner_progress(group.id):
             return
+        group._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
         group.delete()
         if parent is not None:
             _cascade_from_group(parent, "delete", user)
@@ -979,6 +980,7 @@ def _cascade_from_group(group: CompetencyCriteriaGroup, event: Literal["delete",
             _archive_group(group, user)
             next_event = "archive"
         else:
+            group._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
             group.delete()
             next_event = "delete"
     else:
@@ -1050,12 +1052,13 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     with transaction.atomic():
         Tag.objects.select_for_update().get(pk=tag_id)
         # Re-read under the Tag lock: a concurrent delete may have won; DoesNotExist propagates to the caller.
-        criterion = CompetencyCriterion.objects.get(pk=criterion_id)
+        criterion = CompetencyCriterion.objects.select_related("group", "object_tag").get(pk=criterion_id)
         if _criterion_has_learner_progress(criterion_id):
             _archive_criterion(criterion, user)
             return CriterionDeletionResult(id=criterion_id, archived=True)
         group = criterion.group
         object_tag = criterion.object_tag
+        criterion._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
         criterion.delete()
         # Only this criterion's own ObjectTag is a candidate, and only while no other criterion uses it.
         if not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists():

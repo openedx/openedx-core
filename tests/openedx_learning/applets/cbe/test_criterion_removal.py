@@ -159,6 +159,21 @@ def test_archive_records_the_acting_user_in_history(
     assert _latest_history_user("HistoricalCompetencyCriteriaGroup", root.id) == user
 
 
+def test_hard_delete_records_the_acting_user_in_history(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Hard-deleting a criterion records the acting user on the deletion row of it and of each cascaded group."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    criterion = _make_criterion(leaf, object_tag, default_rule_profile)
+
+    delete_or_archive_competency_criterion(criterion.id, user)
+
+    assert _latest_history_user("HistoricalCompetencyCriterion", criterion.id) == user
+    assert _latest_history_user("HistoricalCompetencyCriteriaGroup", leaf.id) == user
+    assert _latest_history_user("HistoricalCompetencyCriteriaGroup", root.id) == user
+
+
 def test_shared_object_tag_is_untouched_while_another_criterion_still_references_it(
     user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
