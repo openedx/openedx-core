@@ -638,6 +638,11 @@ def _validate_rule_source(
         raise ValidationError(errors) from exc
 
 
+def _set_history_user(instance: Any, user: UserType) -> None:
+    """Record ``user`` as the author of ``instance``'s next history row; API callers have no request middleware."""
+    instance._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+
+
 def _apply_rule_source(
     criterion: CompetencyCriterion,
     rule_profile_id: int | None,
@@ -672,8 +677,7 @@ def _apply_rule_source(
         return
 
     criterion.rule_profile_id, criterion.rule_type_override, criterion.rule_payload_override = target
-    # Set on the instance so attribution doesn't depend on simple_history's request middleware.
-    criterion._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    _set_history_user(criterion, user)
     criterion._change_reason = change_reason  # type: ignore[attr-defined]  # pylint: disable=protected-access
     # Never QuerySet.update(): it skips post_save, so simple_history would record nothing.
     criterion.save(update_fields=["rule_profile", "rule_type_override", "rule_payload_override"])
@@ -939,8 +943,7 @@ def update_competency_criteria_group(
             return group
 
         group.logic_operator = logic_operator
-        # Set for history attribution; see _apply_rule_source.
-        group._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+        _set_history_user(group, user)
         # Never QuerySet.update(): it skips post_save, so simple_history would record nothing.
         group.save(update_fields=["logic_operator"])
         return group
@@ -949,8 +952,7 @@ def update_competency_criteria_group(
 def _archive_group(group: CompetencyCriteriaGroup, user: UserType) -> None:
     """Archive ``group``, writing only the flag and recording ``user`` in its history."""
     group.archived = True
-    # Set for history attribution; see _apply_rule_source.
-    group._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    _set_history_user(group, user)
     group.save(update_fields=["archived"])
 
 
@@ -972,8 +974,7 @@ def _cascade_from_group(group: CompetencyCriteriaGroup, user: UserType) -> None:
             return
         if _group_has_learner_progress(group.id):
             return
-        # Set for history attribution; see _apply_rule_source.
-        group._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+        _set_history_user(group, user)
         group.delete()
         if parent is not None:
             _cascade_from_group(parent, user)
@@ -987,8 +988,7 @@ def _cascade_from_group(group: CompetencyCriteriaGroup, user: UserType) -> None:
         if _group_has_learner_progress(group.id):
             _archive_group(group, user)
         else:
-            # Set for history attribution; see _apply_rule_source.
-            group._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+            _set_history_user(group, user)
             group.delete()
     else:
         # Only archived children remain.
@@ -1006,8 +1006,7 @@ def _archive_criterion(criterion: CompetencyCriterion, user: UserType) -> None:
     if criterion.archived:
         return
     criterion.archived = True
-    # Set for history attribution; see _apply_rule_source.
-    criterion._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+    _set_history_user(criterion, user)
     criterion.save(update_fields=["archived"])
     _cascade_from_group(criterion.group, user)
 
@@ -1085,8 +1084,7 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
             return CriterionDeletionResult(id=criterion_id, archived=True)
         group = criterion.group
         object_tag = criterion.object_tag
-        # Set for history attribution; see _apply_rule_source.
-        criterion._history_user = user  # type: ignore[attr-defined]  # pylint: disable=protected-access
+        _set_history_user(criterion, user)
         criterion.delete()
         # Only this criterion's own ObjectTag is a candidate, and only while no other criterion uses it.
         if not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists():
