@@ -1062,8 +1062,7 @@ def test_bulk_update_saves_in_primary_key_order_and_returns_request_order(
 
     result = bulk_update_competency_criteria([c3.id, c1.id, c2.id], leaf.id, user=user, **NEW_RULE)
 
-    assert saves == sorted(saves)
-    assert set(saves) == {c1.id, c2.id, c3.id}
+    assert saves == [c1.id, c2.id, c3.id]
     assert [criterion.id for criterion in result] == [c3.id, c1.id, c2.id]
 
 
@@ -1078,6 +1077,23 @@ def test_bulk_update_checks_archived_state_under_the_tag_lock(
     before = snapshot(batch)
 
     with pytest.raises(CompetencyCriterionArchivedError, match=f"group {leaf.id}"):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_reads_the_criteria_under_the_tag_lock(
+    run_when_tag_lock_is_taken,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+) -> None:
+    """A criterion archived while the update waits for the Tag lock refuses the batch, so the criteria read after it."""
+    archived = batch[1]
+    run_when_tag_lock_is_taken(lambda: CompetencyCriterion.objects.filter(pk=archived.pk).update(archived=True))
+    before = snapshot(batch)
+
+    with pytest.raises(CompetencyCriterionArchivedError, match=rf"criteria cannot be edited: {archived.id}\."):
         bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
 
     assert snapshot(batch) == before

@@ -15,7 +15,6 @@ import pytest
 import rules
 from django.apps import apps
 from django.db import DatabaseError, IntegrityError, connection, transaction
-from django.db.utils import OperationalError
 from rules.permissions import permissions as rule_permissions
 
 from openedx_catalog.models import CourseRun
@@ -251,9 +250,8 @@ def test_delete_and_bulk_update_do_not_deadlock(
         expected = (CompetencyCriterionArchivedError,)
     else:
         expected = (CompetencyCriterion.DoesNotExist, CompetencyCriteriaGroup.DoesNotExist)
-    with pytest.raises(expected) as raised:
+    with pytest.raises(expected):
         bulk_update.result()
-    assert not isinstance(raised.value, OperationalError)
     assert result.archived is learner_progress
 
 

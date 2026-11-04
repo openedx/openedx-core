@@ -6,7 +6,6 @@ directly rather than through a live call, because no create or archive endpoint 
 """
 from datetime import datetime
 from typing import Any, Generator
-from unittest import mock
 from urllib.parse import urlencode
 
 import pytest
@@ -2151,14 +2150,12 @@ def test_delete_without_view_access_to_the_taxonomy_is_403(
 
 
 def test_delete_of_a_criterion_gone_by_the_time_of_the_call_is_404(
-    user_client: APIClient, criterion: CompetencyCriterion,
+    run_when_tag_lock_is_taken, user_client: APIClient, criterion: CompetencyCriterion,
 ) -> None:
-    """A criterion removed between the view's lookup and the API call is a 404, not a 500."""
-    with mock.patch(
-        "openedx_learning.applets.cbe.rest_api.v1.views.delete_or_archive_competency_criterion",
-        side_effect=CompetencyCriterion.DoesNotExist,
-    ):
-        response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+    """A criterion removed between the view's lookup and the API's locked re-read is a 404, not a 500."""
+    run_when_tag_lock_is_taken(lambda: CompetencyCriterion.objects.filter(pk=criterion.pk).delete())
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
@@ -2185,7 +2182,7 @@ def test_archiving_a_criterion_whose_stored_payload_went_invalid_is_400_and_chan
     assert criterion.archived is False
 
 
-@pytest.mark.parametrize("endpoint", ["delete a criterion", "bulk update criteria"])
+@pytest.mark.parametrize("endpoint", ["delete a criterion", "bulk update criteria", "update a group"])
 def test_a_competency_tag_deleted_while_the_request_waits_for_its_lock_is_404(
     endpoint: str,
     run_when_tag_lock_is_taken,

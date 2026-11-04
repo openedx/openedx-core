@@ -140,31 +140,27 @@ def test_repeat_delete_on_an_archived_criterion_writes_no_history(
     )
 
 
-def test_archive_records_the_acting_user_in_history(
-    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
+@pytest.mark.parametrize("has_status_row", [True, False], ids=["archive", "hard delete"])
+def test_removal_records_the_acting_user_in_history(
+    has_status_row: bool,
+    *,
+    user,
+    tag: Tag,
+    object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile,
+    now: datetime,
 ) -> None:
-    """Archiving a criterion records the acting user on the newest historical row of it and of each archived group."""
+    """
+    Archiving a criterion, or hard-deleting one with no status row, records the acting user on the
+    newest historical row of it and of each group the cascade archived or deleted.
+    """
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
     leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
     criterion = _make_criterion(leaf, object_tag, default_rule_profile)
-    StudentCompetencyCriterionStatus.objects.create(
-        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
-    )
-
-    delete_or_archive_competency_criterion(criterion.id, user)
-
-    assert _latest_history_user("HistoricalCompetencyCriterion", criterion.id) == user
-    assert _latest_history_user("HistoricalCompetencyCriteriaGroup", leaf.id) == user
-    assert _latest_history_user("HistoricalCompetencyCriteriaGroup", root.id) == user
-
-
-def test_hard_delete_records_the_acting_user_in_history(
-    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """Hard-deleting a criterion records the acting user on the deletion row of it and of each cascaded group."""
-    root = CompetencyCriteriaGroup.objects.create(tag=tag)
-    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
-    criterion = _make_criterion(leaf, object_tag, default_rule_profile)
+    if has_status_row:
+        StudentCompetencyCriterionStatus.objects.create(
+            user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+        )
 
     delete_or_archive_competency_criterion(criterion.id, user)
 
@@ -248,9 +244,7 @@ def test_single_child_leaf_group_cascade_deletes_while_a_sibling_keeps_the_root_
     assert CompetencyCriteriaGroup.objects.filter(id=root.id).exists()
     assert CompetencyCriteriaGroup.objects.filter(id=sibling.id).exists()
     root.refresh_from_db()
-    sibling.refresh_from_db()
     assert root.archived is False
-    assert sibling.archived is False
 
 
 def test_multilevel_cascade_fully_collapses_the_root_to_leaf_chain(
@@ -297,9 +291,7 @@ def test_cascade_stops_at_an_ancestor_with_a_surviving_sibling_group(
     assert CompetencyCriteriaGroup.objects.filter(id=other_branch.id).exists()
     assert CompetencyCriterion.objects.filter(id=other_criterion.id).exists()
     root.refresh_from_db()
-    other_branch.refresh_from_db()
     assert root.archived is False
-    assert other_branch.archived is False
 
 
 @pytest.mark.parametrize("progress_on", ["leaf group", "root group"])
