@@ -267,7 +267,7 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
             group = update_competency_criteria_group(
                 group.id, logic_operator=serializer.validated_data["logic_operator"], user=request.user,
             )
-        except CompetencyCriteriaGroup.DoesNotExist as exc:
+        except (CompetencyCriteriaGroup.DoesNotExist, Tag.DoesNotExist) as exc:
             raise NotFound(str(exc)) from exc
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc

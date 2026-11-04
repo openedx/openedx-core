@@ -2202,8 +2202,12 @@ def test_a_competency_tag_deleted_while_the_request_waits_for_its_lock_is_404(
 
     if endpoint == "delete a criterion":
         response = user_client.delete(criterion_delete_url(leaf.tag_id, batch[0].id))
-    else:
+    elif endpoint == "bulk update criteria":
         body = {"criterion_ids": [criterion.id for criterion in batch], **NEW_RULE}
         response = user_client.patch(bulk_update_url(leaf.id), body, format="json")
+    else:
+        response = user_client.patch(
+            group_detail_url(leaf.tag_id, leaf.id), {"logic_operator": LogicOperator.AND}, format="json",
+        )
 
     assert response.status_code == status.HTTP_404_NOT_FOUND

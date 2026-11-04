@@ -1994,6 +1994,20 @@ def test_create_competency_criterion_uses_the_callers_course_run(
     assert criterion.group_id == group.id
 
 
+def test_create_competency_criterion_takes_the_tag_lock_itself(
+    run_when_tag_lock_is_taken, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    A caller outside associate_competency_criterion() is still serialized with a delete of the competency's
+    criteria: the lock is taken before anything else, so a tag deleted while the call waits for it is seen.
+    """
+    group = _create_leaf_group(tag, course_run)
+    run_when_tag_lock_is_taken(lambda: Tag.objects.filter(pk=tag.pk).delete())
+
+    with pytest.raises(Tag.DoesNotExist):
+        cbe_api.create_competency_criterion(group, usage_key(course_run, "p1"), course_run=course_run)
+
+
 def test_associate_competency_criterion_creates_the_course_runs_cbe_row(
     tag: Tag, course_run: CourseRun,
 ) -> None:

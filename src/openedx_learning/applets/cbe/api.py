@@ -435,10 +435,13 @@ def create_competency_criterion(
     resolves to a concrete profile, and the model's own xor-override constraint forbids leaving
     all three fields null.
 
-    ``course_run`` is ``group``'s course. Must run inside a transaction holding the tag and
-    course run locks that associate_competency_criterion() takes, so the dominance check below
-    can't race another create.
+    ``course_run`` is ``group``'s course. Must run inside a transaction. This function takes the
+    competency's Tag row lock itself, so a concurrent delete of a sibling criterion can't cascade
+    this call's new rows away. The caller must also hold the course run lock that
+    associate_competency_criterion() takes, so the dominance check below can't race another create.
     """
+    # Re-acquiring the lock associate_competency_criterion() already holds is harmless within one transaction.
+    Tag.objects.select_for_update().get(pk=group.tag_id)
     tag = group.tag
     # tag.taxonomy_id is nullable at the model level; already guaranteed set by the caller.
     assert tag.taxonomy_id is not None
@@ -572,7 +575,7 @@ def associate_competency_criterion(
 
     with transaction.atomic():
         # Lock order is always the tag, then the course run, so two creates can't deadlock.
-        # The database enforces one root per tag; the tag lock only serializes _reject_duplicate_criterion(). That
+        # The database enforces one root per tag; the tag lock serializes _reject_duplicate_criterion(). That
         # check is check-then-act on both paths: without group_id a request always creates a fresh leaf, and with
         # group_id CompetencyCriterion has no unique constraint on (object_tag, group), so no index catches a
         # concurrent copy. delete_or_archive_competency_criterion() depends on this lock too: it keeps this
