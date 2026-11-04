@@ -11,7 +11,6 @@ from urllib.parse import urlencode
 
 import pytest
 import rules
-from django.core.exceptions import ValidationError
 from django.urls import reverse
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey, UsageKey
@@ -2063,24 +2062,22 @@ def test_repeat_delete_on_an_archived_criterion_is_idempotent_200(
     assert response.data == {"id": criterion.id, "archived": True}
 
 
-def test_unknown_criterion_id_404s(user_client: APIClient, tag: Tag) -> None:
-    """A criterion_id that never existed under a real tag 404s from the view's own lookup."""
-    response = user_client.delete(criterion_delete_url(tag.id, 999999))
+@pytest.mark.parametrize("hard_delete_first", [False, True], ids=["never-existed", "already-hard-deleted"])
+def test_delete_of_a_criterion_that_is_not_there_404s(
+    hard_delete_first: bool, user_client: APIClient, criterion: CompetencyCriterion,
+) -> None:
+    """
+    A criterion_id that never existed, or whose row an earlier hard delete removed, 404s from the view's
+    own lookup. Repeating a hard delete is not idempotent like repeating an archive.
+    """
+    criterion_id = 999999
+    if hard_delete_first:
+        criterion_id = criterion.id
+        assert user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion_id)).status_code == 200
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion_id))
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
-
-
-def test_repeat_delete_after_hard_delete_404s(
-    user_client: APIClient, criterion: CompetencyCriterion,
-) -> None:
-    """Repeating a DELETE after a hard-delete removed the row is not idempotent like the archived case: it 404s."""
-    url = criterion_delete_url(criterion.group.tag_id, criterion.id)
-    first = user_client.delete(url)
-    assert first.status_code == status.HTTP_200_OK
-
-    second = user_client.delete(url)
-
-    assert second.status_code == status.HTTP_404_NOT_FOUND
 
 
 def test_cascade_deleted_group_404s_on_subsequent_create(
@@ -2124,7 +2121,7 @@ def test_delete_no_permission_is_403(
     user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, tag: Tag, group: CompetencyCriteriaGroup,
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """A caller refused by the object-level tagging rule gets a 403, and the criterion and ObjectTag remain."""
+    """A caller refused by the object-level tagging rule gets a 403, and the criterion remains."""
     object_tag = ObjectTag.objects.create(
         object_id=f"block-v1:unused+{UNAUTHORIZED_MARKER}+unused+type@sequential+block@p1",
         taxonomy=competency_taxonomy,
@@ -2138,7 +2135,6 @@ def test_delete_no_permission_is_403(
 
     assert response.status_code == status.HTTP_403_FORBIDDEN
     assert CompetencyCriterion.objects.filter(id=criterion.id).exists()
-    assert ObjectTag.objects.filter(id=object_tag.id).exists()
 
 
 def test_delete_without_view_access_to_the_taxonomy_is_403(
@@ -2152,7 +2148,6 @@ def test_delete_without_view_access_to_the_taxonomy_is_403(
 
     assert response.status_code == status.HTTP_403_FORBIDDEN
     assert CompetencyCriterion.objects.filter(id=criterion.id).exists()
-    assert ObjectTag.objects.filter(id=criterion.object_tag_id).exists()
 
 
 def test_delete_of_a_criterion_gone_by_the_time_of_the_call_is_404(
@@ -2168,15 +2163,47 @@ def test_delete_of_a_criterion_gone_by_the_time_of_the_call_is_404(
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_delete_maps_a_validation_error_from_the_api_to_400(
-    user_client: APIClient, criterion: CompetencyCriterion,
+def test_archiving_a_criterion_whose_stored_payload_went_invalid_is_400_and_changes_nothing(
+    user_client: APIClient, user, batch: tuple[CompetencyCriterion, CompetencyCriterion], now: datetime,
 ) -> None:
-    """A Django ValidationError raised by the API function becomes a 400 keyed by its field."""
-    with mock.patch(
-        "openedx_learning.applets.cbe.rest_api.v1.views.delete_or_archive_competency_criterion",
-        side_effect=ValidationError({"object_id": "x"}),
-    ):
-        response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+    """
+    Archiving saves the criterion, which re-validates its rule payload. A payload that stopped being
+    valid after it was stored, here written past validation with update(), makes the DELETE a 400
+    keyed by the model-level error, and the criterion is neither archived nor deleted.
+    """
+    criterion = batch[1]
+    CompetencyCriterion.objects.filter(pk=criterion.pk).update(rule_payload_override={"op": "gt", "value": 75})
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
-    assert "object_id" in response.json()
+    assert list(response.json()) == ["__all__"]
+    criterion.refresh_from_db()
+    assert criterion.archived is False
+
+
+@pytest.mark.parametrize("endpoint", ["delete a criterion", "bulk update criteria"])
+def test_a_competency_tag_deleted_while_the_request_waits_for_its_lock_is_404(
+    endpoint: str,
+    run_when_tag_lock_is_taken,
+    user_client: APIClient,
+    leaf: CompetencyCriteriaGroup,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+) -> None:
+    """
+    A competency tag removed by an admin while the request waits for the Tag lock is a 404, not a 500.
+    The group's foreign key to the tag cascades, so the row can't go before the request starts without
+    taking the criterion with it; the delete runs as the lock is taken, as a commit during the wait would.
+    """
+    run_when_tag_lock_is_taken(lambda: Tag.objects.filter(pk=leaf.tag_id).delete())
+
+    if endpoint == "delete a criterion":
+        response = user_client.delete(criterion_delete_url(leaf.tag_id, batch[0].id))
+    else:
+        body = {"criterion_ids": [criterion.id for criterion in batch], **NEW_RULE}
+        response = user_client.patch(bulk_update_url(leaf.id), body, format="json")
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND

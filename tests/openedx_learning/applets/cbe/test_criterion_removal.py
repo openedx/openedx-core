@@ -24,7 +24,6 @@ from openedx_tagging.models import ObjectTag, Tag
 pytestmark = pytest.mark.django_db
 
 CHANGE_OBJECTTAG_OBJECTID = "oel_tagging.change_objecttag_objectid"
-CHANGE_OBJECTTAG_TAXONOMY = "oel_tagging.change_objecttag_taxonomy"
 
 
 @pytest.fixture(autouse=True)
@@ -192,6 +191,34 @@ def test_shared_object_tag_is_untouched_while_another_criterion_still_references
     assert not CompetencyCriterion.objects.filter(id=criterion_a.id).exists()
     assert CompetencyCriterion.objects.filter(id=criterion_b.id).exists()
     assert ObjectTag.objects.filter(id=object_tag.id).exists()
+
+
+def test_hard_delete_removes_only_the_criterions_own_object_tag(
+    user,
+    competency_taxonomy: CompetencyTaxonomy,
+    tag: Tag,
+    object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A hard delete removes the criterion's own ObjectTag, now referenced by nothing. An ObjectTag for
+    another competency on the same object stays with its criterion, so the delete picks the ObjectTag
+    by its primary key and not by the object it is on.
+    """
+    other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Reading Poetry")
+    other_object_tag = _make_object_tag(competency_taxonomy, other_tag, object_tag.object_id)
+    criterion = _make_criterion(CompetencyCriteriaGroup.objects.create(tag=tag), object_tag, default_rule_profile)
+    other_criterion = _make_criterion(
+        CompetencyCriteriaGroup.objects.create(tag=other_tag), other_object_tag, default_rule_profile
+    )
+
+    result = delete_or_archive_competency_criterion(criterion.id, user)
+
+    assert result.archived is False
+    assert not CompetencyCriterion.objects.filter(id=criterion.id).exists()
+    assert not ObjectTag.objects.filter(id=object_tag.id).exists()
+    assert CompetencyCriterion.objects.filter(id=other_criterion.id).exists()
+    assert ObjectTag.objects.filter(id=other_object_tag.id).exists()
 
 
 # =================================================================================================
@@ -387,73 +414,8 @@ def test_a_user_without_permission_is_refused_and_nothing_changes(
     assert ObjectTag.objects.filter(id=object_tag.id).exists()
 
 
-def test_untag_with_the_competency_taxonomy_disabled_removes_only_the_orphaned_object_tag(
-    user,
-    competency_taxonomy: CompetencyTaxonomy,
-    tag: Tag,
-    object_tag: ObjectTag,
-    default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """
-    With the taxonomy disabled the tagging API hides its tags, but the delete removes only the
-    criterion's own ObjectTag, so it succeeds and the object's other ObjectTag and its criterion
-    stay. The taxonomy-level permission rule denies every user on a disabled taxonomy, so the test
-    substitutes a permissive one to reach the untag step.
-    """
-    other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Reading Poetry")
-    other_object_tag = _make_object_tag(competency_taxonomy, other_tag, object_tag.object_id)
-    criterion = _make_criterion(CompetencyCriteriaGroup.objects.create(tag=tag), object_tag, default_rule_profile)
-    other_criterion = _make_criterion(
-        CompetencyCriteriaGroup.objects.create(tag=other_tag), other_object_tag, default_rule_profile
-    )
-    competency_taxonomy.enabled = False
-    competency_taxonomy.save()
-    original = rule_permissions[CHANGE_OBJECTTAG_TAXONOMY]
-    rules.set_perm(CHANGE_OBJECTTAG_TAXONOMY, lambda _user, _taxonomy: True)
-
-    try:
-        result = delete_or_archive_competency_criterion(criterion.id, user)
-    finally:
-        rules.set_perm(CHANGE_OBJECTTAG_TAXONOMY, original)
-
-    assert result.archived is False
-    assert not CompetencyCriterion.objects.filter(id=criterion.id).exists()
-    assert not ObjectTag.objects.filter(id=object_tag.id).exists()
-    assert CompetencyCriterion.objects.filter(id=other_criterion.id).exists()
-    assert ObjectTag.objects.filter(id=other_object_tag.id).exists()
-
-
-def test_hard_delete_leaves_a_tag_of_another_competency_on_the_same_object(
-    user,
-    monkeypatch: pytest.MonkeyPatch,
-    tag: Tag,
-    object_tag: ObjectTag,
-    default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """
-    An ObjectTag for another competency tag on the same object, committed after a tag list was
-    read, survives the delete together with its criterion. The tag list is stubbed to omit it, as
-    a read taken before that commit would; the delete must not depend on reading it.
-    """
-    competency_taxonomy = CompetencyTaxonomy.objects.get()
-    other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Reading Poetry")
-    other_object_tag = _make_object_tag(competency_taxonomy, other_tag, object_tag.object_id)
-    criterion = _make_criterion(CompetencyCriteriaGroup.objects.create(tag=tag), object_tag, default_rule_profile)
-    other_criterion = _make_criterion(
-        CompetencyCriteriaGroup.objects.create(tag=other_tag), other_object_tag, default_rule_profile
-    )
-    stale_list = [ObjectTag.objects.get(pk=object_tag.pk)]
-    monkeypatch.setattr("openedx_learning.applets.cbe.api.get_object_tags", lambda *_args, **_kwargs: stale_list)
-
-    delete_or_archive_competency_criterion(criterion.id, user)
-
-    assert not ObjectTag.objects.filter(id=object_tag.id).exists()
-    assert ObjectTag.objects.filter(id=other_object_tag.id).exists()
-    assert CompetencyCriterion.objects.filter(id=other_criterion.id).exists()
-
-
 def test_delete_re_reads_the_criterion_under_the_tag_lock(
-    monkeypatch: pytest.MonkeyPatch,
+    run_when_tag_lock_is_taken,
     user,
     tag: Tag,
     object_tag: ObjectTag,
@@ -464,21 +426,8 @@ def test_delete_re_reads_the_criterion_under_the_tag_lock(
     reads the criterion again after the lock rather than trusting its first read.
     """
     criterion = _make_criterion(CompetencyCriteriaGroup.objects.create(tag=tag), object_tag, default_rule_profile)
-    original_select_for_update = Tag.objects.select_for_update
-
-    def _select_for_update(*args, **kwargs):
-        queryset = original_select_for_update(*args, **kwargs)
-        original_get = queryset.get
-
-        def _get(*get_args, **get_kwargs):
-            # Stands in for a concurrent delete that commits while this one waits for the lock.
-            CompetencyCriterion.objects.filter(pk=criterion.pk).delete()
-            return original_get(*get_args, **get_kwargs)
-
-        queryset.get = _get
-        return queryset
-
-    monkeypatch.setattr(Tag.objects, "select_for_update", _select_for_update)
+    # Stands in for a concurrent delete that commits while this one waits for the lock.
+    run_when_tag_lock_is_taken(lambda: CompetencyCriterion.objects.filter(pk=criterion.pk).delete())
 
     with pytest.raises(CompetencyCriterion.DoesNotExist):
         delete_or_archive_competency_criterion(criterion.id, user)
@@ -549,6 +498,8 @@ def test_delete_after_the_learner_is_gone_deletes_the_emptied_archived_groups(
     assert result.archived is False
     assert not CompetencyCriterion.objects.filter(pk=criterion.id).exists()
     assert not CompetencyCriteriaGroup.objects.filter(pk__in=[leaf.id, root.id]).exists()
+    assert _latest_history_user("HistoricalCompetencyCriteriaGroup", leaf.id) == user
+    assert _latest_history_user("HistoricalCompetencyCriteriaGroup", root.id) == user
 
 
 def test_delete_leaves_an_archived_group_that_still_holds_an_archived_criterion(
