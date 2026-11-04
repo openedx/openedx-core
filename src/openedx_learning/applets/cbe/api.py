@@ -699,7 +699,10 @@ def bulk_update_competency_criteria(
     if any named id isn't a criterion of that group, and ValidationError, keyed by the REST field
     names, for a non-leaf group, an empty or repeated id list, or an invalid rule source. Raises
     CompetencyCriterionArchivedError if the group, either of its ancestors, or any named criterion
-    is archived.
+    is archived. Raises Tag.DoesNotExist if the group's competency tag was deleted while the request ran.
+
+    Takes the competency's Tag row lock before reading anything that can change, like every writer of
+    its criteria, so it waits for a concurrent create or delete of the same competency.
     """
     with transaction.atomic():
         group = CompetencyCriteriaGroup.objects.select_related("tag__taxonomy", "parent__course").get(
@@ -720,13 +723,16 @@ def bulk_update_competency_criteria(
             raise ValidationError({"criterion_ids": _("criterion_ids must not name the same criterion twice.")})
         _validate_rule_source(rule_profile_id, rule_type_override, rule_payload_override)
 
+        # Every writer of a competency's criteria serializes on its Tag row, and none takes another row lock,
+        # so the writers can't deadlock. Everything below reads committed state, since a delete, an archive
+        # or a create for this competency can't commit while this transaction holds the lock. The reads
+        # above are safe without it because a group's tag, parent and course never change.
+        Tag.objects.select_for_update().get(pk=group.tag_id)
+
         # Archiving a group doesn't archive its criteria, yet ADR 0002 Decision 2 closes them to authoring.
         # An archived ancestor counts too: it stands in for a delete that would have cascaded to this leaf.
-        # Locked for the same reason as the criteria below.
         lineage = [group.id, group.parent.id, group.parent.parent_id]
-        archived_by_id = dict(
-            CompetencyCriteriaGroup.objects.select_for_update().filter(pk__in=lineage).values_list("pk", "archived")
-        )
+        archived_by_id = dict(CompetencyCriteriaGroup.objects.filter(pk__in=lineage).values_list("pk", "archived"))
         archived_group_id = next((pk for pk in lineage if archived_by_id.get(pk)), None)
         if archived_group_id is not None:
             raise CompetencyCriterionArchivedError(
@@ -735,9 +741,11 @@ def bulk_update_competency_criteria(
                 )
             )
 
-        # Locked so a concurrent archive can't slip in after the archived check, and so a concurrent
-        # identical request waits and then sees nothing to change instead of writing a second history row.
-        criteria_by_id = CompetencyCriterion.objects.select_for_update().filter(group=group).in_bulk(criterion_ids)
+        # No row lock here: the Tag lock already stops a concurrent archive from slipping in after the archived
+        # check, and makes a concurrent identical request wait and then see nothing to change instead of
+        # writing a second history row. Locking the lineage or the criteria as well would only add a second
+        # lock order for writers to deadlock on.
+        criteria_by_id = CompetencyCriterion.objects.filter(group=group).in_bulk(criterion_ids)
         missing_ids = [criterion_id for criterion_id in criterion_ids if criterion_id not in criteria_by_id]
         if missing_ids:
             raise CompetencyCriterion.DoesNotExist(
@@ -759,7 +767,9 @@ def bulk_update_competency_criteria(
         # every criterion in a leaf shares the group's tag, so they all resolve to the same profile.
         applicable = _get_applicable_rule_profile(group.tag.taxonomy.id) if rule_profile_id is None else None
         criteria = [criteria_by_id[criterion_id] for criterion_id in criterion_ids]
-        for criterion in criteria:
+        # Saves run in primary-key order because each save() takes an exclusive row lock and the grading
+        # write locks criteria in ascending order; two different orders would deadlock.
+        for criterion in sorted(criteria, key=lambda item: item.pk):
             _apply_rule_source(
                 criterion,
                 rule_profile_id,
@@ -874,6 +884,9 @@ def update_competency_criteria_group(
     PermissionDenied if ``user`` fails ``oel_tagging.can_tag_object`` for the group's taxonomy and
     course. Raises CompetencyCriteriaGroupArchivedError if the group is archived, even when nothing
     would change.
+
+    Takes the competency's Tag row lock and re-reads the group under it, like every writer of the
+    competency's criteria, so a concurrent delete that archived or removed the group is seen.
     """
     with transaction.atomic():
         group = CompetencyCriteriaGroup.objects.select_related("course", "parent__course").get(pk=group_id)
@@ -882,6 +895,9 @@ def update_competency_criteria_group(
         tag = resolve_competency_tag(group.tag_id)
         # tag.taxonomy is already confirmed set; re-asserted since that doesn't cross function boundaries for mypy.
         assert tag.taxonomy is not None
+        Tag.objects.select_for_update().get(pk=tag.pk)
+        # Re-read under the Tag lock: a concurrent delete or archive may have won.
+        group = CompetencyCriteriaGroup.objects.select_related("course", "parent__course").get(pk=group_id)
         # A root has neither a parent nor a course, and its subtree can span several courses, so
         # there's no one course to check permission against.
         if group.parent_id is None and group.course_id is None:

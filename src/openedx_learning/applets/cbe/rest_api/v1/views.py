@@ -166,7 +166,7 @@ class CompetencyCriterionBulkUpdateView(generics.GenericAPIView):
                 rule_payload_override=data.get("rule_payload_override"),
                 user=request.user,
             )
-        except (CompetencyCriteriaGroup.DoesNotExist, CompetencyCriterion.DoesNotExist) as exc:
+        except (CompetencyCriteriaGroup.DoesNotExist, CompetencyCriterion.DoesNotExist, Tag.DoesNotExist) as exc:
             raise NotFound(str(exc)) from exc
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
@@ -303,8 +303,8 @@ class CompetencyCriterionDeleteView(generics.GenericAPIView):
         )
         try:
             result = delete_or_archive_competency_criterion(criterion.id, request.user)
-        except CompetencyCriterion.DoesNotExist as exc:
-            # Removed between the lookup above and the API call.
+        except (CompetencyCriterion.DoesNotExist, Tag.DoesNotExist) as exc:
+            # The criterion, or its competency tag, was removed between the lookup above and the API call.
             raise NotFound() from exc
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc

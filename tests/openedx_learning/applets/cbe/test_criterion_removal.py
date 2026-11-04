@@ -437,6 +437,38 @@ def test_hard_delete_leaves_a_tag_of_another_competency_on_the_same_object(
     assert CompetencyCriterion.objects.filter(id=other_criterion.id).exists()
 
 
+def test_delete_re_reads_the_criterion_under_the_tag_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    user,
+    tag: Tag,
+    object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A criterion removed while the delete waits for the Tag lock raises DoesNotExist, so the delete
+    reads the criterion again after the lock rather than trusting its first read.
+    """
+    criterion = _make_criterion(CompetencyCriteriaGroup.objects.create(tag=tag), object_tag, default_rule_profile)
+    original_select_for_update = Tag.objects.select_for_update
+
+    def _select_for_update(*args, **kwargs):
+        queryset = original_select_for_update(*args, **kwargs)
+        original_get = queryset.get
+
+        def _get(*get_args, **get_kwargs):
+            # Stands in for a concurrent delete that commits while this one waits for the lock.
+            CompetencyCriterion.objects.filter(pk=criterion.pk).delete()
+            return original_get(*get_args, **get_kwargs)
+
+        queryset.get = _get
+        return queryset
+
+    monkeypatch.setattr(Tag.objects, "select_for_update", _select_for_update)
+
+    with pytest.raises(CompetencyCriterion.DoesNotExist):
+        delete_or_archive_competency_criterion(criterion.id, user)
+
+
 # =================================================================================================
 # Not found
 # =================================================================================================
