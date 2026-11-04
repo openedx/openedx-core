@@ -900,9 +900,6 @@ def update_competency_criteria_group(
         tag = resolve_competency_tag(group.tag_id)
         # tag.taxonomy is already confirmed set; re-asserted since that doesn't cross function boundaries for mypy.
         assert tag.taxonomy is not None
-        Tag.objects.select_for_update().get(pk=tag.pk)
-        # Re-read under the Tag lock: a concurrent delete or archive may have won.
-        group = CompetencyCriteriaGroup.objects.select_related("course", "parent__course").get(pk=group_id)
         # A root has neither a parent nor a course, and its subtree can span several courses, so
         # there's no one course to check permission against.
         if group.parent_id is None and group.course_id is None:
@@ -921,6 +918,12 @@ def update_competency_criteria_group(
         # has_perm()'s stub expects a Model, but a rules predicate takes any object.
         if not user.has_perm("oel_tagging.can_tag_object", perm_obj):  # type: ignore[arg-type]
             raise PermissionDenied
+
+        # The checks above read only a group's tag, parent and course, which never change, so they run before
+        # the lock and a caller who fails them never holds it.
+        Tag.objects.select_for_update().get(pk=tag.pk)
+        # Re-read under the Tag lock: a concurrent delete or archive may have won.
+        group = CompetencyCriteriaGroup.objects.select_related("course").get(pk=group_id)
 
         # Null is a stored state (a single-child group), but never one a caller may ask for.
         if logic_operator not in LogicOperator.values:
