@@ -701,7 +701,7 @@ def bulk_update_competency_criteria(
     if any named id isn't a criterion of that group, and ValidationError, keyed by the REST field
     names, for a non-leaf group, an empty or repeated id list, or an invalid rule source. Raises
     CompetencyCriterionArchivedError if the group, either of its ancestors, or any named criterion
-    is archived. Raises Tag.DoesNotExist if the group's competency tag was deleted while the request ran.
+    is archived. Raises Tag.DoesNotExist if the group's competency tag was deleted concurrently.
 
     Takes the competency's Tag row lock before reading anything that can change, like every writer of
     its criteria, so it waits for a concurrent create or delete of the same competency.
@@ -880,7 +880,7 @@ def update_competency_criteria_group(
     only for a real change. Learner status is never read or written.
 
     Raises CompetencyCriteriaGroup.DoesNotExist if no group has ``group_id``, or Tag.DoesNotExist
-    if its tag isn't on a CompetencyTaxonomy or was deleted while the request ran.
+    if its tag isn't on a CompetencyTaxonomy or was deleted concurrently.
     Raises ValidationError, keyed by the REST field names, for a root group, a group with no course
     anywhere above it to check permission against, or a ``logic_operator`` other than AND or OR, and
     PermissionDenied if ``user`` fails ``oel_tagging.can_tag_object`` for the group's taxonomy and
@@ -955,8 +955,8 @@ def _cascade_from_group(group: CompetencyCriteriaGroup, user: UserType) -> None:
     Checking both relations (``criteria`` and ``child_groups``) at every level is harmless: the one that
     does not apply is an empty queryset, and it avoids a separate leaf/non-leaf code path.
 
-    An archived group is never written again: everything above it was handled when it was archived,
-    so a second write would only add a redundant history row. If it has no criteria, no child groups
+    An archived group is never saved again: everything above it was handled when it was archived,
+    so a second save would only add a redundant history row. If it has no criteria, no child groups
     and no group-level status, it is deleted and the walk continues upward, so no empty group stays
     persisted. Otherwise the walk stops there.
     """
@@ -1024,7 +1024,7 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     and archive behavior may change this function's shape without a deprecation cycle.
 
     ``user`` must hold ``oel_tagging.can_tag_object`` for the taxonomy of the criterion's group and for
-    the usage key its ObjectTag tags. The check runs before anything is locked or changed.
+    the usage key its ``ObjectTag`` tags. The check runs before anything is locked or changed.
 
     An ancestor :class:`CompetencyCriteriaGroup` left with no live children by this call is cascaded in
     turn: hard-deleted if it has no children of any kind and no group-level status of its own, archived
@@ -1040,18 +1040,20 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     The first read and the permission check run before the transaction. The rest runs in one
     transaction that locks only the competency's Tag row, the lock every writer of its criteria takes
     first, so a concurrent create waits until this call commits. The lock prevents three races that
-    follow from Django's Python-side cascade. A create that commits a new leaf and criterion between the
-    walk's emptiness check and the collector's SELECT inside ``group.delete()`` would have those rows
-    deleted silently, after its caller received a 201. Two deletes of sibling criteria in one leaf would
-    each still see the other's criterion and leave an empty leaf behind. A create that reuses the same
-    ObjectTag and commits between the "still referenced" check and the ObjectTag delete would have its
-    criterion cascaded away. The lock is held until the request commits, so other authoring writers for
-    this competency, and inserts that reference its Tag row, wait meanwhile.
+    follow from Django's Python-side cascade. A create that commits a new leaf and criterion between
+    the ancestor walk's emptiness check and the row-collecting SELECT inside ``group.delete()`` would
+    have those rows deleted silently, after the create call already returned success. Two deletes of
+    sibling criteria in one leaf would each still see the other's criterion and leave an empty leaf
+    behind. A create that reuses the same ``ObjectTag`` and commits between the "still referenced"
+    check and the ``ObjectTag`` delete would have its criterion cascaded away. The lock is held until
+    the request commits, so other authoring writers for this competency, and inserts that reference
+    its Tag row, wait meanwhile.
 
-    The code relies on the READ COMMITTED isolation level: the re-read after the lock and the walk's
-    ``exists()`` checks must see concurrent commits. Under REPEATABLE READ the re-read would see the
-    snapshot from before the lock, so a racing duplicate delete would return success and write a second
-    deletion history row, and two sibling deletes could leave an empty group, all without an error.
+    The code relies on the READ COMMITTED isolation level: the re-read after the lock and the
+    ancestor walk's ``exists()`` checks must see concurrent commits. Under REPEATABLE READ the re-read
+    would see the snapshot from before the lock, so a racing duplicate delete would return success and
+    write a second deletion history row, and two sibling deletes could leave an empty group, all
+    without an error.
 
     A learner's grade saved at the same moment as a hard delete fails one side with an error. The delete
     checks for a status row and then deletes the criterion, and a grade write that inserts a status row
