@@ -22,7 +22,11 @@ class CompetencyRuleProfilePagination(DefaultPagination):
 
 class CompetencyBlockedCoursesPagination(DefaultPagination):
     """
-    Page size for a competency's blocked-courses collection, pinned for the same reason as the rule profiles'.
+    Page size for a competency's blocked-courses collection.
+
+    Pinned here rather than inherited from the consuming project's DEFAULT_PAGINATION_CLASS: this
+    is a published library, so the page size is part of its REST contract instead of varying by
+    deployment.
     """
 
     page_size = 100

@@ -6,6 +6,7 @@ from __future__ import annotations
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey, UsageKey
+from opaque_keys.edx.locator import CourseLocator, LibraryLocator
 from rest_framework import serializers
 
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile, LogicOperator
@@ -185,9 +186,10 @@ class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
         """
         Parse a comma-separated course_keys value into a deduplicated list of CourseKey.
 
-        Stray separators (trailing, doubled, or all-commas) are ignored, not rejected. Raises
-        a validation error if more than MAX_COURSE_KEYS entries remain after splitting, checked
-        before dedup so repeating a key can't dodge the cap, or if any entry isn't a valid key.
+        Each key is stripped of any branch or version before dedup. Stray separators (trailing,
+        doubled, or all-commas) are ignored, not rejected. Raises a validation error if more than
+        MAX_COURSE_KEYS entries remain after splitting, checked before dedup so repeating a key
+        can't dodge the cap, or if any entry isn't a valid key.
         """
         entries = [entry for entry in (entry.strip() for entry in value.split(",")) if entry]
         if len(entries) > MAX_COURSE_KEYS:
@@ -197,11 +199,15 @@ class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
         parsed = []
         for entry in entries:
             try:
-                parsed.append(CourseKey.from_string(entry))
+                key = CourseKey.from_string(entry)
+                # CourseKey's type lacks for_branch(); mypy needs the narrowing to the two base locators that define it.
+                if isinstance(key, (CourseLocator, LibraryLocator)):
+                    key = key.for_branch(None).version_agnostic()
             except InvalidKeyError as exc:
                 raise serializers.ValidationError(
                     _("'%(entry)s' is not a valid course key.") % {"entry": entry}
                 ) from exc
+            parsed.append(key)
         return list(dict.fromkeys(parsed))
 
     def create(self, validated_data):
@@ -237,7 +243,7 @@ class CompetencyCriterionReadSerializer(serializers.ModelSerializer):
         ]
 
 
-class BlockedCourseSerializer(serializers.Serializer):  # pylint: disable=abstract-method
+class BlockedCourseSerializer(serializers.Serializer):
     """
     Read-only representation of a BlockedCourse, for the blocked-courses endpoint.
 
@@ -249,25 +255,10 @@ class BlockedCourseSerializer(serializers.Serializer):  # pylint: disable=abstra
     conflicting_tag_id = serializers.IntegerField(read_only=True)
     conflicting_tag_value = serializers.CharField(read_only=True)
 
+    def create(self, validated_data):
+        """Not supported: this serializer is read-only."""
+        raise NotImplementedError
 
-class CompetencyBlockedCoursesQueryParamsSerializer(serializers.Serializer):  # pylint: disable=abstract-method
-    """
-    Query params for the blocked-courses endpoint: an optional comma-separated ``course_keys`` filter.
-    """
-
-    course_keys = serializers.CharField(required=False)
-
-    def validate_course_keys(self, value: str) -> list[CourseKey]:
-        """Parse the comma-separated course keys, rejecting a filter that names none or an unparseable one."""
-        pieces = [piece.strip() for piece in value.split(",") if piece.strip()]
-        if not pieces:
-            raise serializers.ValidationError(_("course_keys must name at least one course key."))
-        course_keys = []
-        for piece in pieces:
-            try:
-                course_keys.append(CourseKey.from_string(piece))
-            except InvalidKeyError as exc:
-                raise serializers.ValidationError(
-                    _("'{course_key}' is not a valid course key.").format(course_key=piece)
-                ) from exc
-        return course_keys
+    def update(self, instance, validated_data):
+        """Not supported: this serializer is read-only."""
+        raise NotImplementedError

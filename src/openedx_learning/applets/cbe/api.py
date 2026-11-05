@@ -39,6 +39,7 @@ from .rule_payloads import evaluate_rule
 from .statuses import raise_status
 
 __all__ = [
+    "BlockedCourse",
     "CompetencyCriteriaGroupArchivedError",
     "CompetencyCriteriaTree",
     "CompetencyCriterionArchivedError",
@@ -338,13 +339,14 @@ def resolve_supplied_leaf_group(group_id: int, tag: Tag, course_run: CourseRun) 
 
 
 def get_courses_with_relative_criteria(
-    tag_ids: Iterable[int], course: CourseRun | None = None,
+    tag_ids: Iterable[int], course: CourseRun | None = None, course_keys: Iterable[CourseKey] | None = None,
 ) -> dict[CourseRun, Tag]:
     """
     Return every course already blocked for one of ``tag_ids`` by an existing CompetencyCriterion.
 
     Maps each conflicting CourseRun to the lowest-id tag (of ``tag_ids``) with a criterion there,
-    narrowed to ``course`` when given. Archived criteria and criteria under an archived group are ignored.
+    narrowed by ``course`` and by ``course_keys``, each when given. Archived criteria and criteria
+    under an archived group are ignored.
     """
     groups: QuerySet[CompetencyCriteriaGroup, CompetencyCriteriaGroup] = CompetencyCriteriaGroup.objects.filter(
         tag_id__in=tag_ids,
@@ -357,6 +359,8 @@ def get_courses_with_relative_criteria(
     )
     if course is not None:
         groups = groups.filter(parent__course=course)
+    if course_keys is not None:
+        groups = groups.filter(parent__course__course_key__in=list(course_keys))
     result: dict[CourseRun, Tag] = {}
     for group in groups.select_related("tag", "parent__course").distinct().order_by("tag_id"):
         assert group.parent is not None, f"CompetencyCriteriaGroup {group.id} has no parent"
@@ -365,9 +369,14 @@ def get_courses_with_relative_criteria(
     return result
 
 
-@dataclass
+@dataclass(frozen=True, kw_only=True, slots=True)
 class BlockedCourse:
-    """A course where a taxonomy relative of a competency already has a live CompetencyCriterion."""
+    """
+    A course where a taxonomy relative of a competency already has a live CompetencyCriterion.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle.
+    """
 
     course_key: CourseKey
     conflicting_tag_id: int
@@ -376,12 +385,14 @@ class BlockedCourse:
 
 def get_blocked_courses(tag: Tag, course_keys: Iterable[CourseKey] | None = None) -> list[BlockedCourse]:
     """
-    Return the courses where ``tag`` can't get a new criterion, because an ancestor or descendant has one there.
+    Return the courses where a taxonomy ancestor or descendant of ``tag`` already has a live criterion.
 
     UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
     behavior may change this function's shape without a deprecation cycle.
 
-    Narrowed to ``course_keys`` when given, and sorted by course key.
+    Narrowed to ``course_keys`` when given, and sorted by course key. When several relatives claim
+    one course, the lowest-id relative is named. Criteria on ``tag`` itself never block a course.
+    Requested keys that match no blocked course are dropped.
     """
     relative_ids = (
         set(get_ancestor_tags(tag).values_list("id", flat=True))
@@ -389,14 +400,16 @@ def get_blocked_courses(tag: Tag, course_keys: Iterable[CourseKey] | None = None
     )
     if not relative_ids:
         return []
-    conflicts = get_courses_with_relative_criteria(relative_ids)
-    requested = set(course_keys) if course_keys is not None else None
+    conflicts = get_courses_with_relative_criteria(relative_ids, course_keys=course_keys)
     rows = []
     for course_run, conflicting_tag in conflicts.items():
         # CourseRun.save() always derives course_key, so a saved row has one.
-        assert course_run.course_key is not None
-        if requested is None or course_run.course_key in requested:
-            rows.append(BlockedCourse(course_run.course_key, conflicting_tag.id, conflicting_tag.value))
+        assert course_run.course_key is not None, f"CourseRun {course_run.id} has no course_key"
+        rows.append(BlockedCourse(
+            course_key=course_run.course_key,
+            conflicting_tag_id=conflicting_tag.id,
+            conflicting_tag_value=conflicting_tag.value,
+        ))
     return sorted(rows, key=lambda row: str(row.course_key))
 
 

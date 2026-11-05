@@ -19,6 +19,7 @@ from rules.permissions import permissions as rule_permissions
 
 from openedx_catalog.models import CatalogCourse, CourseRun
 from openedx_learning.api import (
+    BlockedCourse,
     CompetencyCriteriaGroupArchivedError,
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
@@ -35,7 +36,7 @@ from openedx_learning.api import (
     update_competency_criteria_group,
 )
 from openedx_learning.applets.cbe import api as cbe_api
-from openedx_learning.applets.cbe.api import BlockedCourse, _create_leaf_group
+from openedx_learning.applets.cbe.api import _create_leaf_group
 from openedx_learning.models import (
     CompetencyCourseRun,
     CompetencyCriteriaGroup,
@@ -49,6 +50,8 @@ from openedx_learning.models import (
     StudentCompetencyStatus,
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
+
+from .utils import make_leaf_criterion, make_skill_family, usage_key
 
 pytestmark = pytest.mark.django_db
 
@@ -113,27 +116,9 @@ def course_key(course_run: CourseRun) -> CourseKey:
     return key
 
 
-def usage_key(course_run: CourseRun, block_id: str) -> str:
-    """Build a gradeable-subsection-shaped usage key string under `course_run`."""
-    key = course_run.course_key
-    assert key is not None
-    return f"block-v1:{key.org}+{key.course}+{key.run}+type@sequential+block@{block_id}"
-
-
 def make_tag(taxonomy: CompetencyTaxonomy, value: str, parent: Tag | None = None) -> Tag:
     """Create a Tag on `taxonomy`, optionally under `parent`, for taxonomy-hierarchy tests."""
     return Tag.objects.create(taxonomy=taxonomy, value=value, parent=parent)
-
-
-def make_leaf_criterion(
-    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile, block_id: str,
-) -> CompetencyCriterion:
-    """
-    Create a leaf group and one live CompetencyCriterion for `tag` in `course_run`.
-    """
-    leaf = _create_leaf_group(tag, course_run)
-    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, block_id), taxonomy=tag.taxonomy, tag=tag)
-    return CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
 
 
 def test_is_competency_taxonomy() -> None:
@@ -1931,6 +1916,26 @@ def test_get_courses_with_relative_criteria_narrows_to_the_given_course(
     assert get_courses_with_relative_criteria([relative.id], course=course_run) == {course_run: relative}
 
 
+def test_get_courses_with_relative_criteria_narrows_to_the_given_course_keys(
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """With ``course_keys`` given, only those courses' conflicts come back, though another course has one too."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    course_y = make_course_run(organization, "Python200", "Fall2026")
+    course_z = make_course_run(organization, "Python300", "Fall2026")
+    for course in (course_run, course_y, course_z):
+        make_leaf_criterion(relative, course, default_rule_profile, "p1")
+
+    result = get_courses_with_relative_criteria(
+        [relative.id], course_keys=[course_key(course_run), course_key(course_y)],
+    )
+
+    assert result == {course_run: relative, course_y: relative}
+
+
 def test_get_courses_with_relative_criteria_ignores_a_criterion_outside_a_leaf(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
@@ -2317,62 +2322,30 @@ def test_update_never_reads_or_writes_learner_status(
 # ==============================================================================================
 
 
-def make_skill_family(taxonomy: CompetencyTaxonomy) -> tuple[Tag, Tag, Tag, Tag]:
-    """
-    Create "Cognitive Skills" > "Critical Thinking" > "Inference", plus "Analysis" as a sibling of "Inference".
-    """
-    cognitive_skills = make_tag(taxonomy, "Cognitive Skills")
-    critical_thinking = make_tag(taxonomy, "Critical Thinking", parent=cognitive_skills)
-    inference = make_tag(taxonomy, "Inference", parent=critical_thinking)
-    analysis = make_tag(taxonomy, "Analysis", parent=critical_thinking)
-    return cognitive_skills, critical_thinking, inference, analysis
-
-
-def test_get_blocked_courses_reports_an_ancestor_claim(
-    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+@pytest.mark.parametrize(
+    "claimant_and_queried",
+    [
+        pytest.param((1, 2), id="ancestor claim"),
+        pytest.param((2, 1), id="descendant claim"),
+        pytest.param((0, 2), id="grandparent claim"),
+        pytest.param((2, 0), id="grandchild claim"),
+    ],
+)
+def test_get_blocked_courses_reports_a_relative_claim(
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+    claimant_and_queried: tuple[int, int],
 ) -> None:
-    """A course where an ancestor has a criterion is blocked, naming that ancestor."""
-    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
-    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    """A course where an ancestor or descendant at any depth has a criterion is blocked, naming that relative."""
+    family = make_skill_family(competency_taxonomy)
+    claimant, queried = (family[index] for index in claimant_and_queried)
+    make_leaf_criterion(claimant, course_run, default_rule_profile, "p1")
 
-    assert get_blocked_courses(inference) == [
-        BlockedCourse(course_key(course_run), critical_thinking.id, "Critical Thinking"),
-    ]
-
-
-def test_get_blocked_courses_reports_a_descendant_claim(
-    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """A course where a descendant has a criterion is blocked, naming that descendant."""
-    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
-    make_leaf_criterion(inference, course_run, default_rule_profile, "p1")
-
-    assert get_blocked_courses(critical_thinking) == [
-        BlockedCourse(course_key(course_run), inference.id, "Inference"),
-    ]
-
-
-def test_get_blocked_courses_reports_a_grandparent_claim(
-    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """The block reaches past the immediate parent to a grandparent."""
-    cognitive_skills, _, inference, _ = make_skill_family(competency_taxonomy)
-    make_leaf_criterion(cognitive_skills, course_run, default_rule_profile, "p1")
-
-    assert get_blocked_courses(inference) == [
-        BlockedCourse(course_key(course_run), cognitive_skills.id, "Cognitive Skills"),
-    ]
-
-
-def test_get_blocked_courses_reports_a_grandchild_claim(
-    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """The block reaches past the immediate child to a grandchild."""
-    cognitive_skills, _, inference, _ = make_skill_family(competency_taxonomy)
-    make_leaf_criterion(inference, course_run, default_rule_profile, "p1")
-
-    assert get_blocked_courses(cognitive_skills) == [
-        BlockedCourse(course_key(course_run), inference.id, "Inference"),
+    assert get_blocked_courses(queried) == [
+        BlockedCourse(
+            course_key=course_key(course_run), conflicting_tag_id=claimant.id, conflicting_tag_value=claimant.value,
+        ),
     ]
 
 
@@ -2386,46 +2359,19 @@ def test_get_blocked_courses_ignores_a_sibling_claim(
     assert not get_blocked_courses(inference)
 
 
-def test_get_blocked_courses_ignores_a_course_with_no_relative_claim(
-    competency_taxonomy: CompetencyTaxonomy,
-    course_run: CourseRun,
-    organization: Organization,
-    default_rule_profile: CompetencyRuleProfile,
+def test_get_blocked_courses_ignores_a_claim_on_the_tag_itself(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """Only the course holding a relative's criterion is reported."""
-    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
-    make_course_run(organization, "Python200", "Fall2026")
-    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    """A criterion on the queried tag itself is not a conflict, so it blocks nothing."""
+    _, _, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(inference, course_run, default_rule_profile, "p1")
 
-    assert [row.course_key for row in get_blocked_courses(inference)] == [course_run.course_key]
-
-
-def test_get_blocked_courses_is_empty_when_no_relative_has_a_claim(
-    competency_taxonomy: CompetencyTaxonomy,
-) -> None:
-    """A tag whose ancestors and descendants have no criteria anywhere blocks no course."""
-    _, critical_thinking, _, _ = make_skill_family(competency_taxonomy)
-
-    assert get_blocked_courses(critical_thinking) == []
+    assert get_blocked_courses(inference) == []
 
 
 def test_get_blocked_courses_is_empty_for_a_tag_with_no_relatives(tag: Tag) -> None:
     """A root tag with no children has no relatives to conflict with."""
     assert get_blocked_courses(tag) == []
-
-
-def test_get_blocked_courses_reports_one_row_per_course_naming_the_lowest_id_relative(
-    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """A course claimed by two relatives is reported once, naming the lower-id relative."""
-    cognitive_skills, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
-    assert cognitive_skills.id < critical_thinking.id
-    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
-    make_leaf_criterion(cognitive_skills, course_run, default_rule_profile, "p2")
-
-    assert get_blocked_courses(inference) == [
-        BlockedCourse(course_key(course_run), cognitive_skills.id, "Cognitive Skills"),
-    ]
 
 
 def test_get_blocked_courses_narrows_to_the_requested_course_keys(
@@ -2444,7 +2390,7 @@ def test_get_blocked_courses_narrows_to_the_requested_course_keys(
 
     rows = get_blocked_courses(inference, course_keys=[course_key(course_run), course_key(course_y)])
 
-    assert {row.course_key for row in rows} == {course_run.course_key, course_y.course_key}
+    assert {row.course_key for row in rows} == {course_key(course_run), course_key(course_y)}
 
 
 def test_get_blocked_courses_sorts_rows_by_course_key(
@@ -2458,16 +2404,4 @@ def test_get_blocked_courses_sorts_rows_by_course_key(
 
     keys = [str(row.course_key) for row in get_blocked_courses(inference)]
 
-    assert keys == sorted(keys)
-    assert len(keys) == 3
-
-
-def test_get_blocked_courses_ignores_an_archived_claim(
-    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """An archived criterion on a relative blocks nothing."""
-    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
-    criterion = make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
-    CompetencyCriterion.objects.filter(pk=criterion.pk).update(archived=True)
-
-    assert get_blocked_courses(inference) == []
+    assert keys == [f"course-v1:Org1+{course_code}+Run1" for course_code in ("A100", "B200", "C300")]
