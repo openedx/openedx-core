@@ -408,7 +408,7 @@ def get_blocked_courses(tag: Tag, course_keys: Iterable[CourseKey] | None = None
     behavior may change this function's shape without a deprecation cycle.
 
     Narrowed to ``course_keys`` when given. A key's branch and version are ignored, and a
-    version-only key raises ``InvalidKeyError``. Sorted by course key. When several relatives claim
+    version-only key raises ``InvalidKeyError``. Results are sorted by course key. When several relatives claim
     one course, the lowest-id relative is named. Criteria on ``tag`` itself never block a course.
     Requested keys that match no blocked course are dropped.
     """

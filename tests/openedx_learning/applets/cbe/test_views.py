@@ -1450,6 +1450,15 @@ def test_a_version_only_course_key_is_400(user_client: APIClient, tag: Tag) -> N
     assert set(response.data) == {"course_keys"}
 
 
+@pytest.mark.parametrize("library_key", ["library-v1:Org1+Lib1", "library-v1:version@aaaaaaaaaaaaaaaaaaaaaaaa"])
+def test_a_library_key_is_400(user_client: APIClient, tag: Tag, library_key: str) -> None:
+    """A library key parses as a CourseKey but can never name a course run, so it is rejected like a malformed one."""
+    response = user_client.get(criteria_tree_url(tag.id), {"course_keys": library_key})
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert library_key in str(response.data["course_keys"])
+
+
 def test_more_than_the_limit_of_course_keys_is_400(user_client: APIClient, tag: Tag) -> None:
     """More than 100 course_keys entries 400s, keyed by course_keys, and the error names the 100 limit."""
     too_many = ",".join(f"course-v1:Org+Course{i}+Run" for i in range(101))
@@ -2220,18 +2229,21 @@ def test_blocked_courses_without_view_access_403s(
 ) -> None:
     """
     A non-staff caller may not read blocked courses for a competency on a disabled taxonomy, even
-    with garbage in course_keys: permission is checked before course_keys is parsed.
+    with garbage in course_keys: permission is checked before course_keys is counted or parsed.
     """
     _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
     make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
     competency_taxonomy.enabled = False
     competency_taxonomy.save()
     api_client.force_authenticate(user=user)
+    malformed = urlencode({"course_keys": "not-a-key"})
+    repeated = urlencode({"course_keys": ["a", "b"]}, doseq=True)
 
-    response = api_client.get(blocked_courses_url(inference.id, course_keys="not-a-key"))
+    for query in (malformed, repeated):
+        response = api_client.get(f"{blocked_courses_url(inference.id)}?{query}")
 
-    assert response.status_code == status.HTTP_403_FORBIDDEN
-    assert "results" not in response.data
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert "results" not in response.data
 
 
 def test_blocked_courses_anonymous_request_is_401_and_discloses_nothing(
@@ -2259,6 +2271,24 @@ def test_blocked_courses_malformed_course_key_400s(
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert "not-a-key" in str(response.data["course_keys"])
+
+
+@pytest.mark.parametrize("library_key", ["library-v1:Org1+Lib1", "library-v1:version@aaaaaaaaaaaaaaaaaaaaaaaa"])
+def test_blocked_courses_library_key_400s(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+    library_key: str,
+) -> None:
+    """A library key parses as a CourseKey but can never name a course run, so it is rejected like a malformed one."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id, course_keys=library_key))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert library_key in str(response.data["course_keys"])
 
 
 @pytest.mark.parametrize("course_keys", ["", ",,"])
@@ -2306,7 +2336,12 @@ def test_blocked_courses_matches_a_branch_qualified_course_key(
     course_run: CourseRun,
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """A branch-qualified key matches its plain course, and the row reports the plain key."""
+    """
+    A branch-qualified key matches its plain course, and the row reports the plain key.
+
+    This pins the database match, which ignores a key's branch, so it holds with or without the
+    serializer's normalization.
+    """
     _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
     make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
 

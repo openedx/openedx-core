@@ -189,7 +189,8 @@ class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
         Each key is stripped of any branch or version before dedup. Stray separators (trailing,
         doubled, or all-commas) are ignored, not rejected. Raises a validation error if more than
         MAX_COURSE_KEYS entries remain after splitting, checked before dedup so repeating a key
-        can't dodge the cap, or if any entry isn't a valid key.
+        can't dodge the cap, or if any entry isn't a course key. A library key parses as a
+        CourseKey but can never name a course run, so it is rejected too.
         """
         entries = [entry for entry in (entry.strip() for entry in value.split(",")) if entry]
         if len(entries) > MAX_COURSE_KEYS:
@@ -200,10 +201,10 @@ class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
         for entry in entries:
             try:
                 key = CourseKey.from_string(entry)
+                if not isinstance(key, CourseLocator):
+                    raise InvalidKeyError(type(key), entry)
                 # Match the stored plain course key: drop branch and version; this also rejects a version-only key.
-                # The isinstance narrows CourseKey, which mypy does not know has for_branch().
-                if isinstance(key, CourseLocator):
-                    key = key.for_branch(None)
+                key = key.for_branch(None)
             except InvalidKeyError as exc:
                 raise serializers.ValidationError(
                     _("'%(entry)s' is not a valid course key.") % {"entry": entry}

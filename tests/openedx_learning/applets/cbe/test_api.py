@@ -13,6 +13,7 @@ from django.db import connection
 from django.db.utils import IntegrityError
 from django.forms.models import model_to_dict
 from django.test.utils import CaptureQueriesContext
+from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey
 from organizations.models import Organization
 from rules.permissions import permissions as rule_permissions
@@ -2384,24 +2385,46 @@ def test_get_blocked_courses_is_empty_for_a_tag_with_no_relatives(tag: Tag) -> N
     assert get_blocked_courses(tag) == []
 
 
+@pytest.mark.parametrize(
+    "claimant_and_queried",
+    [
+        pytest.param((1, 2), id="ancestor claim"),
+        pytest.param((2, 1), id="descendant claim"),
+        pytest.param((0, 2), id="grandparent claim"),
+        pytest.param((2, 0), id="grandchild claim"),
+    ],
+)
 def test_get_blocked_courses_and_create_competency_criterion_agree_on_a_conflict(
-    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+    claimant_and_queried: tuple[int, int],
 ) -> None:
-    """A course the read reports as blocked for a tag is one the write rejects a criterion for."""
-    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
-    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    """A course the read reports as blocked for a tag is one the write rejects, and both name the same relative."""
+    family = make_skill_family(competency_taxonomy)
+    claimant, queried = (family[index] for index in claimant_and_queried)
+    make_leaf_criterion(claimant, course_run, default_rule_profile, "p1")
 
-    assert get_blocked_courses(inference) == [
+    assert get_blocked_courses(queried) == [
         BlockedCourse(
-            course_key=course_key(course_run),
-            conflicting_tag_id=critical_thinking.id,
-            conflicting_tag_value=critical_thinking.value,
+            course_key=course_key(course_run), conflicting_tag_id=claimant.id, conflicting_tag_value=claimant.value,
         ),
     ]
-    group = _create_leaf_group(inference, course_run)
+    group = _create_leaf_group(queried, course_run)
     with pytest.raises(ValidationError) as exc_info:
         create_competency_criterion(group, usage_key(course_run, "p2"), course_run=course_run)
-    assert "tag_id" in exc_info.value.message_dict
+    assert claimant.value in str(exc_info.value.message_dict["tag_id"])
+
+
+@pytest.mark.parametrize(
+    "read", [get_blocked_courses, get_competency_criteria_tree], ids=["blocked courses", "criteria tree"],
+)
+def test_a_version_only_course_key_raises_before_the_database_is_asked(tag: Tag, read) -> None:
+    """A version-only key has no course to match, so both reads reject it up front rather than from the lookup."""
+    version_only = CourseKey.from_string("course-v1:version@aaaaaaaaaaaaaaaaaaaaaaaa")
+
+    with pytest.raises(InvalidKeyError):
+        read(tag, [version_only])
 
 
 def test_get_blocked_courses_sorts_rows_by_course_key(
