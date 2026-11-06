@@ -154,6 +154,7 @@ Decision
    - Belongs to one ``CompetencyCriteriaGroup``.
    - Points to one ``oel_tagging_objecttag`` association.
    - Uses one ``CompetencyRuleProfile`` by default, with optional per-criterion overrides.
+   - In one course, the live criteria (non-archived, under non-archived groups) along any ancestor-descendant line of the taxonomy belong to one competency; siblings are unrestricted. The check runs only at creation, inside the transaction that locks the competency's ``Tag`` and the course's ``CompetencyCourseRun`` rows; no database constraint enforces it, and existing criteria are not revalidated when the hierarchy changes. ``get_blocked_courses`` lists the courses closed to a competency as an advisory hint, through the same ``get_courses_with_relative_criteria`` lookup creation uses, so both name the same lowest-id ancestor or descendant; it does not report Decision 2's archived course-level groups. The rule exists so evaluation never has to reconcile two independently authored, overlapping rules for related competencies in one course.
 
    This new database table will have the following columns:
 
@@ -490,3 +491,9 @@ Changelog
   supersedes the ordered, short-circuited evaluation the earlier text described. Decision 6's update flow now continues past the root group to the
   competency's own status row and up through parent competencies, and states what a
   competency with no criteria tree of its own receives.
+
+2026-11-06:
+
+* Amended Decision 4 for #666 and #796: in one course, live criteria along any ancestor-descendant
+  line of the taxonomy belong to one competency, checked at creation only, with
+  ``get_blocked_courses`` as the advisory read.
