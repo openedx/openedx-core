@@ -455,6 +455,9 @@ def add_tag_to_taxonomy(
     Tag is returned.
 
     If `external_id` is omitted, one is generated from the tag's name.
+
+    Raises ``ValueError`` if the value or ``external_id`` is held by another tag,
+    archived or not, or if the parent is archived or under an archived tag.
     """
     new_tag = taxonomy.add_tag(tag, parent_tag_value, external_id)
 

@@ -9,7 +9,7 @@ from typing import ClassVar, List, Self, cast
 
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models
-from django.db.models import F, Value
+from django.db.models import F, Q, Value
 from django.db.models.functions import Concat, Length, Replace, Substr
 from django.utils.functional import cached_property
 from django.utils.translation import gettext_lazy as _
@@ -59,6 +59,19 @@ class TagQuerySet(models.QuerySet["Tag"]):
         Tags with no taxonomy are kept, so the taxonomy condition is an exclude.
         """
         return self.filter(archived=False).exclude(taxonomy__archived=True)
+
+    def in_archived_subtree(self) -> Self:
+        """
+        Return only tags that are archived or that sit under an archived tag.
+
+        Such a tag still holds its value and external_id, but is no longer part of its taxonomy.
+        """
+        # Depth is capped, so a fixed number of ancestor joins covers every tag, and the
+        # query stays the same size however many tags are archived.
+        condition = Q(archived=True)
+        for depth in range(1, TAXONOMY_MAX_DEPTH + 1):
+            condition |= Q(**{"__".join(["parent"] * depth) + "__archived": True})
+        return self.filter(condition)
 
 
 class ObjectTagQuerySet(models.QuerySet["ObjectTag"]):
@@ -657,6 +670,9 @@ class Taxonomy(models.Model):
                 "add_tag() doesn't work for archived taxonomies. They cannot be modified."
             )
 
+        # Tag.clean strips both before saving, so compare what would be saved.
+        tag_value = tag_value.strip()
+        external_id = external_id.strip() if external_id else external_id
         existing = self.tag_set.filter(value__iexact=tag_value).first()
         if existing and existing.archived:
             raise ValueError(

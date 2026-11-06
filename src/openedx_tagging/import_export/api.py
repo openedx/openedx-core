@@ -71,14 +71,15 @@ def import_tags(
     of each import step and the current status.
     There can only be one task in progress at a time per taxonomy
 
-    Set `replace` to True to delete all not readed Tag of the given taxonomy.
+    Set `replace` to True to delete every tag of the given taxonomy that the file does not mention.
     Ex. Given a taxonomy with `tag_1`, `tag_2` and `tag_3`. If there is only `tag_1`
     in the file (regardless of action), then `tag_2` and `tag_3` will be deleted
-    if `replace=True`. Archived tags and the tags under them are never deleted this way.
-    An archived tag whose parent is deleted is moved to the root.
+    if `replace=True`. A tag in an archived subtree when the plan is built is not deleted this way.
+    An archived tag whose parent is deleted is moved to the root, until the import's deletes
+    follow the archive-or-delete rule of #780.
 
-    A file row whose value, id, previous_id or parent_id belongs to an archived
-    tag, or to a tag under one, is reported as an error, and nothing is imported.
+    A file row whose value, id, previous_id or parent_id belongs to a tag in an archived
+    subtree is reported as an error, and nothing is imported.
 
     Set `plan_only` to True to only generate the actions and not execute them.
     """

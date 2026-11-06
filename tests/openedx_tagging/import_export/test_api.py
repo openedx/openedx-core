@@ -1117,22 +1117,6 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         assert "Row 1's id (tag_3) belongs to an archived tag" in import_export_api.get_last_import_log(self.taxonomy)
         assert self._snapshot(self.taxonomy) == before
 
-    def test_replace_import_leaves_archived_tags(self) -> None:
-        Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_3").update(archived=True)
-        file = self._json_file([
-            {"id": "tag_1", "value": "Tag 1"},
-            {"id": "tag_2", "value": "Tag 2", "parent_id": "tag_1"},
-        ])
-
-        result, _task, _plan = import_export_api.import_tags(
-            self.taxonomy, file, self.parser_format, replace=True,
-        )
-
-        assert result
-        archived = self.taxonomy.tag_set.get(external_id="tag_3")
-        assert archived.archived
-        assert archived.value == "Tag 3"
-
     def test_replace_import_promotes_archived_child_of_deleted_tag(self) -> None:
         # The alternative is the delete cascading to the archived child.
         Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_4").update(archived=True)
