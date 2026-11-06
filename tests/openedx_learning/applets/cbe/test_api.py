@@ -1533,7 +1533,7 @@ def test_get_competency_criteria_tree_course_keys_branch_qualified_key_matches_t
     assert course_level is not None
     root = course_level.parent
     assert root is not None
-    branched_key = CourseKey.from_string("course-v1:Org1+Python100+Fall2026+branch@draft")
+    branched_key = CourseKey.from_string(f"{course_key(course_run)}+branch@draft")
 
     tree = get_competency_criteria_tree(tag, [branched_key])
 

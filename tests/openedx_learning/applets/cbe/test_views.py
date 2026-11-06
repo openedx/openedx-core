@@ -14,10 +14,12 @@ from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey, UsageKey
 from organizations.models import Organization
 from rest_framework import status
-from rest_framework.test import APIClient
+from rest_framework.request import Request
+from rest_framework.test import APIClient, APIRequestFactory
 
 from openedx_catalog.models import CourseRun
 from openedx_learning.applets.cbe.api import _create_leaf_group
+from openedx_learning.applets.cbe.rest_api.paginators import CompetencyBlockedCoursesPagination
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
     CompetencyCriterion,
@@ -2036,17 +2038,14 @@ def blocked_courses_url(tag_id: int, **params: str) -> str:
 
 def collect_pages(client: APIClient, url: str) -> tuple[int, list[list[dict]]]:
     """Follow `next` links from `url` and return the first page's count and each page's rows."""
-    pages: list[list[dict]] = []
-    count = None
-    next_url: str | None = url
-    while next_url:
-        response = client.get(next_url)
+    response = client.get(url)
+    assert response.status_code == status.HTTP_200_OK
+    count = response.data["count"]
+    pages = [response.data["results"]]
+    while response.data["next"]:
+        response = client.get(response.data["next"])
         assert response.status_code == status.HTTP_200_OK
-        if count is None:
-            count = response.data["count"]
         pages.append(response.data["results"])
-        next_url = response.data["next"]
-    assert count is not None
     return count, pages
 
 
@@ -2063,6 +2062,7 @@ def test_blocked_courses_reports_a_relative_claim_with_the_row_shape(
     response = user_client.get(blocked_courses_url(inference.id))
 
     assert response.status_code == status.HTTP_200_OK
+    # The seven keys are the standard envelope of edx-platform ADR 0032, which DefaultPagination implements.
     assert set(response.data) == {"next", "previous", "count", "num_pages", "current_page", "start", "results"}
     assert response.data["results"] == [{
         "course_key": "course-v1:Org1+Python100+Fall2026",
@@ -2186,6 +2186,13 @@ def test_blocked_courses_default_page_size_is_100(
     assert response.data["count"] == 101
     assert len(response.data["results"]) == 100
     assert response.data["next"] is not None
+
+
+def test_blocked_courses_page_size_is_capped_at_500() -> None:
+    """A page_size above the cap is clamped to 500 rather than honored or rejected."""
+    request = Request(APIRequestFactory().get("/", {"page_size": "1000"}))
+
+    assert CompetencyBlockedCoursesPagination().get_page_size(request) == 500
 
 
 def test_blocked_courses_page_out_of_range_404s(
