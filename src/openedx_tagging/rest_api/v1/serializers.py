@@ -104,11 +104,11 @@ class TaxonomySerializer(UserPermissionsSerializerMixin, serializers.ModelSerial
         """
         Return the "tags_count" annotation if present.
 
-        Or just count the taxonomy's tags.
+        Or just count the taxonomy's unarchived tags.
         """
         if hasattr(instance, 'tags_count'):
             return instance.tags_count
-        return instance.tag_set.count()
+        return instance.tag_set.unarchived().count()
 
     def get_can_tag_object(self, instance) -> bool | None:
         """
@@ -238,6 +238,7 @@ def validate_tag_value(value, context, original_value=None):
     """
     Validates the incoming request early:
     - This tag is unique, not a duplicate. (The model only validates this if you call `full_clean()`.)
+      A value held by an archived tag gets its own message, since that tag is not shown in the taxonomy's tag lists.
     - There are no forbidden / reserved characters present. There is an additional
     model-side validation for this as well, but we are keeping this so we can validate
     the incoming request immediately.
@@ -252,8 +253,13 @@ def validate_tag_value(value, context, original_value=None):
         if tag_id:
             queryset = queryset.exclude(pk=tag_id)
 
-        # Check if tag value already exists within this taxonomy. If so, raise a validation error.
-        if queryset.exists():
+        existing = queryset.first()
+        if existing and existing.archived:
+            raise serializers.ValidationError(
+                f'Tag value "{value}" belongs to an archived tag in this taxonomy. Use a different value.',
+                code='unique',
+            )
+        if existing:
             raise serializers.ValidationError(
                 f'Tag value "{value}" already exists in this taxonomy.', code='unique'
             )

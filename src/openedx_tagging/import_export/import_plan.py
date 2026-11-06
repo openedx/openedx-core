@@ -6,7 +6,8 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from attrs import define
-from django.db import transaction
+from django.db import models, transaction
+from django.db.models import Q
 
 from ..models import Tag, TagImportTask, Taxonomy
 from ..models.base import TAXONOMY_MAX_DEPTH
@@ -21,6 +22,7 @@ from .actions import (
     available_actions,
 )
 from .exceptions import (
+    ArchivedTagCollisionError,
     DuplicateFinalIdError,
     ParentCycleError,
     StaleIdTargetedByPlainRowError,
@@ -93,6 +95,10 @@ class TagImportPlan:
     indexed_actions: dict
     actions_dict: dict
     taxonomy: Taxonomy
+
+    # A row adds up to four query parameters, so a chunk stays under the 999 that
+    # Django's SQLite backend assumes.
+    IN_CHUNK_SIZE = 200
 
     def __init__(self, taxonomy: Taxonomy):
         self.actions = []
@@ -245,6 +251,67 @@ class TagImportPlan:
             if rename_row is not None:
                 self.errors.append(StaleIdTargetedByPlainRowError(tag.id, position, rename_row))
 
+    @staticmethod
+    def _row_keys(tag: TagItem) -> list[tuple[str, str, str]]:
+        """
+        Return the (field, value, lookup) triples a row can match an existing tag on.
+
+        Values are stripped, as `Tag.clean` strips them before saving.
+        """
+        keys = [
+            ("value", tag.value, "value"),
+            ("id", tag.id, "external_id"),
+            ("previous_id", tag.previous_id, "external_id"),
+            ("parent_id", tag.parent_id, "external_id"),
+        ]
+        return [(field, value.strip(), lookup) for field, value, lookup in keys if value and value.strip()]
+
+    def _chunk_matches_archived_subtree(self, chunk: list[TagItem], archived_subtree: models.QuerySet[Tag]) -> bool:
+        """
+        Return whether any row in the chunk matches a tag in `archived_subtree`, in one query.
+        """
+        values: dict[str, list[str]] = {"value": [], "external_id": []}
+        for tag in chunk:
+            for _, value, lookup in self._row_keys(tag):
+                values[lookup].append(value)
+        return archived_subtree.filter(Q(value__in=values["value"]) | Q(external_id__in=values["external_id"])).exists()
+
+    def _report_archived_subtree_matches(
+        self, chunk: list[TagItem], first_row: int, archived_subtree: models.QuerySet[Tag]
+    ) -> None:
+        """
+        Add one error for each row in the chunk that matches a tag in `archived_subtree`.
+
+        A row matching on several fields is reported on the first of them only.
+        """
+        for position, tag in enumerate(chunk, start=first_row):
+            for field, value, lookup in self._row_keys(tag):
+                match = archived_subtree.filter(**{lookup: value}).first()
+                if match:
+                    self.errors.append(
+                        ArchivedTagCollisionError(position, field, value, under_archived=not match.archived)
+                    )
+                    break
+
+    def _reject_rows_targeting_archived_subtree(self, tags: list[TagItem]) -> bool:
+        """
+        Add an error for each row whose value, id, previous_id or parent_id matches a tag in an archived subtree.
+
+        Return whether any row was rejected. Matching happens in the DB, so it follows the column collation
+        exactly as the unique constraints and the actions' own lookups do. It costs one query when nothing
+        in the taxonomy is archived, otherwise one more per chunk of rows, plus up to four lookups per row
+        in a chunk that matched.
+        """
+        archived_subtree = self.taxonomy.tag_set.in_archived_subtree()
+        if not archived_subtree.exists():
+            return False
+        errors_before = len(self.errors)
+        for start in range(0, len(tags), self.IN_CHUNK_SIZE):
+            chunk = tags[start:start + self.IN_CHUNK_SIZE]
+            if self._chunk_matches_archived_subtree(chunk, archived_subtree):
+                self._report_archived_subtree_matches(chunk, start + 1, archived_subtree)
+        return len(self.errors) > errors_before
+
     def _build_staging_actions(self, tags: list[TagItem]) -> None:
         """
         Stage any tag whose current external_id is another rename row's
@@ -330,7 +397,8 @@ class TagImportPlan:
             if key in in_file or key in deleted:
                 continue
             # What remains are existing tags the file never mentions and that are not
-            # deleted, which only happens with replace=False. A renamed tag is not among
+            # deleted: all of them with replace=False, and archived subtrees with
+            # replace=True. A renamed tag is not among
             # them: the loop above added it under its final id. These tags are kept
             # because they still count toward the depth and toward cycles. Each stays
             # under the same parent tag, recorded by that parent's final id.
@@ -461,7 +529,12 @@ class TagImportPlan:
 
         Validates each action and create respective errors
         If `replace` is True, then creates the delete action for tags
-        that are in the existing taxonomy but not the new tags list.
+        that are in the existing taxonomy but not the new tags list,
+        leaving out archived subtrees.
+
+        A row that targets a tag in an archived subtree is an error,
+        and no actions are built at all: they would only be planned against
+        tags the import may not touch.
 
         TODO: Join/reduce actions. Ex. A tag may have no changes,
         but then its parent needs to be updated because its parent is deleted.
@@ -482,11 +555,18 @@ class TagImportPlan:
         # _validate_no_plain_row_targets_a_vacated_id).
         self._validate_no_plain_row_targets_a_vacated_id(tags)
 
+        if self._reject_rows_targeting_archived_subtree(tags):
+            return
+
         tags_for_delete = {}
 
         if replace:
+            # An archived subtree is also left out of the export, so its absence from the file
+            # is no reason to delete it.
+            archived_subtree = self.taxonomy.tag_set.in_archived_subtree()
             tags_for_delete = {
-                self._get_tag_id(tag): tag for tag in self.taxonomy.tag_set.all()
+                self._get_tag_id(tag): tag
+                for tag in self.taxonomy.tag_set.exclude(pk__in=archived_subtree.values("pk"))
             }
             # external_id is case-insensitive in the DB, so both pops below
             # must match regardless of case too.

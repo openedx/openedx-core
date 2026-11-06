@@ -5,11 +5,11 @@ Tagging app base data models
 from __future__ import annotations
 
 import re
-from typing import List, Self, cast
+from typing import ClassVar, List, Self, cast
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models
-from django.db.models import F, Value
+from django.db.models import F, Q, Value
 from django.db.models.functions import Concat, Length, Replace, Substr
 from django.utils.functional import cached_property
 from django.utils.translation import gettext_lazy as _
@@ -25,6 +25,78 @@ TAXONOMY_MAX_DEPTH = 5
 
 # Ancestry of a given tag; the Tag.value fields of a given tag and its parents, starting from the root.
 Lineage = List[str]
+
+
+class TaxonomyQuerySet(models.QuerySet["Taxonomy"]):
+    """
+    QuerySet for :class:`Taxonomy` with an opt-in filter for archived rows.
+
+    The default ``Taxonomy.objects`` manager returns every row, including
+    archived ones. Plain ``Taxonomy.objects`` is the supported way to reach
+    archived taxonomies; code that should hide them calls :meth:`unarchived`.
+    """
+
+    def unarchived(self) -> Self:
+        """
+        Return only taxonomies whose ``archived`` flag is False.
+        """
+        return self.filter(archived=False)
+
+
+class TagQuerySet(models.QuerySet["Tag"]):
+    """
+    QuerySet for :class:`Tag` with an opt-in filter for archived rows.
+
+    The default ``Tag.objects`` manager returns every row, including archived
+    ones. Plain ``Tag.objects`` is the supported way to reach archived tags;
+    code that should hide them calls :meth:`unarchived`.
+    """
+
+    def unarchived(self) -> Self:
+        """
+        Return only tags that are not archived and whose taxonomy is not archived.
+
+        Tags with no taxonomy are kept, so the taxonomy condition is an exclude.
+        """
+        return self.filter(archived=False).exclude(taxonomy__archived=True)
+
+    def in_archived_subtree(self) -> Self:
+        """
+        Return only tags that are archived or that sit under an archived tag.
+
+        Such a tag still holds its value and external_id, but is no longer part of its taxonomy.
+        """
+        # Depth is capped, so a fixed number of ancestor joins covers every tag, and the
+        # query stays the same size however many tags are archived.
+        condition = Q(archived=True)
+        for depth in range(1, TAXONOMY_MAX_DEPTH + 1):
+            condition |= Q(**{"__".join(["parent"] * depth) + "__archived": True})
+        return self.filter(condition)
+
+
+class ObjectTagQuerySet(models.QuerySet["ObjectTag"]):
+    """
+    QuerySet for :class:`ObjectTag` with an opt-in filter for archived rows.
+
+    The default ``ObjectTag.objects`` manager returns every row, including
+    archived ones. Plain ``ObjectTag.objects`` is the supported way to reach
+    archived object tags; code that should hide them calls :meth:`unarchived`.
+    """
+
+    def unarchived(self) -> Self:
+        """
+        Return only object tags that are not archived and whose tag, tag's
+        taxonomy, and own taxonomy are not archived.
+
+        The tag and taxonomy are nullable (free text and deleted records), so
+        those conditions are excludes: rows with no tag or taxonomy are kept.
+        """
+        return (
+            self.filter(archived=False)
+            .exclude(tag__archived=True)
+            .exclude(tag__taxonomy__archived=True)
+            .exclude(taxonomy__archived=True)
+        )
 
 
 class Tag(models.Model):
@@ -84,6 +156,15 @@ class Tag(models.Model):
             " Set automatically by save(); do not set manually."
         ),
     )
+    archived = models.BooleanField(
+        default=False,
+        help_text=_("Hides this tag from active use by default, without removing it."),
+    )
+
+    objects = TagQuerySet.as_manager()
+
+    # Set right after the class body, because it has to subclass Tag.DoesNotExist, which Django creates with the class.
+    IsArchived: ClassVar[type[ObjectDoesNotExist]]
 
     class Meta:
         indexes = [
@@ -147,20 +228,20 @@ class Tag(models.Model):
     @cached_property
     def child_count(self) -> int:
         """
-        How many child tags this tag has in the taxonomy.
+        How many unarchived child tags this tag has in the taxonomy.
         """
         if self.taxonomy and not self.taxonomy.allow_free_text:
-            return self.taxonomy.tag_set.filter(parent=self).count()
+            return self.taxonomy.tag_set.unarchived().filter(parent=self).count()
         return 0
 
     @cached_property
     def descendant_count(self) -> int:
         """
-        How many descendant tags this tag has in the taxonomy.
+        How many unarchived descendant tags this tag has in the taxonomy.
         """
         if self.taxonomy and not self.taxonomy.allow_free_text:
             # depth__gt correctly excludes self; lineage prefix matches all descendants.
-            return self.taxonomy.tag_set.filter(
+            return self.taxonomy.tag_set.unarchived().filter(
                 depth__gt=self.depth,
                 lineage__startswith=self.lineage,
             ).count()
@@ -210,8 +291,14 @@ class Tag(models.Model):
 
         super().save(*args, **kwargs)
 
-        # Cascade lineage (and depth, if it changed) to all descendants in a single UPDATE.
-        if old_values is not None and old_values["lineage"] and old_values["lineage"] != self.lineage:
+        # Cascade lineage (and depth, if it changed) to all descendants in a single UPDATE. Tags without a taxonomy
+        # have no tree to cascade into, and filtering on taxonomy=None would match unrelated taxonomy-less tags.
+        if (
+            old_values is not None
+            and self.taxonomy_id is not None
+            and old_values["lineage"]
+            and old_values["lineage"] != self.lineage
+        ):
             depth_delta = self.depth - old_values["depth"]
             update_kwargs: dict = {
                 # Expression to compute the new lineage for each descendent:
@@ -225,8 +312,9 @@ class Tag(models.Model):
             }
             if depth_delta != 0:
                 update_kwargs["depth"] = F("depth") + depth_delta
-            self.taxonomy.tag_set.filter(  # type: ignore[union-attr]
-                lineage__startswith=old_values["lineage"]
+            Tag.objects.filter(
+                taxonomy=self.taxonomy,
+                lineage__startswith=old_values["lineage"],
             ).exclude(pk=self.pk).update(
                 **update_kwargs
             )
@@ -246,6 +334,18 @@ class Tag(models.Model):
 
         if self.external_id and "\t" in self.external_id:
             raise ValidationError("Tag external ID cannot contain a TAB character.")
+
+
+class TagIsArchived(Tag.DoesNotExist):
+    """
+    Raised when a tag exists but is archived, or belongs to an archived taxonomy.
+
+    Subclasses ``Tag.DoesNotExist`` so that code that treats an archived tag as missing keeps working,
+    while callers that care about the difference can catch this first. Reachable as ``Tag.IsArchived``.
+    """
+
+
+Tag.IsArchived = TagIsArchived
 
 
 class Taxonomy(models.Model):
@@ -311,6 +411,15 @@ class Taxonomy(models.Model):
             " taxonomy admins will not be permitted to add, edit, or delete its tags."
         ),
     )
+    archived = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Hides this taxonomy from active use by default, without removing it."
+            " Unlike disabling it with 'enabled', archiving marks the taxonomy as retired."
+        ),
+    )
+
+    objects = TaxonomyQuerySet.as_manager()
 
     class Meta:
         verbose_name_plural = "Taxonomies"
@@ -358,6 +467,10 @@ class Taxonomy(models.Model):
 
         Use `excluded_values` to exclude tags with that value (and their parents, if applicable) from the results.
 
+        Archived tags, and every tag of an archived taxonomy, are excluded. For free text taxonomies, values from
+        archived object tags are excluded. Raises Tag.DoesNotExist if `parent_tag_value` is missing, or its subclass
+        Tag.IsArchived if that tag or this taxonomy is archived.
+
         Note: This is mostly an 'internal' API and generally code outside of openedx_tagging
         should use the APIs in openedx_tagging.api which in turn use this.
         """
@@ -387,6 +500,19 @@ class Taxonomy(models.Model):
         else:
             raise ValueError("Unsupported depth value for get_filtered_tags()")
 
+    def _unarchived_tag_for_value(self, value: str) -> Tag:
+        """
+        Like tag_for_value(), but also raises Tag.IsArchived if the tag or this taxonomy is archived.
+
+        Tag.IsArchived subclasses Tag.DoesNotExist, so callers that treat archived tags as missing can ignore it.
+
+        Kept separate from tag_for_value() because tagging an object needs to resolve archived tags.
+        """
+        tag = self.tag_for_value(value)
+        if tag.archived or self.archived:
+            raise Tag.IsArchived(f"Tag '{value}' is archived or belongs to an archived taxonomy.")
+        return tag
+
     def _get_filtered_tags_free_text(
         self,
         search_term: str | None,
@@ -395,7 +521,7 @@ class Taxonomy(models.Model):
         Implementation of get_filtered_tags() for free text taxonomies.
         """
         assert self.allow_free_text
-        qs: models.QuerySet = self.objecttag_set.all()
+        qs: models.QuerySet = self.objecttag_set.unarchived()
         if search_term:
             qs = qs.filter(_value__icontains=search_term)
         # Rename "_value" to "value"
@@ -424,14 +550,15 @@ class Taxonomy(models.Model):
         """
         # A closed, and possibly hierarchical taxonomy. We're just fetching a single "level" of tags.
         if parent_tag_value:
-            parent_tag = self.tag_for_value(parent_tag_value)
-            qs: models.QuerySet = self.tag_set.filter(parent_id=parent_tag.pk)
+            parent_tag = self._unarchived_tag_for_value(parent_tag_value)
+            qs: models.QuerySet = self.tag_set.unarchived().filter(parent_id=parent_tag.pk)
             # Use parent_tag.value not parent_tag_value because they may differ in case
             qs = qs.annotate(parent_value=Value(parent_tag.value))
         else:
-            qs = self.tag_set.filter(parent=None)
+            qs = self.tag_set.unarchived().filter(parent=None)
             qs = qs.annotate(parent_value=Value(None, output_field=models.CharField()))
-        qs = qs.annotate(child_count=models.Count("children", distinct=True))  # type: ignore[no-redef]
+        child_count = models.Count("children", filter=models.Q(children__archived=False), distinct=True)
+        qs = qs.annotate(child_count=child_count)  # type: ignore[no-redef]
         # Filter by search term:
         if search_term:
             qs = qs.filter(value__icontains=search_term)
@@ -453,13 +580,13 @@ class Taxonomy(models.Model):
         """
         if parent_tag_value:
             # Get a subtree below this tag:
-            main_parent_tag = self.tag_for_value(parent_tag_value)
-            initial_qs = self.tag_set.filter(
+            main_parent_tag = self._unarchived_tag_for_value(parent_tag_value)
+            initial_qs = self.tag_set.unarchived().filter(
                 lineage__startswith=main_parent_tag.lineage,
                 depth__gt=main_parent_tag.depth,
             )
         else:
-            initial_qs = self.tag_set.all()
+            initial_qs = self.tag_set.unarchived()
 
         if search_term:
             # We need to do an additional query to find all the tags that match the search term, then limit the
@@ -524,6 +651,9 @@ class Taxonomy(models.Model):
         Add new Tag to Taxonomy. If an existing Tag with the `tag_value` already
         exists in the Taxonomy, an exception is raised, otherwise the newly
         created Tag is returned
+
+        Raises ValueError if the taxonomy is archived, or if `parent_tag_value` is an archived tag or under one.
+        A value or `external_id` held by an archived tag is refused with its own message.
         """
         if self.allow_free_text:
             raise ValueError(
@@ -535,10 +665,29 @@ class Taxonomy(models.Model):
                 "add_tag() doesn't work for read-only taxonomies. They cannot be modified."
             )
 
-        if self.tag_set.filter(value__iexact=tag_value).exists():
+        if self.archived:
+            raise ValueError(
+                "add_tag() doesn't work for archived taxonomies. They cannot be modified."
+            )
+
+        # Tag.clean strips both before saving, so compare what would be saved.
+        tag_value = tag_value.strip()
+        external_id = external_id.strip() if external_id else external_id
+        existing = self.tag_set.filter(value__iexact=tag_value).first()
+        if existing and existing.archived:
+            raise ValueError(
+                f"Tag value '{tag_value}' belongs to an archived tag in this taxonomy. Use a different value."
+            )
+        if existing:
             raise ValueError(f"Tag with value '{tag_value}' already exists for taxonomy.")
 
-        if external_id and self.validate_external_id(external_id):
+        existing = self.tag_set.filter(external_id__iexact=external_id).first() if external_id else None
+        if existing and existing.archived:
+            raise ValueError(
+                f"Tag external_id '{external_id}' belongs to an archived tag in this taxonomy. "
+                "Use a different external_id."
+            )
+        if existing:
             raise ValueError(f"Tag with external_id '{external_id}' already exists for taxonomy.")
 
         parent = None
@@ -546,6 +695,10 @@ class Taxonomy(models.Model):
             # Get parent tag from taxonomy, raises Tag.DoesNotExist if doesn't
             # belong to taxonomy
             parent = self.tag_set.get(value__iexact=parent_tag_value)
+            # The lineage holds the values of the parent and its ancestors, so this also finds an archived ancestor.
+            archived = self.tag_set.filter(archived=True, value__in=parent.lineage.split("\t")[:-1]).first()
+            if archived:
+                raise ValueError(f"Cannot add a tag under the archived tag '{archived.value}'.")
 
         tag = Tag.objects.create(
             taxonomy=self, value=tag_value, parent=parent, external_id=external_id
@@ -558,6 +711,8 @@ class Taxonomy(models.Model):
         """
         Update an existing Tag in Taxonomy and return it. Currently only
         supports updating the Tag's value.
+
+        Raises ValueError if the taxonomy or the tag is archived.
         """
         if self.allow_free_text:
             raise ValueError(
@@ -569,9 +724,15 @@ class Taxonomy(models.Model):
                 "update_tag() doesn't work for read-only taxonomies. They cannot be modified."
             )
 
+        # Checked before the lookup so that every tag name is rejected the same way in an archived taxonomy.
+        if self.archived:
+            raise ValueError("update_tag() doesn't work for archived taxonomies or tags. They cannot be modified.")
+
         # Update Tag instance with new value, raises Tag.DoesNotExist if
         # tag doesn't belong to taxonomy
         tag_to_update = self.tag_set.get(value__iexact=tag)
+        if tag_to_update.archived:
+            raise ValueError("update_tag() doesn't work for archived taxonomies or tags. They cannot be modified.")
         tag_to_update.value = new_value
         tag_to_update.save()
         return tag_to_update
@@ -724,6 +885,19 @@ class ObjectTag(models.Model):
             " If the tag field is set, then tag.value takes precedence over this field."
         ),
     )
+    archived = models.BooleanField(
+        default=False,
+        help_text=_("Hides this association from active use by default, without removing it."),
+    )
+    deletion_locked = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Set when something outside the tagging app depends on this association;"
+            " a delete archives it instead of removing it."
+        ),
+    )
+
+    objects = ObjectTagQuerySet.as_manager()
 
     class Meta:
         indexes = [
@@ -896,6 +1070,8 @@ class ObjectTag(models.Model):
         self.taxonomy = object_tag.taxonomy
         self.object_id = object_tag.object_id
         self.is_copied = object_tag.is_copied
+        self.archived = object_tag.archived
+        self.deletion_locked = object_tag.deletion_locked
         self._value = object_tag._value  # pylint: disable=protected-access
         self._export_id = object_tag._export_id  # pylint: disable=protected-access
         return self
