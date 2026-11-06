@@ -87,7 +87,7 @@ Decision
    5. ``name``: string
    6. ``ordering``: A sibling sort key. The read API returns a group's children ordered by ``(ordering, id)`` so a tree comes back in a stable order. Evaluation ignores it, because the result of ``AND`` or ``OR`` over a group's children cannot depend on the order they are read in. Whether authors will ever need to control that order is an open question; if the authoring UI turns out not to need it, the field should be removed in a follow-up.
    7. ``logic_operator``: Either “AND” or “OR” or null. This determines how children are combined at a group node ("AND" or "OR").
-   8. ``archived``: Boolean, defaults to false. Set instead of deleting a group once a student status exists for it. Archived groups are hidden from authoring and new associations but remain queryable, so existing ``CompetencyCriteria`` rows and learner status rows stay resolvable. For MVP, archiving a group or a criterion is permanent, with the root as the one reversible exception: a new criterion for an archived root's competency reactivates that root instead of creating a second one, because archiving it for good would remove the ability to ever associate criteria with that competency again. Archiving a course-level group blocks that course for that competency; archiving a leaf closes only that leaf to new criteria. More unarchival capabilities may be added after MVP.
+   8. ``archived``: Boolean, defaults to false. Set instead of deleting a group once a student status exists for it. Archived groups are hidden from authoring and new associations but remain queryable, so existing ``CompetencyCriteria`` rows and learner status rows stay resolvable. For MVP, archiving a group or a criterion is permanent, with the root as the one reversible exception: a new criterion for an archived root's competency reactivates that root instead of creating a second one, because archiving it for good would remove the ability to ever associate criteria with that competency again. Archiving a course-level group blocks that course for that competency; archiving a leaf closes only that leaf to new criteria. More unarchival capabilities may be added after MVP. Archived groups do not count toward learner statuses (Decision 6).
    9. ``scope_code``: Derived from ``oel_tagging_tag_id``, set on the root group and null on every other group, whether or not the root is archived. It exists so the database can hold at most one root per competency, the same way Decision 3's derived ``scope_code`` holds at most one live profile per scope.
 
    Example: A root group uses "OR" with two child groups.
@@ -166,7 +166,7 @@ Decision
 
       1. ``Grade``: ``{"op": "gte", "value": 0.75, "scale": "percent"}``. Allowed ``op`` values: ``gte``, ``lte``, ``eq``. ``value`` must be a fraction between 0.0 and 1.0 inclusive, matching the platform's existing fractional grade representation, not a 0-100 scale.
 
-   7. ``archived``: Boolean, defaults to false. Set instead of deleting a criterion once a student status exists for it. Archived criteria are hidden from authoring and new associations but remain queryable, so existing learner status rows stay resolvable.
+   7. ``archived``: Boolean, defaults to false. Set instead of deleting a criterion once a student status exists for it. Archived criteria are hidden from authoring and new associations but remain queryable, so existing learner status rows stay resolvable. Archived criteria do not count toward learner statuses (Decision 6).
 
    Exactly one of the following holds for a given criterion, never both, never neither:
 
@@ -270,6 +270,7 @@ Decision
    - When a root group is recomputed, write the competency's ``StudentCompetencyStatus`` from it, mapping ``AttemptedNotDemonstrated`` to ``PartiallyAttempted`` because that table holds only ``Demonstrated`` and ``PartiallyAttempted``.
    - Then recompute each parent competency up the taxonomy, one level at a time. A parent's status is the better of two inputs: its own criteria result, which is its root group's status mapped the same way, and its sub-competency result, which is ``Demonstrated`` when every direct sub-competency is ``Demonstrated`` and ``PartiallyAttempted`` when at least one has a status. A competency with no criteria tree of its own gets a status row only through its sub-competencies; a competency with neither a root group nor a sub-competency with a status gets no row.
    - Every write only ever raises a stored status, and each level commits before the next is read. :ref:`openedx-learning-adr-0004` records why.
+   - An archived criterion is not evaluated when a grade is recorded, and a group is recomputed from its non-archived children only. Neither archiving nor the rollup lowers a stored status, including a status that a non-archived group or a competency earned through a child that is archived. Rows of archived criteria and groups are left unchanged. A status stored against an archived root group raises its competency's row and counts toward its parent competency. Archiving recomputes nothing itself: a learner's statuses reflect it the next time a grade raises a non-archived criterion's status in that group's subtree, or when an operator recomputes them.
 
    1. Add new database table for ``CompetencyMasteryStatuses`` with these columns:
 
@@ -490,3 +491,10 @@ Changelog
   supersedes the ordered, short-circuited evaluation the earlier text described. Decision 6's update flow now continues past the root group to the
   competency's own status row and up through parent competencies, and states what a
   competency with no criteria tree of its own receives.
+
+2026-11-06:
+
+* Amended Decision 6 for issue #815: a group is recomputed from its non-archived children only,
+  so an archived requirement or branch does not have to be met. A status recorded against an
+  archived criterion or group is kept. An archived root's stored status raises its competency's
+  row and counts toward its parent competency. Archiving by itself recomputes nothing.
