@@ -16,7 +16,7 @@ from organizations.models import Organization
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from openedx_catalog.models import CatalogCourse, CourseRun
+from openedx_catalog.models import CourseRun
 from openedx_learning.applets.cbe.api import _create_leaf_group
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
@@ -28,7 +28,7 @@ from openedx_learning.models import (
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
-from .utils import make_leaf_criterion, make_skill_family, usage_key
+from .utils import make_course_run, make_leaf_criterion, make_skill_family, make_tag, usage_key
 
 pytestmark = pytest.mark.django_db
 
@@ -73,17 +73,6 @@ def _user_client(api_client: APIClient, user) -> APIClient:
 def criterion_create_url(tag_id: int) -> str:
     """Return the create-criterion endpoint's path for `tag_id`, resolved through the URL name."""
     return reverse("cbe:criterion-create", kwargs={"tag_id": tag_id})
-
-
-def make_course_run(organization: Organization, course_code: str, run_code: str) -> CourseRun:
-    """Create a CourseRun distinct from the `course_run` fixture, for the different-course tests."""
-    catalog_course = CatalogCourse.objects.create(org=organization, course_code=course_code)
-    return CourseRun.objects.create(catalog_course=catalog_course, run_code=run_code)
-
-
-def make_tag(taxonomy: CompetencyTaxonomy, value: str, parent: Tag | None = None) -> Tag:
-    """Create a Tag on `taxonomy`, optionally under `parent`, for taxonomy-hierarchy tests."""
-    return Tag.objects.create(taxonomy=taxonomy, value=value, parent=parent)
 
 
 # What migration 0005 seeds the system default with. Asserted verbatim rather than imported, so
@@ -1501,17 +1490,26 @@ def test_a_repeated_course_keys_query_parameter_is_400(user_client: APIClient, t
     assert set(response.data) == {"course_keys"}
 
 
+@pytest.mark.parametrize("suffix", [
+    "+branch@draft",
+    "+branch@draft+version@aaaaaaaaaaaaaaaaaaaaaaaa",
+    "+version@aaaaaaaaaaaaaaaaaaaaaaaa",
+])
 def test_a_branch_qualified_course_key_matches_the_plain_course(
-    user_client: APIClient, tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+    user_client: APIClient,
+    tag: Tag,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+    suffix: str,
 ) -> None:
-    """A course key with a branch scopes the tree exactly as the plain course key does."""
+    """A course key with a branch or version scopes the tree exactly as the plain course key does."""
     leaf = _create_leaf_group(tag, course_run)
     object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
     CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
     key = str(course_run.course_key)
 
     plain = user_client.get(criteria_tree_url(tag.id), {"course_keys": key})
-    branched = user_client.get(criteria_tree_url(tag.id), {"course_keys": f"{key}+branch@draft"})
+    branched = user_client.get(criteria_tree_url(tag.id), {"course_keys": f"{key}{suffix}"})
 
     assert plain.status_code == branched.status_code == status.HTTP_200_OK
     assert plain.data["criteria_count"] == 1
@@ -2027,63 +2025,41 @@ def blocked_courses_url(tag_id: int, **params: str) -> str:
     return f"{url}?{urlencode(params)}" if params else url
 
 
-def collect_pages(client: APIClient, url: str) -> list[dict]:
-    """Follow `next` links from `url` and return every row across all pages."""
-    rows: list[dict] = []
+def collect_pages(client: APIClient, url: str) -> tuple[int, list[list[dict]]]:
+    """Follow `next` links from `url` and return the first page's count and each page's rows."""
+    pages: list[list[dict]] = []
+    count = None
     next_url: str | None = url
     while next_url:
         response = client.get(next_url)
         assert response.status_code == status.HTTP_200_OK
-        rows.extend(response.data["results"])
+        if count is None:
+            count = response.data["count"]
+        pages.append(response.data["results"])
         next_url = response.data["next"]
-    return rows
+    assert count is not None
+    return count, pages
 
 
-@pytest.mark.parametrize(
-    "claimant_and_queried",
-    [
-        pytest.param((1, 2), id="ancestor claim"),
-        pytest.param((2, 1), id="descendant claim"),
-        pytest.param((0, 2), id="grandparent claim"),
-        pytest.param((2, 0), id="grandchild claim"),
-    ],
-)
-def test_blocked_courses_reports_a_relative_claim(
-    user_client: APIClient,
-    competency_taxonomy: CompetencyTaxonomy,
-    course_run: CourseRun,
-    default_rule_profile: CompetencyRuleProfile,
-    claimant_and_queried: tuple[int, int],
-) -> None:
-    """A course where an ancestor or descendant at any depth has a criterion is reported, naming that relative."""
-    family = make_skill_family(competency_taxonomy)
-    claimant, queried = (family[index] for index in claimant_and_queried)
-    make_leaf_criterion(claimant, course_run, default_rule_profile, "p1")
-
-    response = user_client.get(blocked_courses_url(queried.id))
-
-    assert response.status_code == status.HTTP_200_OK
-    assert response.data["results"] == [{
-        "course_key": str(course_run.course_key),
-        "conflicting_tag_id": claimant.id,
-        "conflicting_tag_value": claimant.value,
-    }]
-
-
-def test_blocked_courses_ignores_a_sibling_claim(
+def test_blocked_courses_reports_a_relative_claim_with_the_row_shape(
     user_client: APIClient,
     competency_taxonomy: CompetencyTaxonomy,
     course_run: CourseRun,
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """A course claimed only by a sibling tag is not reported."""
-    _, _, inference, analysis = make_skill_family(competency_taxonomy)
-    make_leaf_criterion(analysis, course_run, default_rule_profile, "p1")
+    """A course an ancestor has a criterion in is reported in a paginated envelope, naming that ancestor."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
 
     response = user_client.get(blocked_courses_url(inference.id))
 
     assert response.status_code == status.HTTP_200_OK
-    assert response.data["results"] == []
+    assert set(response.data) == {"next", "previous", "count", "num_pages", "current_page", "start", "results"}
+    assert response.data["results"] == [{
+        "course_key": "course-v1:Org1+Python100+Fall2026",
+        "conflicting_tag_id": critical_thinking.id,
+        "conflicting_tag_value": "Critical Thinking",
+    }]
 
 
 def test_blocked_courses_ignores_an_unaffected_course(
@@ -2153,15 +2129,11 @@ def test_blocked_courses_paginates_without_repeats_or_gaps(
     for course_code in ("C300", "A100", "B200"):
         course = make_course_run(organization, course_code, "Run1")
         make_leaf_criterion(critical_thinking, course, default_rule_profile, "p1")
-    url = blocked_courses_url(inference.id, page_size="2")
+    count, pages = collect_pages(user_client, blocked_courses_url(inference.id, page_size="2"))
 
-    first_page = user_client.get(url)
-    rows = collect_pages(user_client, url)
-
-    assert first_page.data["count"] == 3
-    assert len(first_page.data["results"]) == 2
-    assert first_page.data["next"] is not None
-    assert [row["course_key"] for row in rows] == [
+    assert count == 3
+    assert [len(page) for page in pages] == [2, 1]
+    assert [row["course_key"] for page in pages for row in page] == [
         "course-v1:Org1+A100+Run1", "course-v1:Org1+B200+Run1", "course-v1:Org1+C300+Run1",
     ]
 
@@ -2178,16 +2150,48 @@ def test_blocked_courses_filters_before_paginating(
         course = make_course_run(organization, course_code, "Run1")
         make_leaf_criterion(critical_thinking, course, default_rule_profile, "p1")
     requested = "course-v1:Org1+D400+Run1,course-v1:Org1+A100+Run1,course-v1:Org1+C300+Run1"
-    url = blocked_courses_url(inference.id, course_keys=requested, page_size="2")
+    count, pages = collect_pages(user_client, blocked_courses_url(inference.id, course_keys=requested, page_size="2"))
 
-    first_page = user_client.get(url)
-    rows = collect_pages(user_client, url)
-
-    assert first_page.data["count"] == 3
-    assert len(first_page.data["results"]) == 2
-    assert [row["course_key"] for row in rows] == [
+    assert count == 3
+    assert [len(page) for page in pages] == [2, 1]
+    assert [row["course_key"] for page in pages for row in page] == [
         "course-v1:Org1+A100+Run1", "course-v1:Org1+C300+Run1", "course-v1:Org1+D400+Run1",
     ]
+
+
+def test_blocked_courses_default_page_size_is_100(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Without page_size, a page holds 100 rows and the 101st is on the next page."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    for i in range(101):
+        course = make_course_run(organization, f"C{i}", "Run1")
+        make_leaf_criterion(critical_thinking, course, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["count"] == 101
+    assert len(response.data["results"]) == 100
+    assert response.data["next"] is not None
+
+
+def test_blocked_courses_page_out_of_range_404s(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A page past the last one is reported as not found."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id, page="999"))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 def test_blocked_courses_unknown_tag_404s(user_client: APIClient) -> None:
@@ -2214,14 +2218,17 @@ def test_blocked_courses_without_view_access_403s(
     course_run: CourseRun,
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """A non-staff caller may not read blocked courses for a competency on a disabled taxonomy."""
+    """
+    A non-staff caller may not read blocked courses for a competency on a disabled taxonomy, even
+    with garbage in course_keys: permission is checked before course_keys is parsed.
+    """
     _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
     make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
     competency_taxonomy.enabled = False
     competency_taxonomy.save()
     api_client.force_authenticate(user=user)
 
-    response = api_client.get(blocked_courses_url(inference.id))
+    response = api_client.get(blocked_courses_url(inference.id, course_keys="not-a-key"))
 
     assert response.status_code == status.HTTP_403_FORBIDDEN
     assert "results" not in response.data
@@ -2254,19 +2261,6 @@ def test_blocked_courses_malformed_course_key_400s(
     assert "not-a-key" in str(response.data["course_keys"])
 
 
-def test_blocked_courses_version_only_course_key_400s(
-    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy,
-) -> None:
-    """A version-only course key parses but can't drop its version, so it is rejected like a malformed one."""
-    _, _, inference, _ = make_skill_family(competency_taxonomy)
-    version_only = "course-v1:version@aaaaaaaaaaaaaaaaaaaaaaaa"
-
-    response = user_client.get(blocked_courses_url(inference.id, course_keys=version_only))
-
-    assert response.status_code == status.HTTP_400_BAD_REQUEST
-    assert version_only in str(response.data["course_keys"])
-
-
 @pytest.mark.parametrize("course_keys", ["", ",,"])
 def test_blocked_courses_blank_course_keys_is_an_empty_page(
     user_client: APIClient,
@@ -2284,19 +2278,6 @@ def test_blocked_courses_blank_course_keys_is_an_empty_page(
     assert response.status_code == status.HTTP_200_OK
     assert response.data["count"] == 0
     assert response.data["results"] == []
-
-
-def test_blocked_courses_more_than_the_limit_of_course_keys_400s(
-    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy,
-) -> None:
-    """More than 100 course_keys entries is rejected, keyed by course_keys."""
-    _, _, inference, _ = make_skill_family(competency_taxonomy)
-    too_many = ",".join(f"course-v1:Org+Course{i}+Run" for i in range(101))
-
-    response = user_client.get(blocked_courses_url(inference.id, course_keys=too_many))
-
-    assert response.status_code == status.HTTP_400_BAD_REQUEST
-    assert set(response.data) == {"course_keys"}
 
 
 def test_blocked_courses_repeated_course_keys_parameter_400s(
@@ -2325,7 +2306,7 @@ def test_blocked_courses_matches_a_branch_qualified_course_key(
     course_run: CourseRun,
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """A course key with a branch matches its plain course, which is reported under the plain key."""
+    """A branch-qualified key matches its plain course, and the row reports the plain key."""
     _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
     make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
 
@@ -2334,7 +2315,7 @@ def test_blocked_courses_matches_a_branch_qualified_course_key(
     )
 
     assert response.status_code == status.HTTP_200_OK
-    assert [row["course_key"] for row in response.data["results"]] == [str(course_run.course_key)]
+    assert [row["course_key"] for row in response.data["results"]] == ["course-v1:Org1+Python100+Fall2026"]
 
 
 def test_blocked_courses_strips_whitespace_around_course_keys(

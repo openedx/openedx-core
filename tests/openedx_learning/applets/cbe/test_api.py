@@ -17,7 +17,7 @@ from opaque_keys.edx.keys import CourseKey
 from organizations.models import Organization
 from rules.permissions import permissions as rule_permissions
 
-from openedx_catalog.models import CatalogCourse, CourseRun
+from openedx_catalog.models import CourseRun
 from openedx_learning.api import (
     BlockedCourse,
     CompetencyCriteriaGroupArchivedError,
@@ -51,7 +51,7 @@ from openedx_learning.models import (
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
-from .utils import make_leaf_criterion, make_skill_family, usage_key
+from .utils import make_course_run, make_leaf_criterion, make_skill_family, make_tag, usage_key
 
 pytestmark = pytest.mark.django_db
 
@@ -103,22 +103,11 @@ def test_create_competency_taxonomy_defaults() -> None:
     assert result.export_id
 
 
-def make_course_run(organization: Organization, course_code: str, run_code: str) -> CourseRun:
-    """Create a CourseRun distinct from the `course_run` fixture, for the same-tag-different-course tests."""
-    catalog_course = CatalogCourse.objects.create(org=organization, course_code=course_code)
-    return CourseRun.objects.create(catalog_course=catalog_course, run_code=run_code)
-
-
 def course_key(course_run: CourseRun) -> CourseKey:
     """Return `course_run`'s course key, narrowed for mypy; a saved CourseRun always has one."""
     key = course_run.course_key
     assert key is not None
     return key
-
-
-def make_tag(taxonomy: CompetencyTaxonomy, value: str, parent: Tag | None = None) -> Tag:
-    """Create a Tag on `taxonomy`, optionally under `parent`, for taxonomy-hierarchy tests."""
-    return Tag.objects.create(taxonomy=taxonomy, value=value, parent=parent)
 
 
 def test_is_competency_taxonomy() -> None:
@@ -1533,6 +1522,24 @@ def test_get_competency_criteria_tree_course_keys_unresolvable_key_is_silently_i
     assert tree.criteria_count == 0
 
 
+def test_get_competency_criteria_tree_course_keys_branch_qualified_key_matches_the_plain_course(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A branch-qualified key, passed straight to the API, scopes to its plain course's groups."""
+    criterion = make_leaf_criterion(tag, course_run, default_rule_profile, "p1")
+    leaf = criterion.group
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    branched_key = CourseKey.from_string("course-v1:Org1+Python100+Fall2026+branch@draft")
+
+    tree = get_competency_criteria_tree(tag, [branched_key])
+
+    assert {g.id for g in tree.groups} == {root.id, course_level.id, leaf.id}
+    assert [c.id for c in tree.criteria] == [criterion.id]
+
+
 def test_get_competency_criteria_tree_course_keys_scoped_to_a_course_with_nothing(
     tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
@@ -1755,12 +1762,15 @@ def test_get_courses_with_relative_criteria_single_match(
 def test_get_courses_with_relative_criteria_ties_break_on_the_lowest_tag_id(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """When two of the given tags both have a live criterion in the same course, the lower id tag wins."""
+    """
+    When two of the given tags both have a live criterion in the same course, the lower id tag wins,
+    even when its criterion was created later.
+    """
     first = make_tag(competency_taxonomy, "First Relative")
     second = make_tag(competency_taxonomy, "Second Relative")
     assert first.id < second.id
-    make_leaf_criterion(first, course_run, default_rule_profile, "p1")
     make_leaf_criterion(second, course_run, default_rule_profile, "p2")
+    make_leaf_criterion(first, course_run, default_rule_profile, "p1")
 
     result = get_courses_with_relative_criteria([second.id, first.id])
 
@@ -2374,23 +2384,24 @@ def test_get_blocked_courses_is_empty_for_a_tag_with_no_relatives(tag: Tag) -> N
     assert get_blocked_courses(tag) == []
 
 
-def test_get_blocked_courses_narrows_to_the_requested_course_keys(
-    competency_taxonomy: CompetencyTaxonomy,
-    course_run: CourseRun,
-    organization: Organization,
-    default_rule_profile: CompetencyRuleProfile,
+def test_get_blocked_courses_and_create_competency_criterion_agree_on_a_conflict(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """Only the requested courses come back, even when others are blocked too."""
-    cognitive_skills, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
-    course_y = make_course_run(organization, "Python200", "Fall2026")
-    course_z = make_course_run(organization, "Python300", "Fall2026")
+    """A course the read reports as blocked for a tag is one the write rejects a criterion for."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
     make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
-    make_leaf_criterion(cognitive_skills, course_y, default_rule_profile, "p1")
-    make_leaf_criterion(critical_thinking, course_z, default_rule_profile, "p1")
 
-    rows = get_blocked_courses(inference, course_keys=[course_key(course_run), course_key(course_y)])
-
-    assert {row.course_key for row in rows} == {course_key(course_run), course_key(course_y)}
+    assert get_blocked_courses(inference) == [
+        BlockedCourse(
+            course_key=course_key(course_run),
+            conflicting_tag_id=critical_thinking.id,
+            conflicting_tag_value=critical_thinking.value,
+        ),
+    ]
+    group = _create_leaf_group(inference, course_run)
+    with pytest.raises(ValidationError) as exc_info:
+        create_competency_criterion(group, usage_key(course_run, "p2"), course_run=course_run)
+    assert "tag_id" in exc_info.value.message_dict
 
 
 def test_get_blocked_courses_sorts_rows_by_course_key(

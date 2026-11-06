@@ -194,7 +194,9 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
     Omitting the parameter returns every reachable group. Supplying it returns the groups above
     any course plus the groups of the named runs, ordered with the groups above any course first
     and then by the order requested; keys that match no run are ignored, and an empty value
-    returns only the groups above any course. The parameter may be supplied once.
+    returns only the groups above any course. The parameter may be supplied once. A key's branch
+    and version are ignored, so a branch- or version-qualified key scopes to its plain course, and
+    a version-only key is a 400.
 
     ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is the number
     under every reachable group regardless of ``course_keys``, so a client scoped down to zero
@@ -288,10 +290,13 @@ class CompetencyBlockedCoursesView(generics.GenericAPIView):
 
     ``GET api/cbe/v1/competencies/<tag_id>/blocked-courses/`` returns those courses sorted by
     course key. ``course_keys`` (comma-separated, supplied once) narrows it; a blank value returns
-    an empty page. The result is an authoring hint: the create-criterion endpoint still enforces
-    the rule. 401 for an unauthenticated caller, 403 if the caller can't view the competency's
-    taxonomy, 404 if ``tag_id`` isn't a competency tag or ``page`` is out of range, 400 if
-    ``course_keys`` is malformed, given more than once, or names more than ``MAX_COURSE_KEYS`` keys.
+    an empty page. A key's branch and version are ignored, so a branch- or version-qualified key
+    matches its plain course and each row carries the plain key; a version-only key is a 400. The
+    result is an authoring hint: the create-criterion endpoint still enforces the rule.
+
+    An unauthenticated caller gets 401. A caller who can't view the competency's taxonomy gets 403.
+    A ``tag_id`` that isn't a competency tag, or a ``page`` out of range, is a 404. A ``course_keys``
+    that is malformed, given more than once, or names more than 100 keys is a 400.
 
     UNSTABLE: the criteria-authoring family is incomplete, so this response shape may change
     without a deprecation cycle.

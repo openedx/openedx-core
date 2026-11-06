@@ -6,7 +6,7 @@ from __future__ import annotations
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey, UsageKey
-from opaque_keys.edx.locator import CourseLocator, LibraryLocator
+from opaque_keys.edx.locator import CourseLocator
 from rest_framework import serializers
 
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile, LogicOperator
@@ -178,7 +178,7 @@ MAX_COURSE_KEYS = 100
 
 
 class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
-    """Query params for the criteria-tree read endpoint."""
+    """Query params shared by the criteria-tree and blocked-courses read endpoints."""
 
     course_keys = serializers.CharField(required=False, allow_blank=True)
 
@@ -200,9 +200,10 @@ class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
         for entry in entries:
             try:
                 key = CourseKey.from_string(entry)
-                # CourseKey's type lacks for_branch(); mypy needs the narrowing to the two base locators that define it.
-                if isinstance(key, (CourseLocator, LibraryLocator)):
-                    key = key.for_branch(None).version_agnostic()
+                # Match the stored plain course key: drop branch and version; this also rejects a version-only key.
+                # The isinstance narrows CourseKey, which mypy does not know has for_branch().
+                if isinstance(key, CourseLocator):
+                    key = key.for_branch(None)
             except InvalidKeyError as exc:
                 raise serializers.ValidationError(
                     _("'%(entry)s' is not a valid course key.") % {"entry": entry}
