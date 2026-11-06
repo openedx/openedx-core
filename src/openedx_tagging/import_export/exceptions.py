@@ -84,23 +84,18 @@ class ArchivedTagCollisionError(TagImportError):
     """
     Exception raised when a row's value, id, previous_id or parent_id matches an archived tag or a tag under one.
 
-    Those tags are no longer part of the taxonomy, but they still hold their value and id.
     ``row`` is the row's 1-based position among the file's data rows.
     """
 
     def __init__(self, row: int, field: str, value: str, under_archived: bool = False, **kargs):
         super().__init__(**kargs)
         if under_archived:
-            message = _(
-                "Row {row}'s {field} ({value}) belongs to a tag under an archived tag in this taxonomy. "
-                "Use a different {field}."
-            )
+            message = _("Row {row}'s {field} ({value}) belongs to a tag under an archived tag in this taxonomy.")
         else:
-            message = _(
-                "Row {row}'s {field} ({value}) belongs to an archived tag in this taxonomy. "
-                "Use a different {field}."
-            )
-        self.message = message.format(row=row, field=field, value=value)
+            message = _("Row {row}'s {field} ({value}) belongs to an archived tag in this taxonomy.")
+        # previous_id names the one tag the row means to rename, so no other value would do.
+        advice = _("An import cannot change it.") if field == "previous_id" else _("Use a different {field}.")
+        self.message = f"{message} {advice}".format(row=row, field=field, value=value)
 
 
 class ParentCycleError(TagImportError):

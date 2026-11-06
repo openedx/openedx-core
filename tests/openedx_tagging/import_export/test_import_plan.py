@@ -1,6 +1,8 @@
 """
 Test for import_plan functions
 """
+from unittest.mock import patch
+
 import ddt  # type: ignore[import]
 from django.db import transaction
 from django.test.testcases import TestCase
@@ -1057,44 +1059,32 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
     def _archive(self, external_id: str) -> None:
         Tag.objects.filter(taxonomy=self.taxonomy, external_id=external_id).update(archived=True)
 
-    def test_generate_actions_archived_value_rejected(self) -> None:
+    @ddt.data(
+        (TagItem(id='tag_50', value='Tag 3'), "value (Tag 3)", "Use a different value."),
+        (TagItem(id='tag_50', value=' Tag 3 '), "value (Tag 3)", "Use a different value."),
+        (TagItem(id='TAG_3', value='Brand New'), "id (TAG_3)", "Use a different id."),
+        (TagItem(id='tag_50', value='Brand New', parent_id='tag_3'), "parent_id (tag_3)", "Use a different parent_id."),
+        (
+            TagItem(id='tag_50', value='Brand New', previous_id='tag_3'),
+            "previous_id (tag_3)",
+            "An import cannot change it.",
+        ),
+    )
+    @ddt.unpack
+    def test_generate_actions_archived_tag_rejected(self, row: TagItem, field_and_value: str, advice: str) -> None:
         self._archive('tag_3')
-        self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value='Tag 3')])
+        self.import_plan.generate_actions(tags=[row])
         assert len(self.import_plan.errors) == 1
         error = self.import_plan.errors[0]
         assert isinstance(error, ArchivedTagCollisionError)
-        assert str(error) == (
+        assert str(error) == f"Row 1's {field_and_value} belongs to an archived tag in this taxonomy. {advice}"
+        assert not self.import_plan.actions
+
+    def test_generate_actions_one_archived_error_per_row(self) -> None:
+        self._archive('tag_3')
+        self.import_plan.generate_actions(tags=[TagItem(id='tag_3', value='Tag 3', parent_id='tag_3')])
+        assert [str(error) for error in self.import_plan.errors] == [
             "Row 1's value (Tag 3) belongs to an archived tag in this taxonomy. Use a different value."
-        )
-        assert not self.import_plan.actions
-
-    def test_generate_actions_archived_value_different_case_rejected(self) -> None:
-        self._archive('tag_3')
-        self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value='TAG 3')])
-        assert [str(error) for error in self.import_plan.errors] == [
-            "Row 1's value (TAG 3) belongs to an archived tag in this taxonomy. Use a different value."
-        ]
-
-    def test_generate_actions_archived_id_rejected(self) -> None:
-        self._archive('tag_3')
-        self.import_plan.generate_actions(tags=[TagItem(id='TAG_3', value='Brand New')])
-        assert [str(error) for error in self.import_plan.errors] == [
-            "Row 1's id (TAG_3) belongs to an archived tag in this taxonomy. Use a different id."
-        ]
-        assert not self.import_plan.actions
-
-    def test_generate_actions_archived_previous_id_rejected(self) -> None:
-        self._archive('tag_3')
-        self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value='Brand New', previous_id='tag_3')])
-        assert [str(error) for error in self.import_plan.errors] == [
-            "Row 1's previous_id (tag_3) belongs to an archived tag in this taxonomy. Use a different previous_id."
-        ]
-
-    def test_generate_actions_archived_parent_id_rejected(self) -> None:
-        self._archive('tag_3')
-        self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value='Brand New', parent_id='tag_3')])
-        assert [str(error) for error in self.import_plan.errors] == [
-            "Row 1's parent_id (tag_3) belongs to an archived tag in this taxonomy. Use a different parent_id."
         ]
 
     def test_generate_actions_reports_every_archived_collision(self) -> None:
@@ -1113,6 +1103,7 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         assert not self.import_plan.actions
 
     @ddt.data(
+        ('Photosynthesis', 'PHOTOSYNTHESIS'),  # every supported collation folds these
         ('Straße', 'STRASSE'),  # casefold folds these; SQLite NOCASE does not
         ('Café', 'Cafe'),  # MySQL's collation folds these; casefold does not
     )
@@ -1124,7 +1115,9 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
 
         self.import_plan.generate_actions(tags=[TagItem(id='tag_50', value=row_value)])
 
-        assert bool(self.import_plan.errors) == collides
+        # On SQLite the Café case collides on neither side; it only bites on MySQL.
+        archived_errors = [e for e in self.import_plan.errors if isinstance(e, ArchivedTagCollisionError)]
+        assert bool(archived_errors) == collides
 
     @ddt.data(
         ('id', TagItem(id='tag_4', value='Renamed Tag 4')),
@@ -1142,11 +1135,38 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         ]
         assert not self.import_plan.actions
 
-    def test_generate_actions_replace_keeps_archived_tags(self) -> None:
+    def test_generate_actions_replace_keeps_archived_subtree(self) -> None:
         self._archive('tag_3')
         tags = [TagItem(id='tag_1', value='Tag 1'), TagItem(id='tag_2', value='Tag 2', parent_id='tag_1')]
         self.import_plan.generate_actions(tags=tags, replace=True)
         assert not self.import_plan.errors
         deleted_ids = {action.tag.id for action in self.import_plan.actions if isinstance(action, DeleteTag)}
-        # tag_4 is not archived, but it sits under the archived tag_3, so it is out of the taxonomy too.
+        # Neither the archived tag_3 nor tag_4, which is unarchived but sits under it, is deleted.
         assert not deleted_ids
+
+    @ddt.data(False, True)
+    def test_generate_actions_with_many_archived_tags(self, replace: bool) -> None:
+        # More archived tags than SQLite allows terms in one expression tree.
+        Tag.objects.bulk_create(
+            Tag(taxonomy=self.taxonomy, value=f"Old {i}", external_id=f"old_{i}", lineage=f"Old {i}\t", archived=True)
+            for i in range(1100)
+        )
+        tags = [TagItem(id=tag.external_id, value=tag.value) for tag in self.taxonomy.tag_set.unarchived()]
+        tags.append(TagItem(id='tag_50', value='Fifty'))
+
+        self.import_plan.generate_actions(tags=tags, replace=replace)
+
+        assert not self.import_plan.errors
+        assert not [action for action in self.import_plan.actions if isinstance(action, DeleteTag)]
+
+    def test_generate_actions_archived_collision_in_last_chunk(self) -> None:
+        self._archive('tag_3')
+        tags = [TagItem(id=f'tag_{i}', value=f'New {i}') for i in range(50, 55)]
+        tags.append(TagItem(id='tag_60', value='Tag 3'))
+
+        with patch.object(TagImportPlan, 'IN_CHUNK_SIZE', 2):
+            self.import_plan.generate_actions(tags=tags)
+
+        assert [str(error) for error in self.import_plan.errors] == [
+            "Row 6's value (Tag 3) belongs to an archived tag in this taxonomy. Use a different value."
+        ]
