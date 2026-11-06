@@ -185,9 +185,9 @@ class Asset(PublishableEntityMixin):
     @property
     def used_by_draft_versions(self) -> list[PublishableEntityVersion]:
         """
-        Get a list of all the draft versions of any ``PublishableEntity``s whose
-        current draft version depends on this asset. This only works if you load
-        a set of assets via::
+        Get a list of all the draft versions of any ``PublishableEntity``
+        instances whose current draft version depends on this asset. This only
+        works if you load a set of assets via::
 
             get_assets(..., draft=True, used_by_draft_versions=True)
         """

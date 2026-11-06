@@ -217,25 +217,25 @@ def create_asset_and_version(
         restored.
     allow_scripts: for HTML assets only, set this ``True`` to serve the asset in
         a more permissive sandbox that allows referencing JavaScript files.
-    overwrite_deleted: if this asset has the same name as a deleted asset, then
-        un-delete it and create a new version of it.
+    overwrite_deleted: if this asset has the same name as a deleted asset or a
+        "placeholder" asset (an asset with no versions at all), then un-delete
+        it and create a new version of it.
     """
     learning_package_id = _get_learning_package_id(learning_package)
     if created is None:
         created = datetime.now(tz=UTC)
     if title is None:
         title = path
-    try:
-        with atomic():
+    with atomic():
+        try:
             asset = create_asset(
                 learning_package_id, path, created, created_by, permissions=permissions, allow_scripts=allow_scripts
             )
             asset_version = create_asset_version(
                 asset, version_num=1, title=title, created=created, created_by=created_by, media=media
             )
-    except AssetAlreadyExists:
-        if overwrite_deleted:
-            with atomic():
+        except AssetAlreadyExists:
+            if overwrite_deleted:
                 asset = Asset.objects.get(learning_package_id=learning_package_id, path=path)
                 if asset.versioning.draft is None:
                     # Reset 'allow_scripts' to False unless specified, and update permissions iff specified:
@@ -245,7 +245,7 @@ def create_asset_and_version(
                     )
                     asset.refresh_from_db()
                     return (asset, asset_version)
-        raise
+            raise
 
     return (asset, asset_version)
 
