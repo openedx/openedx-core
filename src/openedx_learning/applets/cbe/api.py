@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any, Iterable, Sequence, cast
 
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
-from django.db import connection, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import F, Q, QuerySet
 from django.db.transaction import TransactionManagementError
 from django.utils.translation import gettext_lazy as _
@@ -1281,10 +1281,17 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
     a create or a criterion delete for that competency takes first, so those wait until this call
     commits.
 
+    A learner status written concurrently, after this call's progress check, makes the call
+    archive the subtree instead of deleting it, provided a second progress check finds a status on
+    the subtree. If it finds none, the failure came from outside the subtree, such as a status that
+    reached an ancestor group during the cascade, and the original ``IntegrityError`` is re-raised
+    with nothing changed. A caller may retry: the retry re-checks, then deletes or archives.
+
     Raises CompetencyCriteriaGroup.DoesNotExist if no such group exists (including one deleted
     concurrently), Tag.DoesNotExist if its competency tag was deleted concurrently, PermissionDenied
-    if ``user`` may not tag the course's object, and ValidationError (keyed "group_id") if `group_id`
-    names a root CompetencyCriteriaGroup or a group with no course-level group in its lineage.
+    if ``user`` may not tag the course's object, ValidationError (keyed "group_id") if `group_id`
+    names a root CompetencyCriteriaGroup or a group with no course-level group in its lineage, and
+    ``IntegrityError`` when the delete races with a write outside the target subtree.
     """
     group = CompetencyCriteriaGroup.objects.select_related("tag__taxonomy").get(pk=group_id)
     course = resolve_competency_criteria_group_course(group)
@@ -1302,18 +1309,31 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
         target_group = CompetencyCriteriaGroup.objects.get(pk=group_id)
         subtree_ids, criteria = _competency_criteria_subtree(target_group)
         criterion_ids = [criterion.pk for criterion in criteria]
-        has_progress = _subtree_has_learner_progress(subtree_ids, criterion_ids)
-        if has_progress:
+        archived = _subtree_has_learner_progress(subtree_ids, criterion_ids)
+        if not archived:
+            try:
+                # Savepoint: a learner status committed after the progress check above makes the delete
+                # fail on its PROTECT foreign key, and only this block must roll back.
+                with transaction.atomic():
+                    parent_group = target_group.parent
+                    target_group.delete()
+                    _delete_orphaned_object_tags({criterion.object_tag_id for criterion in criteria})
+                    if parent_group is not None:
+                        _cascade_remove_from_group(parent_group, user)
+            except IntegrityError:
+                # Archive only if the failure traces to the subtree's own progress. A status on an ancestor
+                # group, or any other integrity failure, would not be fixed by archiving the subtree. The
+                # re-query is needed because the status may have landed after the pre-check above.
+                if not _subtree_has_learner_progress(subtree_ids, criterion_ids):
+                    raise
+                archived = True
+                # The rolled-back block may have cleared the pk of in-memory instances it had already deleted.
+                target_group = CompetencyCriteriaGroup.objects.get(pk=group_id)
+        if archived:
             _archive_competency_criteria_subtree(target_group, subtree_ids, criteria, user)
-        else:
-            parent_group = target_group.parent
-            target_group.delete()
-            _delete_orphaned_object_tags({criterion.object_tag_id for criterion in criteria})
-            if parent_group is not None:
-                _cascade_remove_from_group(parent_group, user)
         return GroupDeletionResult(
             id=group_id,
-            archived=has_progress,
+            archived=archived,
             cascaded_group_count=len(subtree_ids) - 1,
             cascaded_criteria_count=len(criteria),
         )

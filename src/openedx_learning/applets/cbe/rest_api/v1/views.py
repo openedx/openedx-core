@@ -304,6 +304,13 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
             raise NotFound() from exc
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
+        except IntegrityError as exc:
+            # ProtectedError is a subclass. The API archives a race on the target subtree's own progress itself, so
+            # this is a conflict it could not attribute to that subtree, such as a status that reached an ancestor
+            # group. A retry re-checks and then deletes or archives accordingly.
+            raise CompetencyCriteriaConflict(
+                _("The delete conflicted with a concurrent change. Retry the DELETE.")
+            ) from exc
         return Response(
             {
                 "id": result.id,

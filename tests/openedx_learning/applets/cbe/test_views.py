@@ -32,6 +32,7 @@ from openedx_learning.models import (
     LogicOperator,
     MasteryStatus,
     RuleType,
+    StudentCompetencyCriteriaGroupStatus,
     StudentCompetencyCriterionStatus,
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
@@ -2800,6 +2801,28 @@ def test_group_delete_maps_a_validation_error_from_the_api_to_400(
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert "group_id" in response.json()
+
+
+def test_group_delete_whose_error_is_not_a_learner_race_on_the_subtree_is_a_retryable_409(
+    user_client: APIClient, user, tag: Tag, course_run: CourseRun, now: datetime,
+) -> None:
+    """
+    A status that reaches an ancestor group during the delete makes the DELETE fail outside the target
+    subtree. The view answers a 409 telling the caller to retry, and nothing is deleted or archived.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=course_level, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    with mock.patch.object(cbe_api, "_group_has_learner_progress", return_value=False):
+        response = user_client.delete(group_delete_url(tag.id, leaf.id))
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert str(response.data["detail"]) == "The delete conflicted with a concurrent change. Retry the DELETE."
+    assert CompetencyCriteriaGroup.objects.filter(id__in=[leaf.id, course_level.id], archived=False).count() == 2
 
 
 @pytest.fixture(name="checked_object_ids")
