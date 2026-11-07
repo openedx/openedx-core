@@ -1333,6 +1333,7 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
                 # fail on its PROTECT foreign key, and only this block must roll back.
                 with transaction.atomic():
                     parent_group = target_group.parent
+                    _set_history_user(target_group, user)
                     target_group.delete()
                     _delete_orphaned_object_tags({criterion.object_tag_id for criterion in criteria})
                     if parent_group is not None:

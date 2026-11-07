@@ -182,6 +182,19 @@ def test_subtree_archive_records_the_acting_user_in_history(
     assert _latest_history_user("HistoricalCompetencyCriterion", criterion.id) == user
 
 
+def test_hard_delete_records_the_acting_user_on_the_targets_deletion_history(
+    user, *, tag: Tag, course_run: CourseRun,
+) -> None:
+    """The history row written when the target group is deleted carries the acting user."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    target_id = target.id
+
+    delete_or_archive_competency_criteria_group(target_id, user)
+
+    assert _latest_history_user("HistoricalCompetencyCriteriaGroup", target_id) == user
+
+
 def test_repeat_delete_on_an_archived_subtree_writes_no_history(
     user, *, tag: Tag, course_run: CourseRun, object_tag: ObjectTag,
     default_rule_profile: CompetencyRuleProfile, now: datetime,
