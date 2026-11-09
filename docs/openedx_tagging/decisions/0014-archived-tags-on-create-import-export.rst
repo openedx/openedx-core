@@ -16,8 +16,8 @@ Context
 
 Competency-based education (CBE) records learner mastery against tags. Deleting a tag would
 destroy the history that points at it, so the approved design on `#655`_ archives a tag that
-learner mastery depends on instead of deleting it (see also `openedx_learning ADR 0003
-<../../openedx_learning/decisions/0003-competency-criteria-versioning.rst>`_, decision 3).
+learner mastery depends on instead of deleting it (see also :ref:`openedx_learning ADR 0003
+<openedx-learning-adr-0003>`, decision 3).
 `#776`_ adds the ``Tag.archived`` flag, `#778`_ hides archived tags from the read paths and the
 export through ``TagQuerySet.unarchived()``, and `#780`_ turns a tag delete into an archive when
 something depends on the tag.
@@ -25,7 +25,8 @@ something depends on the tag.
 An archived tag stays in the database and keeps its ``value`` and ``external_id``. The
 per-taxonomy ``unique_together`` constraints on ``(taxonomy, value)`` and
 ``(taxonomy, external_id)`` have no exception for archived rows, so both values stay taken.
-Nothing in the application can restore an archived tag; only a direct database edit can.
+No API function or REST endpoint can restore an archived tag. An operator can still clear ``archived``
+in the Django admin, as "Known limitations" describes.
 
 This ADR records how the paths that write tags into a taxonomy treat an archived tag: creating a
 tag (``Taxonomy.add_tag``, ``add_tag_to_taxonomy`` and the REST create endpoint), importing a file
@@ -103,7 +104,7 @@ Known limitations
   archive-or-delete decision of `#780`_, a replace import can hard-delete a tag that learner mastery
   depends on. The recommended shape is one decision for the whole delete set, made inside the
   import's ``execute`` transaction.
-- Course import reuses ``TagImportPlan`` (`ADR 0011 <0011-cross-instance-taxonomy-identity.rst>`_).
+- Course import reuses ``TagImportPlan`` (:ref:`ADR 0011 <openedx-tagging-adr-0011>`).
   A course whose tags match an archived tag on the target instance therefore fails its criteria
   import with this ADR's plan error, although the course author cannot change the taxonomy. ADR
   0011 should be amended for this case separately.

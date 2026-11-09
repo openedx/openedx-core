@@ -75,8 +75,7 @@ def import_tags(
     Ex. Given a taxonomy with `tag_1`, `tag_2` and `tag_3`. If there is only `tag_1`
     in the file (regardless of action), then `tag_2` and `tag_3` will be deleted
     if `replace=True`. A tag in an archived subtree when the plan is built is not deleted this way.
-    An archived tag whose parent is deleted is moved to the root, until the import's deletes
-    follow the archive-or-delete rule of #780.
+    An archived tag whose parent is deleted is moved to the root.
 
     A file row whose value, id, previous_id or parent_id belongs to a tag in an archived
     subtree is reported as an error, and nothing is imported.
