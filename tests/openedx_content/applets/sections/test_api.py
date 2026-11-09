@@ -153,9 +153,9 @@ class SectionsTestCase(ComponentTestCase):
         """
         Test the number of queries needed for each part of the sections API
         """
-        with self.assertNumQueries(43):
+        with self.assertNumQueries(42):
             section = self.create_section_with_subsections([self.subsection_1, self.subsection_2_v1])
-        with self.assertNumQueries(90):
+        with self.assertNumQueries(21):
             content_api.publish_from_drafts(
                 self.learning_package.id,
                 draft_qset=content_api.get_all_drafts(self.learning_package.id).filter(entity=section.id),

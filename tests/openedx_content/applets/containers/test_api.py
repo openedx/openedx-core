@@ -373,10 +373,10 @@ def test_create_container_queries(lp: LearningPackage, child_entity1: TestEntity
         "container_cls": TestContainer,
     }
     # The exact numbers here aren't too important - this is just to alert us if anything significant changes.
-    with django_assert_num_queries(35):
+    with django_assert_num_queries(34):
         containers_api.create_container_and_version(lp.id, container_code="c1", **base_args)
     # And try with a a container that has children:
-    with django_assert_num_queries(38):
+    with django_assert_num_queries(37):
         containers_api.create_container_and_version(lp.id, container_code="c2", **base_args, entities=[child_entity1])
 
 
@@ -943,7 +943,7 @@ def test_contains_unpublished_changes_queries(
         assert containers_api.contains_unpublished_changes(grandparent.id)
 
     # Publish grandparent and all its descendants:
-    with django_assert_num_queries(78):
+    with django_assert_num_queries(20):
         publish_entity(grandparent)
 
     # Tests:
@@ -1263,7 +1263,7 @@ def test_uninstalled_publish(
     """Simple test of publishing a container of uninstalled type, plus its child, and reviewing the publish log"""
     # Publish container_of_uninstalled_type (and child_entity1). Should not affect anything else,
     # but we should see "child_entity1" omitted from the subsequent publish.
-    with django_assert_num_queries(29):
+    with django_assert_num_queries(20):
         publish_log = publish_entity(container_of_uninstalled_type)
         # Nothing else should have been affected by the publish:
         assert list(publish_log.records.order_by("entity__pk").values_list("entity__entity_ref", flat=True)) == [
@@ -1301,7 +1301,7 @@ def test_deep_publish_log(
     )
     # Publish container_of_uninstalled_type (and child_entity1). Should not affect anything else,
     # but we should see "child_entity1" omitted from the subsequent publish.
-    with django_assert_num_queries(29):
+    with django_assert_num_queries(20):
         publish_log = publish_entity(container_of_uninstalled_type)
         # Nothing else should have been affected by the publish:
         assert list(publish_log.records.order_by("entity__pk").values_list("entity__entity_ref", flat=True)) == [
@@ -1310,7 +1310,7 @@ def test_deep_publish_log(
         ]
 
     # Publish great_grandparent. Should publish the whole tree.
-    with django_assert_num_queries(68):
+    with django_assert_num_queries(22):
         publish_log = publish_entity(great_grandparent)
         assert list(publish_log.records.order_by("entity__pk").values_list("entity__entity_ref", flat=True)) == [
             "child_entity2",
