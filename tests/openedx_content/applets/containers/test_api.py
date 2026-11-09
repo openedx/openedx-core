@@ -943,7 +943,7 @@ def test_contains_unpublished_changes_queries(
         assert containers_api.contains_unpublished_changes(grandparent.id)
 
     # Publish grandparent and all its descendants:
-    with django_assert_num_queries(80):
+    with django_assert_num_queries(78):
         publish_entity(grandparent)
 
     # Tests:
@@ -1263,7 +1263,7 @@ def test_uninstalled_publish(
     """Simple test of publishing a container of uninstalled type, plus its child, and reviewing the publish log"""
     # Publish container_of_uninstalled_type (and child_entity1). Should not affect anything else,
     # but we should see "child_entity1" omitted from the subsequent publish.
-    with django_assert_num_queries(30):
+    with django_assert_num_queries(29):
         publish_log = publish_entity(container_of_uninstalled_type)
         # Nothing else should have been affected by the publish:
         assert list(publish_log.records.order_by("entity__pk").values_list("entity__entity_ref", flat=True)) == [
@@ -1301,7 +1301,7 @@ def test_deep_publish_log(
     )
     # Publish container_of_uninstalled_type (and child_entity1). Should not affect anything else,
     # but we should see "child_entity1" omitted from the subsequent publish.
-    with django_assert_num_queries(30):
+    with django_assert_num_queries(29):
         publish_log = publish_entity(container_of_uninstalled_type)
         # Nothing else should have been affected by the publish:
         assert list(publish_log.records.order_by("entity__pk").values_list("entity__entity_ref", flat=True)) == [
@@ -1310,7 +1310,7 @@ def test_deep_publish_log(
         ]
 
     # Publish great_grandparent. Should publish the whole tree.
-    with django_assert_num_queries(71):
+    with django_assert_num_queries(68):
         publish_log = publish_entity(great_grandparent)
         assert list(publish_log.records.order_by("entity__pk").values_list("entity__entity_ref", flat=True)) == [
             "child_entity2",

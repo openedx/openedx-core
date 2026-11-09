@@ -2,6 +2,7 @@
 Models relating to the creation and management of Draft information.
 """
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
 from django.db.models import F, Q
 from django.utils.translation import gettext_lazy as _
@@ -86,6 +87,28 @@ class Draft(models.Model):
     def log_record(self):
         return self.draft_log_record
 
+    def has_unpublished_changes(self) -> bool:
+        """
+        Return whether this Draft differs from what is Published for its entity.
+
+        This is the Python equivalent of
+        :meth:`DraftQuerySet.with_unpublished_changes` for a single Draft, and
+        the two must agree. It requires the Draft to have been fetched with at
+        least ``select_related("entity__published")``, or it will make extra
+        queries.
+
+        A Draft has unpublished changes if its version differs from the
+        Published version, where "no Published row" counts as a Published
+        version of None. That means a soft-delete that has already been
+        published (both None) is *not* an unpublished change, but an
+        unpublished soft-delete (Draft None, Published not None) is.
+        """
+        try:
+            published_version_id = self.entity.published.version_id  # pylint: disable=no-member
+        except ObjectDoesNotExist:
+            published_version_id = None
+        return self.version_id != published_version_id
+
     class DraftQuerySet(models.QuerySet):
         """
         Custom QuerySet/Manager so we can chain common queries.
@@ -104,6 +127,9 @@ class Draft(models.Model):
             this method would return only the changed Component, and not
             the Unit. (We can add this as an optional flag later if we
             want.)
+
+            See :meth:`Draft.has_unpublished_changes` for the equivalent
+            check on a single Draft.
             """
             return (
                 self.select_related("entity__published__version")
