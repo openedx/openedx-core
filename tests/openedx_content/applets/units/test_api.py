@@ -139,7 +139,7 @@ class UnitsTestCase(ComponentTestCase):
                 self.learning_package.id,
                 draft_qset=content_api.get_all_drafts(self.learning_package.id).filter(entity=unit.id),
             )
-        with self.assertNumQueries(3):
+        with self.assertNumQueries(2):
             result = content_api.get_components_in_unit(unit, published=True)
         assert result == [
             Entry(self.component_1_v1),
