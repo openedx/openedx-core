@@ -1,7 +1,7 @@
-.. _openedx-content-adr-0015:
+.. _openedx-content-adr-0017:
 
-15. Thumbnails for File Components
-===================================
+17. Thumbnails for Images
+=========================
 
 Status
 ------
@@ -11,13 +11,13 @@ Draft. Depends on :ref:`openedx-content-adr-0013` and :ref:`openedx-content-adr-
 Context
 -------
 
-When a course author uploads an image to a course's "Files", represented as a File component (a :class:`Component` of type ``file``) per :ref:`openedx-content-adr-0013`, Studio automatically generates a smaller thumbnail image. This lets the Files page show a preview of each image without loading the full file.
+When a course author uploads an image to a course's "Files", stored as an :class:`Asset` (a shared static asset: a :class:`PublishableEntity` whose :class:`AssetVersion` points to a single :class:`Media`) per :ref:`openedx-content-adr-0013`, Studio automatically generates a smaller thumbnail image. This lets the Files page show a preview of each image without loading the full file.
 
 Three properties of the existing design shape this decision:
 
-- :class:`PublishableEntityVersion` objects, which back every :class:`Component` version (including a File component's), are created once and never updated.
+- :class:`PublishableEntityVersion` objects, which back every :class:`AssetVersion` (as well as every :class:`ComponentVersion`), are created once and never updated.
 - A thumbnail is not authored content: it is a derived, disposable artifact that can always be regenerated from the original file. The legacy contentstore already treats it this way — it is generated whenever an asset is uploaded or a course is imported, but never written into a course's export package.
-- :class:`Media` is a self-contained model for storing and deduplicating binary data by content hash within a :class:`LearningPackage`. Its own documentation explicitly invites third-party apps to extend it with a ``OneToOneField``, independent of any :class:`Component`.
+- :class:`Media` is a self-contained model for storing and deduplicating binary data by content hash within a :class:`LearningPackage`. Its own documentation explicitly invites third-party apps to extend it with a ``OneToOneField``, independent of any :class:`Asset` or :class:`Component`.
 
 Decisions
 ---------
@@ -25,21 +25,21 @@ Decisions
 1. Thumbnails are not versioned
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Creating or regenerating a thumbnail never creates a new version of the File component. The source image continues to be versioned normally, like any other File component content, but the thumbnail itself is not authored content and does not participate in that versioning.
+Creating or regenerating a thumbnail never creates a new version of the :class:`Asset`. The source image continues to be versioned normally, like any other :class:`Asset` content, but the thumbnail itself is not authored content and does not participate in that versioning.
 
 2. Thumbnail metadata lives platform-side, not in ``openedx_content``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A new Django model, ``ImageMediaThumbnail``, owned by openedx-platform, is keyed to the **source image**, not to the File component — via a ``ForeignKey`` referencing the source image's ``ImageMedia`` entry (:ref:`openedx-content-adr-0013`), and records which :class:`Media` object is the current thumbnail for that source image, together with any other presentation-adjacent fields the platform needs for that asset. Consistent with Decision 1, this model is a plain, mutable Django row: creating a new thumbnail or changing these fields is a simple update, not a new version.
+A new Django model, ``ImageMediaThumbnail``, owned by openedx-platform, is keyed to the **source image**, not to the :class:`Asset` — via a ``ForeignKey`` referencing the source image's ``ImageMedia`` entry (:ref:`openedx-content-adr-0013`), and records which :class:`Media` object is the current thumbnail for that source image, together with any other presentation-adjacent fields the platform needs for that asset. Consistent with Decision 1, this model is a plain, mutable Django row: creating a new thumbnail or changing these fields is a simple update, not a new version.
 
-Keying on ``ImageMedia`` rather than the File component means a thumbnail is a property of a specific, immutable set of image bytes. This matters because a File component can hold more than one image over its history, and, per :ref:`openedx-content-adr-0013`'s Decision 2, a single File component can also group more than one image file at once. It also means, by construction, that only ``Media`` already confirmed to be a valid image (i.e. one that has an ``ImageMedia`` entry) can ever have a thumbnail.
+Keying on ``ImageMedia`` rather than the :class:`Asset` means a thumbnail is a property of a specific, immutable set of image bytes. This matters because an :class:`Asset` can hold more than one image over its history, and, per :ref:`openedx-content-adr-0013`'s Decision 2, a single File component can also group more than one image file at once. It also means, by construction, that only ``Media`` already confirmed to be a valid image (i.e. one that has an ``ImageMedia`` entry) can ever have a thumbnail.
 
 3. Thumbnail bytes are stored as ``Media``, referenced by a direct foreign key
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The thumbnail image itself is written to ``openedx_content`` as an ordinary :class:`Media` object. The platform-side model from Decision 2 holds a second, separate foreign key to that :class:`Media` row — alongside its key relationship to the source image's ``ImageMedia`` — and regenerating a thumbnail simply repoints that second foreign key at a new, or existing and content-identical, :class:`Media` row.
 
-Critically, neither the source image's :class:`Media` nor the thumbnail's :class:`Media` gain any new association with a :class:`ComponentVersion` through ``ComponentVersionMedia`` as a result of this model. It is a sibling piece of data that happens to live in the same :class:`LearningPackage`, addressed and deduplicated the same way as any other :class:`Media`, but outside of the versioned graph that the File component participates in.
+Critically, neither the source image's :class:`Media` nor the thumbnail's :class:`Media` gain any new association with an :class:`AssetVersion` (or with a :class:`ComponentVersion` through ``ComponentVersionMedia``) as a result of this model. It is a sibling piece of data that happens to live in the same :class:`LearningPackage`, addressed and deduplicated the same way as any other :class:`Media`, but outside of the versioned graph that the :class:`Asset` participates in.
 
 This gives the thumbnail the storage and deduplication properties of :class:`Media`, including sharing bytes across reruns of a course via ``media_file_namespace``.
 
@@ -57,7 +57,7 @@ That single ``"default"`` size is meant to serve more than one consumer at once:
 
 Thumbnails continue to be generated eagerly, at the same points where the legacy contentstore already generates them: when an author uploads an image, and when a course is imported. No thumbnail is generated speculatively ahead of need, and none is generated lazily at serving time.
 
-The same idea applies to a course rerun, to copy/paste, and to syncing a downstream File component with a newer published version of its upstream. Because the model from Decision 2 is keyed on the source image's ``ImageMedia`` rather than on the File component, this often requires no action at all: if the destination ends up with the exact same source :class:`Media` (and therefore the same ``ImageMedia``, since it is a pure function of those bytes), the existing thumbnail row is already correct, since the key it's looked up by hasn't changed. A new thumbnail only needs to be generated when a genuinely new source :class:`Media` appears with no existing thumbnail row — for example, a File component copied into a Learning Package that doesn't already have that exact image, or a sync that pulls in a new, edited version of the source image. In that case, the new ``Media`` also needs its own ``ImageMedia`` before a thumbnail can be keyed to it, but that is already required independently of thumbnails, per :ref:`openedx-content-adr-0013`.
+The same idea applies to a course rerun, to copy/paste, and to syncing a downstream :class:`Asset` with a newer published version of its upstream. Because the model from Decision 2 is keyed on the source image's ``ImageMedia`` rather than on the :class:`Asset`, this often requires no action at all: if the destination ends up with the exact same source :class:`Media` (and therefore the same ``ImageMedia``, since it is a pure function of those bytes), the existing thumbnail row is already correct, since the key it's looked up by hasn't changed. A new thumbnail only needs to be generated when a genuinely new source :class:`Media` appears with no existing thumbnail row — for example, an :class:`Asset` copied into a Learning Package that doesn't already have that exact image, or a sync that pulls in a new, edited version of the source image. In that case, the new ``Media`` also needs its own ``ImageMedia`` before a thumbnail can be keyed to it, but that is already required independently of thumbnails, per :ref:`openedx-content-adr-0013`.
 
 6. Thumbnails are served by a dedicated platform-side endpoint, not the general asset-serving API
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -73,8 +73,8 @@ Consequences
 - Thumbnails do not participate in draft/publish, backup and restore, or any other machinery that assumes a :class:`PublishableEntityVersion` is immutable once created, because a thumbnail never becomes one.
 - Thumbnails are not included in a course's export package, and are regenerated from the source asset on import. This preserves the behavior the legacy contentstore already has today. No new mechanism is introduced to make thumbnails portable, because they were never treated as portable content: the source image is the asset of record, and the thumbnail is a derived, disposable artifact of it.
 - Regenerating a thumbnail repoints the platform-side model's foreign key at a new :class:`Media` row; it does not delete or overwrite the previous one, which is left unreferenced. ``openedx_content`` has no deletion or garbage-collection mechanism for individual :class:`Media` rows today.
-- Although the platform-side model is not versioned, the thumbnail for a past version of a File component can still be retrieved: since the model is keyed on the source image's ``ImageMedia`` rather than on the File component, looking up which :class:`Media` a past :class:`ComponentVersion` used (via ``ComponentVersionMedia``, which already records this), then that ``Media``'s ``ImageMedia``, and then looking up that ``ImageMedia``'s thumbnail works for any version, past or present.
-- Thumbnails are naturally deduplicated across File components: if two different File components happen to hold byte-identical source images (the same :class:`Media`, whether by coincidence or because one was copied from the other), they share a single thumbnail row and a single thumbnail :class:`Media`, rather than each generating and storing its own copy.
+- Although the platform-side model is not versioned, the thumbnail for a past version of an :class:`Asset` can still be retrieved: since the model is keyed on the source image's ``ImageMedia`` rather than on the :class:`Asset`, looking up which :class:`Media` a past :class:`ComponentVersion` used (via ``ComponentVersionMedia``, which already records this), then that ``Media``'s ``ImageMedia``, and then looking up that ``ImageMedia``'s thumbnail works for any version, past or present.
+- Thumbnails are naturally deduplicated across Assets: if two different :class:`Asset`\ s happen to hold byte-identical source images (the same :class:`Media`, whether by coincidence or because one was copied from the other), they share a single thumbnail row and a single thumbnail :class:`Media`, rather than each generating and storing its own copy.
 
 Rejected Alternatives
 ---------------------
@@ -90,7 +90,7 @@ We reject this because a thumbnail does not meet the "purely derived from the im
 
 More fundamentally, a thumbnail only makes sense for image content, is driven by that platform-configurable parameter rather than being a fixed function of the bytes, and, per Decision 4 of this ADR, needs to support more than one value per image — since ``ImageMedia`` is 1:1 with a single :class:`Media`, a single ``thumbnail`` field on it could not represent more than one size, short of adding one field per size or a separate table keyed by size. None of that fits a model that is meant to stay a simple, purely-derived reflection of a single image's byte data, nor the generic, file-type-agnostic pattern ``FileComponentMetadata`` follows above.
 
-This is a different thing from Decision 2's choice to key the platform-side model on ``ImageMedia`` itself, rather than on the File component. Both approaches use ``ImageMedia`` to identify the source image, but Decision 2's model is a new, purpose-built table that merely holds a ``ForeignKey`` to ``ImageMedia`` (and supports multiple ``variant`` rows per ``ImageMedia``), rather than a field bolted directly onto ``ImageMedia`` itself, whose own documented contract is to stay a pure function of an image's bytes alone. Referencing ``ImageMedia`` from an external table doesn't have to honor that contract; adding a field to ``ImageMedia`` would.
+This is a different thing from Decision 2's choice to key the platform-side model on ``ImageMedia`` itself, rather than on the :class:`Asset`. Both approaches use ``ImageMedia`` to identify the source image, but Decision 2's model is a new, purpose-built table that merely holds a ``ForeignKey`` to ``ImageMedia`` (and supports multiple ``variant`` rows per ``ImageMedia``), rather than a field bolted directly onto ``ImageMedia`` itself, whose own documented contract is to stay a pure function of an image's bytes alone. Referencing ``ImageMedia`` from an external table doesn't have to honor that contract; adding a field to ``ImageMedia`` would.
 
 Creating a new ``openedx-core`` app for this metadata
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
