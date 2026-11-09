@@ -188,6 +188,16 @@ class Container(PublishableEntityMixin):
     """
     _type_instance: ContainerType  # Cache used by get_container_type()
 
+    validate_entity_select_related: tuple[str, ...] = ()
+    """
+    Relations of :class:`PublishableEntity` that this type's
+    :meth:`validate_entity` accesses, e.g. ``("container__container_type",)``.
+    Subclasses should override this if they override :meth:`validate_entity`.
+    The containers API uses it to ``select_related()`` these relations before
+    validating the children of a new container version, so that validation
+    doesn't need to make queries for every child.
+    """
+
     learning_package = models.ForeignKey(LearningPackage, on_delete=models.CASCADE)
     """
     This foreign key is technically redundant because we're already locked

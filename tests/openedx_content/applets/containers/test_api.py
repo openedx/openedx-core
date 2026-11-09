@@ -364,7 +364,13 @@ def test_unicode_code(lp: LearningPackage) -> None:
     assert containers_api.get_container_by_code(lp.id, unicode_code).id == container.id
 
 
-def test_create_container_queries(lp: LearningPackage, child_entity1: TestEntity, django_assert_num_queries) -> None:
+def test_create_container_queries(
+    lp: LearningPackage,
+    child_entity1: TestEntity,
+    child_entity2: TestEntity,
+    child_entity3: TestEntity,
+    django_assert_num_queries,
+) -> None:
     """Test how many database queries are required to create a container."""
     base_args: dict[str, Any] = {
         "title": "Test Container",
@@ -373,11 +379,20 @@ def test_create_container_queries(lp: LearningPackage, child_entity1: TestEntity
         "container_cls": TestContainer,
     }
     # The exact numbers here aren't too important - this is just to alert us if anything significant changes.
-    with django_assert_num_queries(34):
+    with django_assert_num_queries(30):
         containers_api.create_container_and_version(lp.id, container_code="c1", **base_args)
     # And try with a a container that has children:
-    with django_assert_num_queries(37):
+    with django_assert_num_queries(32):
         containers_api.create_container_and_version(lp.id, container_code="c2", **base_args, entities=[child_entity1])
+    # The number of queries should not grow with the number of children:
+    child_entity3_v1 = child_entity3.versioning.draft
+    with django_assert_num_queries(32):
+        containers_api.create_container_and_version(
+            lp.id,
+            container_code="c3",
+            **base_args,
+            entities=[child_entity1, child_entity2, child_entity3_v1],
+        )
 
 
 # versioning helpers

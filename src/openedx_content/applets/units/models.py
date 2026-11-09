@@ -32,6 +32,7 @@ class Unit(Container):
 
     type_code = "unit"
     olx_tag_name = "vertical"  # Serializes to OLX as `<unit>...</unit>`.
+    validate_entity_select_related = ("component",)
 
     container = models.OneToOneField(
         Container,

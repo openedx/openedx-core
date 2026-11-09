@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Iterable
 
 from django.core.exceptions import ValidationError
-from django.db.models import QuerySet
+from django.db.models import Model, QuerySet
 from django.db.transaction import atomic
 from django.db.utils import IntegrityError
 from typing_extensions import TypeVar  # for 'default=...'
@@ -170,12 +170,18 @@ def create_container(
             created_by,
             can_stand_alone=can_stand_alone,
         )
-        container = container_cls.objects.create(
+        container = container_cls(
             publishable_entity=publishable_entity,
             container_code=container_code,
             learning_package_id=learning_package_id,
             container_type=container_cls.get_container_type(),
         )
+        # Container subclasses use multi-table inheritance. Because the primary
+        # key is already set (it's the PublishableEntity's), a plain save()
+        # would first try an UPDATE on the parent Container table before
+        # falling back to an INSERT. We know this is a new row, so force the
+        # INSERT for every table in the inheritance chain.
+        container.save(force_insert=(Model,))
     return container
 
 
@@ -262,7 +268,12 @@ def _create_container_version(
             "a reference to a row that no longer exists after the test DB has been truncated. "
         ) from exc
     version_type = PublishableContentModelRegistry.get_versioned_model_cls(container_subclass)
-    for entity_row in entity_list.rows:
+    # Load the rows along with their entities and whatever relations this
+    # container type's validate_entity() looks at, so that validating the
+    # children is one query rather than a few queries per child.
+    related_to_load = ["entity"] + [f"entity__{rel}" for rel in container_subclass.validate_entity_select_related]
+    entity_rows = list(entity_list.entitylistrow_set.select_related(*related_to_load).order_by("order_num"))
+    for entity_row in entity_rows:
         try:
             container_subclass.validate_entity(entity_row.entity)
         except ValidationError as exc:
@@ -279,14 +290,16 @@ def _create_container_version(
             title=title,
             created=created,
             created_by=created_by,
-            dependencies=[entity_row.entity_id for entity_row in entity_list.rows if entity_row.is_unpinned()],
+            dependencies=[entity_row.entity_id for entity_row in entity_rows if entity_row.is_unpinned()],
         )
-        container_version = version_type.objects.create(
+        container_version = version_type(
             publishable_entity_version=publishable_entity_version,
             container_id=container.id,
             entity_list=entity_list,
             # This could accept **kwargs in the future if we have additional type-specific fields?
         )
+        # See the note in create_container() about multi-table inheritance.
+        container_version.save(force_insert=(Model,))
 
     return container_version
 
@@ -321,8 +334,33 @@ def create_container_version(
     assert title is not None
     assert entities is not None
 
+    container = Container.objects.select_related("publishable_entity", "container_type").get(pk=container_id)
+    return _create_container_version_with_entities(
+        container,
+        version_num,
+        title=title,
+        entities=entities,
+        created=created,
+        created_by=created_by,
+    )
+
+
+def _create_container_version_with_entities(
+    container: Container,
+    version_num: int,
+    *,
+    title: str,
+    entities: EntityListInput,
+    created: datetime,
+    created_by: int | None,
+) -> ContainerVersion:
+    """
+    Create a new version of an already-loaded Container (see create_container_version).
+
+    The ``container`` should have its ``publishable_entity`` and
+    ``container_type`` relations loaded already.
+    """
     with atomic(savepoint=False):
-        container = Container.objects.select_related("publishable_entity").get(pk=container_id)
         entity = container.publishable_entity
         parsed_entities = ParsedEntityReference.parse(entities)
         entity_list = create_entity_list_with_rows(parsed_entities, learning_package_id=entity.learning_package_id)
@@ -375,8 +413,10 @@ def create_container_and_version(
             can_stand_alone=can_stand_alone,
             container_cls=container_cls,
         )
-        container_version: ContainerVersionModel = create_container_version(  # type: ignore[assignment]
-            container.id,
+        # We just created this container (with its publishable_entity and
+        # container_type attached), so there's no need to re-fetch it.
+        container_version: ContainerVersionModel = _create_container_version_with_entities(  # type: ignore[assignment]
+            container,
             1,
             title=title,
             entities=entities or [],
@@ -498,7 +538,7 @@ def create_next_container_version(
     """
     with atomic():
         if isinstance(container, int):
-            container = Container.objects.select_related("publishable_entity").get(pk=container)
+            container = Container.objects.select_related("publishable_entity", "container_type").get(pk=container)
         assert isinstance(container, Container)
         entity = container.publishable_entity
         last_version = container.versioning.latest
