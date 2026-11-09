@@ -238,10 +238,13 @@ def create_publishable_entity_version(
             created_by_id=created_by,
         )
         if dependencies:
-            # Validate that dependencies are from the same learning package:
+            # Validate that dependencies are from the same learning package as
+            # the entity. The entity's learning package is found with a
+            # subquery, so this is one query rather than two.
+            entity_learning_package = PublishableEntity.objects.filter(id=entity_id).values("learning_package_id")
             if (
                 PublishableEntity.objects.filter(id__in=dependencies)
-                .exclude(learning_package_id=version.entity.learning_package_id)
+                .exclude(learning_package_id__in=entity_learning_package)
                 .exists()
             ):
                 raise ValidationError("Dependencies must be from the same learning package")
@@ -996,21 +999,27 @@ def set_draft_version(
         # block is bookkeeping in our DraftChangeLog.
         draft.version_id = publishable_entity_version_pk
 
-        # Validate the entity
+        # Validate the entity. We grab the learning package ID in the same
+        # query, since we need it below and the Draft's entity relation isn't
+        # loaded if get_or_create() just created the Draft.
         if publishable_entity_version_pk is not None:
-            if draft.entity.id != PublishableEntityVersion.objects.only("entity_id").get(
-                pk=publishable_entity_version_pk
-            ).entity_id:
+            version_entity_id, learning_package_id = (
+                PublishableEntityVersion.objects
+                                        .values_list("entity_id", "entity__learning_package_id")
+                                        .get(pk=publishable_entity_version_pk)
+            )
+            if draft.entity_id != version_entity_id:
                 invalid_pev = PublishableEntityVersion.objects.get(pk=publishable_entity_version_pk)
                 raise ValidationError(
                     f"Entity mismatch - the specified PublishableEntityVersion ({repr(invalid_pev)}) does not match "
                     f"the PublishableEntity ({repr(draft.entity)})."
                 )
+        else:
+            learning_package_id = draft.entity.learning_package_id
 
         # Check to see if we're inside a context manager for an active
         # DraftChangeLog (i.e. what happens if the caller is using the public
         # bulk_draft_changes_for() API call), or if we have to make our own.
-        learning_package_id = draft.entity.learning_package_id
         active_change_log = DraftChangeLogContext.get_active_draft_change_log(
             learning_package_id
         )
