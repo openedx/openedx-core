@@ -10,7 +10,6 @@ import logging
 from typing import overload
 
 from django.db.models.query import QuerySet
-from django.utils import timezone
 
 from ..models import CatalogPathway, PathwayCategory, PathwayEnrollment
 
@@ -286,14 +285,18 @@ def unenroll_from_pathway(user_id: int, catalog_pathway: CatalogPathway | Catalo
     """
     Unenroll a learner from a `CatalogPathway`. A no-op if they aren't enrolled.
 
-    The enrollment row is deactivated, not deleted.
+    The enrollment row is deactivated, not deleted. It is saved rather than bulk-updated so that `post_save` fires, as
+    it does on enrollment, and listeners such as analytics sinks see the change.
 
     ⚠️ Does not check permissions.
     """
     pathway_id = catalog_pathway.id if isinstance(catalog_pathway, CatalogPathway) else catalog_pathway
-    PathwayEnrollment.objects.filter(user_id=user_id, catalog_pathway_id=pathway_id, is_active=True).update(
-        is_active=False, modified=timezone.now()
-    )
+    enrollment = PathwayEnrollment.objects.filter(
+        user_id=user_id, catalog_pathway_id=pathway_id, is_active=True
+    ).first()
+    if enrollment:
+        enrollment.is_active = False
+        enrollment.save(update_fields=["is_active", "modified"])
 
 
 def is_enrolled_in_pathway(user_id: int, catalog_pathway: CatalogPathway | CatalogPathway.ID) -> bool:
