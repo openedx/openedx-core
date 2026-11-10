@@ -1,9 +1,18 @@
 """
-Models that we want callers to extend or make foreign keys to.
+Models that we want callers to extend, make foreign keys to, or use in type annotations.
 
-This is also the stable import point for the model class itself, for callers that
-need to create competency taxonomies directly.
+Other apps should create and change these rows, including test data, only through
+`openedx_learning.api`, which keeps the invariants that direct model writes would skip.
 """
 
 # pylint: disable=unused-import
-from .models import CompetencyTaxonomy
+from .models import (
+    CompetencyCriteriaGroup,
+    CompetencyCriterion,
+    CompetencyMasteryStatus,
+    CompetencyRuleProfile,
+    CompetencyTaxonomy,
+    MasteryStatus,
+    RuleType,
+    StudentCompetencyCriterionStatus,
+)

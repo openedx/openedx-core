@@ -54,6 +54,9 @@ INSTALLED_APPS = [
     "organizations",
     # django-rules based authorization
     'rules.apps.AutodiscoverRulesConfig',
+    # Required for django-simple-history's admin integration and management commands;
+    # HistoricalRecords() alone does not need it.
+    "simple_history",
     # Our own apps
     "openedx_tagging",
     "openedx_content",
@@ -124,3 +127,11 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
 ]
+
+# django-simple-history bakes this setting into the history_date field of every
+# HistoricalRecords() model, and therefore into any migration we generate for one.
+# openedx-platform has had this set to False since its 2023 django-simple-history
+# upgrade (openedx/openedx-platform#32880), to avoid adding an index to every
+# historical table in the platform at once. Our migrations run there, so this has
+# to match.
+SIMPLE_HISTORY_DATE_INDEX = False

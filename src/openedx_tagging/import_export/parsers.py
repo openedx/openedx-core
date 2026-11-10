@@ -43,13 +43,16 @@ class Parser:
     It can convert in both directions, for use during import or export.
 
     If you want to add a new field, you can add it to
-    `required_fields` or `optional_fields` depending on the field type
+    `required_fields` or `optional_fields` depending on the field type.
+    `import_only_fields` holds fields that are parsed but never required or
+    optional for header validation, and are never exported.
 
     To create a new Parser you need to implement `_load_data` and `_export_data`
     """
 
     required_fields = ["id", "value"]
     optional_fields = ["parent_id"]
+    import_only_fields = ["previous_id"]
 
     # Set the format associated to the parser
     format: ParserFormat
@@ -178,6 +181,19 @@ class Parser:
                     tag_data[opt_field] = value
                 else:
                     errors.append(cls.invalid_field_error(tag, field=req_field, row=row))
+                    has_error = True
+
+            # import_only_fields are parsed but never required/optional for header
+            # validation, and never appear in _load_tags_for_export.
+            for io_field in cls.import_only_fields:
+                value = tag.get(io_field) or None
+                if isinstance(value, int):
+                    value = str(value)  # Technically int is invalid but we coerce to str to be more resilient
+
+                if isinstance(value, str) or value is None:
+                    tag_data[io_field] = value
+                else:
+                    errors.append(cls.invalid_field_error(tag, field=io_field, row=row))
                     has_error = True
 
             tags.append(TagItem(**tag_data))

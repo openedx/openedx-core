@@ -37,6 +37,10 @@ INSTALLED_APPS = [
     # Open edX Organizations (dependency for openedx_catalog)
     "organizations",
 
+    # Required for django-simple-history's admin integration and management commands;
+    # HistoricalRecords() alone does not need it.
+    "simple_history",
+
     # Our Apps
     "openedx_catalog",
     "openedx_learning",
@@ -107,6 +111,9 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 USE_TZ = True
+
+# See test_settings.py for why this must match openedx-platform.
+SIMPLE_HISTORY_DATE_INDEX = False
 
 # openedx-core required configuration
 OPENEDX_LEARNING = {

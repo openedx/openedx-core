@@ -1,0 +1,35 @@
+"""
+CBE API v1 URLs.
+"""
+
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+
+from . import views
+
+router = DefaultRouter()
+router.register("rule_profiles", views.CompetencyRuleProfileView, basename="rule_profile")
+
+urlpatterns = [
+    path("", include(router.urls)),
+    path(
+        "competencies/<int:tag_id>/criteria/",
+        views.CompetencyCriterionCreateView.as_view(),
+        name="criterion-create",
+    ),
+    path(
+        "criteria-groups/<int:group_id>/criteria/bulk-update/",
+        views.CompetencyCriterionBulkUpdateView.as_view(),
+        name="criterion-bulk-update",
+    ),
+    path(
+        "competencies/<int:tag_id>/criteria-groups/",
+        views.CompetencyCriteriaTreeView.as_view(),
+        name="criteria-tree",
+    ),
+    path(
+        "competencies/<int:tag_id>/criteria-groups/<int:group_id>/",
+        views.CompetencyCriteriaGroupDetailView.as_view(),
+        name="criteria-group-detail",
+    ),
+]

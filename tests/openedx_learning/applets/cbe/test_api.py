@@ -1,13 +1,57 @@
 """
 Tests for the CBE public API surface (openedx_learning.api).
 """
-import pytest
+import re
+from collections.abc import Iterator
+from typing import Any
 
-from openedx_learning.api import create_competency_taxonomy, is_competency_taxonomy, select_competency_taxonomies
-from openedx_learning.models import CompetencyTaxonomy
-from openedx_tagging.models import Taxonomy
+import pytest
+import rules
+from django.apps import apps
+from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
+from django.db import connection
+from django.db.utils import IntegrityError
+from django.forms.models import model_to_dict
+from django.test.utils import CaptureQueriesContext
+from opaque_keys.edx.keys import CourseKey
+from organizations.models import Organization
+from rules.permissions import permissions as rule_permissions
+
+from openedx_catalog.models import CatalogCourse, CourseRun
+from openedx_learning.api import (
+    CompetencyCriteriaGroupArchivedError,
+    CompetencyCriterionArchivedError,
+    associate_competency_criterion,
+    bulk_update_competency_criteria,
+    create_competency_criterion,
+    create_competency_taxonomy,
+    get_competency_criteria_tree,
+    get_competency_rule_profiles,
+    get_courses_with_relative_criteria,
+    is_competency_taxonomy,
+    resolve_supplied_leaf_group,
+    select_competency_taxonomies,
+    update_competency_criteria_group,
+)
+from openedx_learning.applets.cbe import api as cbe_api
+from openedx_learning.applets.cbe.api import _create_leaf_group
+from openedx_learning.models import (
+    CompetencyCourseRun,
+    CompetencyCriteriaGroup,
+    CompetencyCriterion,
+    CompetencyRuleProfile,
+    CompetencyTaxonomy,
+    LogicOperator,
+    RuleType,
+    StudentCompetencyCriteriaGroupStatus,
+    StudentCompetencyCriterionStatus,
+    StudentCompetencyStatus,
+)
+from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
 pytestmark = pytest.mark.django_db
+
+GRADE_PAYLOAD = {"op": "gte", "value": 0.8, "scale": "percent"}
 
 
 def test_create_competency_taxonomy_saves_both_rows() -> None:
@@ -53,6 +97,35 @@ def test_create_competency_taxonomy_defaults() -> None:
     assert result.allow_free_text is False
     assert result.read_only is False
     assert result.export_id
+
+
+def make_course_run(organization: Organization, course_code: str, run_code: str) -> CourseRun:
+    """Create a CourseRun distinct from the `course_run` fixture, for the same-tag-different-course tests."""
+    catalog_course = CatalogCourse.objects.create(org=organization, course_code=course_code)
+    return CourseRun.objects.create(catalog_course=catalog_course, run_code=run_code)
+
+
+def usage_key(course_run: CourseRun, block_id: str) -> str:
+    """Build a gradeable-subsection-shaped usage key string under `course_run`."""
+    key = course_run.course_key
+    assert key is not None
+    return f"block-v1:{key.org}+{key.course}+{key.run}+type@sequential+block@{block_id}"
+
+
+def make_tag(taxonomy: CompetencyTaxonomy, value: str, parent: Tag | None = None) -> Tag:
+    """Create a Tag on `taxonomy`, optionally under `parent`, for taxonomy-hierarchy tests."""
+    return Tag.objects.create(taxonomy=taxonomy, value=value, parent=parent)
+
+
+def make_leaf_criterion(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile, block_id: str,
+) -> CompetencyCriterion:
+    """
+    Create a leaf group and one live CompetencyCriterion for `tag` in `course_run`.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, block_id), taxonomy=tag.taxonomy, tag=tag)
+    return CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
 
 
 def test_is_competency_taxonomy() -> None:
@@ -104,3 +177,2128 @@ def test_select_competency_taxonomies_avoids_n_plus_1(django_assert_num_queries)
 
     assert results.count(True) == 2
     assert results.count(False) == 1
+
+
+def test_get_competency_rule_profiles_returns_the_seeded_default(
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """get_competency_rule_profiles() returns the system default an instance starts with."""
+    assert list(get_competency_rule_profiles()) == [default_rule_profile]
+
+
+def test_get_competency_rule_profiles_excludes_archived(
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """get_competency_rule_profiles() leaves retired profiles out."""
+    archived = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE,
+        rule_payload=GRADE_PAYLOAD,
+        competency_taxonomy=competency_taxonomy,
+        archived=True,
+    )
+
+    profiles = list(get_competency_rule_profiles())
+
+    assert archived not in profiles
+    assert profiles == [default_rule_profile]
+
+
+def test_get_competency_rule_profiles_is_ordered_by_id(
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+    organization: Organization,
+) -> None:
+    """
+    get_competency_rule_profiles() returns profiles in ascending id order.
+
+    Without a deterministic order, paginating the collection would repeat and skip rows.
+    """
+    taxonomy_scoped = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE, rule_payload=GRADE_PAYLOAD, competency_taxonomy=competency_taxonomy
+    )
+    organization_scoped = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE, rule_payload=GRADE_PAYLOAD, organization=organization
+    )
+
+    expected = [default_rule_profile, taxonomy_scoped, organization_scoped]
+    assert list(get_competency_rule_profiles()) == expected
+
+
+# ==============================================================================================
+# _create_leaf_group
+# ==============================================================================================
+
+
+def test_create_leaf_group_builds_the_full_hierarchy_on_first_use(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """A first call with no existing groups creates a root, a course-level group, and a leaf."""
+    leaf = _create_leaf_group(tag, course_run)
+
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    assert root.parent is None
+    assert root.tag_id == tag.id
+    assert root.course_id is None
+    assert root.name == f"{tag.value} (root)"
+    assert course_level.tag_id == tag.id
+    assert course_level.course_id == course_run.id
+    assert course_level.name == f"{tag.value} — {course_run.title}"
+    assert leaf.tag_id == tag.id
+    assert leaf.course_id is None
+    assert leaf.logic_operator == LogicOperator.OR
+
+
+def test_create_leaf_group_passes_through_an_explicit_logic_operator(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """A supplied logic_operator is stored on the leaf as-is, not defaulted to OR."""
+    leaf = _create_leaf_group(tag, course_run, logic_operator=LogicOperator.AND)
+    assert leaf.logic_operator == LogicOperator.AND
+
+
+def test_create_leaf_group_reuses_the_root_and_course_level_group_on_a_second_call(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """A second call for the same tag and course reuses the root and course-level group."""
+    first_leaf = _create_leaf_group(tag, course_run)
+    second_leaf = _create_leaf_group(tag, course_run)
+
+    assert first_leaf.id != second_leaf.id
+    assert first_leaf.parent_id == second_leaf.parent_id
+    assert first_leaf.parent is not None
+    assert second_leaf.parent is not None
+    assert first_leaf.parent.parent_id == second_leaf.parent.parent_id
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, parent__isnull=True).count() == 1
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, course=course_run).count() == 1
+
+
+def test_create_leaf_group_creates_a_new_course_level_group_for_a_different_course(
+    tag: Tag, course_run: CourseRun, organization: Organization
+) -> None:
+    """A second course under the same tag gets its own course-level group, but shares the root."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+
+    first_leaf = _create_leaf_group(tag, course_run)
+    second_leaf = _create_leaf_group(tag, other_course_run)
+
+    assert first_leaf.parent is not None
+    assert second_leaf.parent is not None
+    assert first_leaf.parent.parent_id == second_leaf.parent.parent_id
+    assert first_leaf.parent_id != second_leaf.parent_id
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, parent__isnull=True).count() == 1
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, course__isnull=False).count() == 2
+
+
+def test_create_leaf_group_reuses_a_root_a_concurrent_request_already_committed(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    A root created out-of-band (standing in for a concurrent request's winning commit) is reused.
+
+    Callers are serialized on the tag row, so a request that waited on the lock finds the
+    winner's committed root and ``get_or_create()`` fetches it instead of creating a second one.
+    """
+    already_committed_root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, name="pre-existing root")
+
+    leaf = _create_leaf_group(tag, course_run)
+
+    assert leaf.parent is not None
+    assert leaf.parent.parent_id == already_committed_root.id
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, parent__isnull=True).count() == 1
+
+
+def test_create_leaf_group_reuses_a_course_level_group_a_concurrent_request_already_committed(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """The course-level group half of the same guarantee, isolated from the root."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    already_committed_course_level = CompetencyCriteriaGroup.objects.create(
+        tag=tag, course=course_run, parent=root, name="pre-existing course-level group",
+    )
+
+    leaf = _create_leaf_group(tag, course_run)
+
+    assert leaf.parent_id == already_committed_course_level.id
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, course=course_run).count() == 1
+
+
+def test_create_leaf_group_truncates_derived_names_to_fit_the_name_column(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun
+) -> None:
+    """A maximum-length tag value (500) and course title (255) still produce storable root and course-level names."""
+    long_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="t" * 500)
+    course_run.title = "c" * 255
+    course_run.save()
+
+    leaf = _create_leaf_group(long_tag, course_run)
+
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    name_max_length = CompetencyCriteriaGroup._meta.get_field("name").max_length
+    assert len(CompetencyCriteriaGroup.objects.get(pk=root.pk).name) == name_max_length
+    assert len(CompetencyCriteriaGroup.objects.get(pk=course_level.pk).name) == name_max_length
+
+
+def test_course_level_group_unique_constraint_rejects_a_second_group_for_the_same_tag_and_course(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    The DB constraint backstopping _create_leaf_group()'s course-level get_or_create() exists.
+
+    Proven directly (bypassing get_or_create) so a silently-dropped migration can't go unnoticed.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    with pytest.raises(IntegrityError):
+        CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+
+
+# ==============================================================================================
+# resolve_supplied_leaf_group
+# ==============================================================================================
+
+
+def test_resolve_supplied_leaf_group_returns_the_leaf_when_it_is_valid(tag: Tag, course_run: CourseRun) -> None:
+    """A group_id that names a genuine, matching leaf is returned unchanged."""
+    leaf = _create_leaf_group(tag, course_run)
+    assert resolve_supplied_leaf_group(leaf.id, tag, course_run) == leaf
+
+
+def test_resolve_supplied_leaf_group_raises_does_not_exist_for_an_unknown_group(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """An unknown group_id raises CompetencyCriteriaGroup.DoesNotExist."""
+    with pytest.raises(CompetencyCriteriaGroup.DoesNotExist):
+        resolve_supplied_leaf_group(999999, tag, course_run)
+
+
+def test_resolve_supplied_leaf_group_rejects_a_root_group_as_not_a_leaf(tag: Tag, course_run: CourseRun) -> None:
+    """A root group (no parent) is not a usable leaf."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    with pytest.raises(ValidationError, match="group_id"):
+        resolve_supplied_leaf_group(root.id, tag, course_run)
+
+
+def test_resolve_supplied_leaf_group_rejects_a_course_level_group_as_not_a_leaf(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """A course-level group (has its own course) is not a usable leaf either."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    course_level = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    with pytest.raises(ValidationError, match="group_id"):
+        resolve_supplied_leaf_group(course_level.id, tag, course_run)
+
+
+def test_resolve_supplied_leaf_group_rejects_a_group_for_a_different_tag(
+    tag: Tag, course_run: CourseRun, competency_taxonomy: CompetencyTaxonomy
+) -> None:
+    """A leaf that belongs to a different competency tag is rejected."""
+    other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Other Competency")
+    leaf = _create_leaf_group(other_tag, course_run)
+    with pytest.raises(ValidationError, match="group_id"):
+        resolve_supplied_leaf_group(leaf.id, tag, course_run)
+
+
+def test_resolve_supplied_leaf_group_rejects_a_group_for_a_different_course(
+    tag: Tag, course_run: CourseRun, organization: Organization
+) -> None:
+    """A leaf whose course-level parent belongs to a different course is rejected."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf = _create_leaf_group(tag, other_course_run)
+    with pytest.raises(ValidationError, match="group_id"):
+        resolve_supplied_leaf_group(leaf.id, tag, course_run)
+
+
+# ==============================================================================================
+# associate_competency_criterion
+# ==============================================================================================
+
+
+def test_associate_competency_criterion_creates_the_hierarchy_and_criterion_when_nothing_exists(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile
+) -> None:
+    """The happy path: no group_id, no existing groups, no rule fields supplied."""
+    object_id = usage_key(course_run, "p1")
+
+    criterion = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+
+    assert criterion.group.tag_id == tag.id
+    assert criterion.group.parent is not None
+    assert criterion.group.parent.course_id == course_run.id
+    root = criterion.group.parent.parent
+    assert root is not None
+    assert root.parent is None
+    assert root.tag_id == tag.id
+    assert criterion.object_tag.object_id == object_id
+    assert criterion.object_tag.tag_id == tag.id
+    assert criterion.rule_profile_id == default_rule_profile.id
+    assert criterion.rule_type_override is None
+    assert criterion.rule_payload_override is None
+
+
+def test_associate_competency_criterion_uses_a_supplied_group_id(tag: Tag, course_run: CourseRun) -> None:
+    """A caller-supplied group_id is used as-is, rather than deriving or creating a new leaf."""
+    leaf = _create_leaf_group(tag, course_run)
+    object_id = usage_key(course_run, "p1")
+
+    criterion = associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=leaf.id)
+
+    assert criterion.group_id == leaf.id
+
+
+def test_associate_competency_criterion_rejects_group_id_and_logic_operator_together(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """Supplying both group_id and logic_operator is rejected before anything is created."""
+    leaf = _create_leaf_group(tag, course_run)
+    object_id = usage_key(course_run, "p1")
+
+    with pytest.raises(ValidationError, match="logic_operator"):
+        associate_competency_criterion(
+            tag_id=tag.id, object_id=object_id, group_id=leaf.id, logic_operator=LogicOperator.AND,
+        )
+
+
+def test_associate_competency_criterion_rejects_a_duplicate_tag_object_association(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """Via the derive-or-create path (no group_id), a second criterion for the same pair is rejected."""
+    object_id = usage_key(course_run, "p1")
+    associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+
+    with pytest.raises(ValidationError, match="object_id"):
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+
+
+def test_associate_competency_criterion_rejects_re_targeting_the_same_group(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """Re-supplying the exact group a (tag_id, object_id) pair is already associated with is rejected."""
+    object_id = usage_key(course_run, "p1")
+    first = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+
+    with pytest.raises(ValidationError, match="group_id"):
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=first.group_id)
+
+
+def test_associate_competency_criterion_allows_a_different_explicit_group_for_the_same_pair(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    A different, explicitly supplied existing group creates a second, deliberate association --
+    not a duplicate. ADR-0002's own worked example requires the same tag/object association to
+    be able to participate in more than one CompetencyCriteriaGroup.
+    """
+    object_id = usage_key(course_run, "p1")
+    first = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    other_leaf = _create_leaf_group(tag, course_run)
+
+    second = associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=other_leaf.id)
+
+    assert second.object_tag_id == first.object_tag_id
+    assert second.group_id == other_leaf.id
+    assert CompetencyCriterion.objects.filter(object_tag_id=first.object_tag_id).count() == 2
+
+
+def test_associate_competency_criterion_raises_does_not_exist_for_an_unknown_tag_id(course_run: CourseRun) -> None:
+    """An unresolvable tag_id raises Tag.DoesNotExist before anything else is validated."""
+    object_id = usage_key(course_run, "p1")
+    with pytest.raises(Tag.DoesNotExist):
+        associate_competency_criterion(tag_id=999999, object_id=object_id)
+
+
+def test_associate_competency_criterion_rejects_a_malformed_object_id(tag: Tag) -> None:
+    """An object_id that isn't a parseable usage key is a 400, keyed by object_id."""
+    with pytest.raises(ValidationError, match="object_id"):
+        associate_competency_criterion(tag_id=tag.id, object_id="not-a-usage-key")
+
+
+def test_associate_competency_criterion_rejects_an_unresolvable_course(tag: Tag) -> None:
+    """A well-formed usage key whose course has no matching CourseRun is a 400, keyed by object_id."""
+    object_id = "block-v1:NoOrg+NoCourse+NoRun+type@sequential+block@p1"
+    with pytest.raises(ValidationError, match="object_id"):
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+
+
+def test_associate_competency_criterion_rolls_back_newly_created_groups_when_criterion_creation_fails(
+    monkeypatch: pytest.MonkeyPatch, tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    A downstream failure during criterion creation rolls back any group this call created.
+
+    ADR-0002 forbids persisting empty groups, so a failed attempt via the derive-or-create path
+    must not leave a root, course-level, or leaf group behind. Simulated here by making the final
+    CompetencyCriterion.objects.create() call itself fail -- standing in for any failure at that
+    point, including the containment check #666 will add right before it.
+    """
+    def _reject(**_kwargs) -> None:
+        raise ValidationError({"object_id": "rejected for this test"})
+
+    monkeypatch.setattr(cbe_api.CompetencyCriterion.objects, "create", _reject)
+    object_id = usage_key(course_run, "p1")
+
+    with pytest.raises(ValidationError):
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+
+    assert not CompetencyCriteriaGroup.objects.filter(tag=tag).exists()
+
+
+# ==============================================================================================
+# bulk_update_competency_criteria (#759)
+# ==============================================================================================
+
+# Migration 0005's seeded system-default rule, written as the override values a caller would submit.
+SEEDED_RULE: dict[str, Any] = {"rule_type_override": RuleType.GRADE, "rule_payload_override": GRADE_PAYLOAD}
+# The threshold most tests apply, distinct from the seeded default so it stays an override.
+NEW_PAYLOAD = {"op": "gte", "value": 0.75, "scale": "percent"}
+NEW_RULE: dict[str, Any] = {"rule_type_override": RuleType.GRADE, "rule_payload_override": NEW_PAYLOAD}
+# A starting override that neither of the above matches.
+OLD_PAYLOAD = {"op": "lte", "value": 0.5, "scale": "percent"}
+
+CHANGE_OBJECTTAG_OBJECTID = "oel_tagging.change_objecttag_objectid"
+
+
+@pytest.fixture(name="checked_object_ids", autouse=True)
+def _checked_object_ids() -> Iterator[list[str]]:
+    """
+    Let any user tag any object, recording each object_id checked; restore the real rule afterwards.
+
+    openedx_tagging denies change_objecttag_objectid to everyone and leaves the real Studio-role
+    check to openedx-platform, so these tests substitute a permissive one.
+    """
+    original = rule_permissions[CHANGE_OBJECTTAG_OBJECTID]
+    checked: list[str] = []
+
+    def _predicate(_user, object_id: str) -> bool:
+        checked.append(object_id)
+        return True
+
+    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, _predicate)
+    yield checked
+    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, original)
+
+
+@pytest.fixture(name="leaf")
+def _leaf(tag: Tag, course_run: CourseRun) -> CompetencyCriteriaGroup:
+    """A leaf group under `tag` and `course_run`. Only a leaf group holds criteria."""
+    return _create_leaf_group(tag, course_run)
+
+
+def make_criterion(leaf: CompetencyCriteriaGroup, block_id: str, **rule) -> CompetencyCriterion:
+    """Create a criterion on `leaf` for a fresh object in its course, with `rule` as its rule columns."""
+    assert leaf.parent is not None and leaf.parent.course is not None
+    object_tag = ObjectTag.objects.create(
+        object_id=usage_key(leaf.parent.course, block_id), taxonomy=leaf.tag.taxonomy, tag=leaf.tag,
+    )
+    return CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, **rule)
+
+
+@pytest.fixture(name="batch")
+def _batch(
+    leaf: CompetencyCriteriaGroup, default_rule_profile: CompetencyRuleProfile
+) -> tuple[CompetencyCriterion, CompetencyCriterion]:
+    """Two criteria on `leaf` with different rule sources: one follows the default, one has an override."""
+    return (
+        make_criterion(leaf, "p1", rule_profile=default_rule_profile),
+        make_criterion(leaf, "p2", rule_type_override=RuleType.GRADE, rule_payload_override=OLD_PAYLOAD),
+    )
+
+
+def rule_state(criterion: CompetencyCriterion) -> tuple:
+    """Return `criterion`'s three rule columns as stored."""
+    criterion.refresh_from_db()
+    return (criterion.rule_profile_id, criterion.rule_type_override, criterion.rule_payload_override)
+
+
+def history_of(criterion: CompetencyCriterion):
+    """
+    Return `criterion`'s history rows, newest first.
+
+    Looked up through the app registry, as the model tests do, because simple_history's `.history`
+    descriptor has no type stubs.
+    """
+    historical_criterion = apps.get_model("openedx_learning", "HistoricalCompetencyCriterion")
+    return historical_criterion.objects.filter(id=criterion.pk).order_by("-history_date", "-history_id")
+
+
+def snapshot(criteria) -> dict[int, tuple]:
+    """Record each criterion's stored rule and history length, to prove a refused call changed nothing."""
+    return {criterion.id: (rule_state(criterion), history_of(criterion).count()) for criterion in criteria}
+
+
+def test_bulk_update_gives_every_criterion_the_rule_values_whatever_its_starting_source(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion], leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """Rule values replace a profile link and an existing override alike, and the result keeps request order."""
+    on_profile, on_override = batch
+
+    result = bulk_update_competency_criteria([on_override.id, on_profile.id], leaf.id, user=user, **NEW_RULE)
+
+    assert [criterion.id for criterion in result] == [on_override.id, on_profile.id]
+    for criterion in batch:
+        assert rule_state(criterion) == (None, RuleType.GRADE, NEW_PAYLOAD)
+
+
+@pytest.mark.parametrize("named", ["system default", "taxonomy-scoped"])
+def test_bulk_update_assigns_a_named_profile_clearing_values(  # pylint: disable=too-many-positional-arguments
+    named: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """Naming a profile clears any override values, and the history row says why it changed."""
+    if named == "system default":
+        profile = default_rule_profile
+    else:
+        profile = CompetencyRuleProfile.objects.create(
+            rule_type=RuleType.GRADE, rule_payload=NEW_PAYLOAD, competency_taxonomy=competency_taxonomy,
+        )
+    on_override = batch[1]
+
+    bulk_update_competency_criteria([c.id for c in batch], leaf.id, rule_profile_id=profile.id, user=user)
+
+    for criterion in batch:
+        assert rule_state(criterion) == (profile.id, None, None)
+    assert history_of(on_override).first().history_change_reason == "Reassigned to rule profile"
+
+
+def test_bulk_update_looks_up_the_applicable_profile_once_per_batch(
+    leaf: CompetencyCriteriaGroup, user, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """However many criteria a batch names, comparing override values against the applicable profile reads it once."""
+    criteria = [make_criterion(leaf, f"p{n}", rule_profile=default_rule_profile) for n in range(5)]
+    profile_table = CompetencyRuleProfile._meta.db_table
+
+    with CaptureQueriesContext(connection) as queries:
+        bulk_update_competency_criteria([c.id for c in criteria], leaf.id, user=user, **NEW_RULE)
+
+    profile_reads = [q for q in queries.captured_queries if q["sql"].startswith("SELECT") and profile_table in q["sql"]]
+    assert len(profile_reads) == 1
+
+
+def test_bulk_update_values_that_match_the_default_return_the_criterion_to_it(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    Values equal to the applicable profile's rule store the profile link, not a redundant override.
+
+    The payload's keys arrive in a different order from the seeded row's, to show the comparison is
+    on the parsed rule and never on JSON text.
+    """
+    reordered_payload = {"scale": "percent", "value": 0.8, "op": "gte"}
+
+    bulk_update_competency_criteria(
+        [c.id for c in batch], leaf.id, rule_type_override=RuleType.GRADE, rule_payload_override=reordered_payload,
+        user=user,
+    )
+
+    for criterion in batch:
+        assert rule_state(criterion) == (default_rule_profile.id, None, None)
+
+
+def test_bulk_update_values_return_a_criterion_to_the_taxonomy_profile_not_the_default(
+    leaf: CompetencyCriteriaGroup, user, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """
+    With a live profile scoped to the leaf's taxonomy, values are compared against it, as creation resolves it.
+
+    ADR-0002 Decision 4 assigns the taxonomy profile over the system default, so values equal to the
+    system default's rule are an override, and only values equal to the taxonomy profile's return
+    the criterion to it.
+    """
+    taxonomy_profile = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE, rule_payload=NEW_PAYLOAD, competency_taxonomy=competency_taxonomy,
+    )
+    assert leaf.parent is not None and leaf.parent.course is not None
+    criterion = create_competency_criterion(leaf, usage_key(leaf.parent.course, "p1"), course_run=leaf.parent.course)
+    assert rule_state(criterion) == (taxonomy_profile.id, None, None)
+
+    bulk_update_competency_criteria([criterion.id], leaf.id, user=user, **SEEDED_RULE)
+    assert rule_state(criterion) == (None, RuleType.GRADE, GRADE_PAYLOAD)
+
+    bulk_update_competency_criteria([criterion.id], leaf.id, user=user, **NEW_RULE)
+    assert rule_state(criterion) == (taxonomy_profile.id, None, None)
+
+
+def test_bulk_update_writes_history_only_for_criteria_it_changes(
+    leaf: CompetencyCriteriaGroup, user, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A criterion already carrying the rule gets no new history row; one that changes gets exactly one."""
+    unchanged = make_criterion(leaf, "p1", **NEW_RULE)
+    changed = make_criterion(leaf, "p2", rule_profile=default_rule_profile)
+    unchanged_before, changed_before = history_of(unchanged).count(), history_of(changed).count()
+
+    result = bulk_update_competency_criteria([unchanged.id, changed.id], leaf.id, user=user, **NEW_RULE)
+
+    assert [criterion.id for criterion in result] == [unchanged.id, changed.id]
+    assert history_of(unchanged).count() == unchanged_before
+    assert history_of(changed).count() == changed_before + 1
+    latest = history_of(changed).first()
+    assert latest.history_user == user
+    assert latest.history_change_reason == "Rule values set"
+    assert (latest.rule_profile_id, latest.rule_type_override, latest.rule_payload_override) == (
+        None, RuleType.GRADE, NEW_PAYLOAD,
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "rule values",
+        "named profile",
+        "values matching the default",
+        "nothing to change",
+        "malformed request",
+        "id outside the group",
+        "archived criterion",
+        "no permission",
+    ],
+)
+def test_bulk_update_never_reads_or_writes_learner_status(
+    case: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    No path, accepted or refused, sends a query to a learner status table.
+
+    Whether a learner has a recorded status plays no part in accepting a batch: #723 owns that check,
+    in front of this endpoint. A create, update, delete or read would each be a query, so checking
+    the SQL covers all four.
+    """
+    first, second = batch
+    ids = [first.id, second.id]
+    unchanged = make_criterion(leaf, "p3", **NEW_RULE)
+    archived = make_criterion(leaf, "p4", rule_profile=default_rule_profile, archived=True)
+    requests: dict[str, tuple[list[int], dict[str, Any], type[Exception] | None]] = {
+        "rule values": (ids, NEW_RULE, None),
+        "named profile": (ids, {"rule_profile_id": default_rule_profile.id}, None),
+        "values matching the default": (ids, SEEDED_RULE, None),
+        "nothing to change": ([unchanged.id], NEW_RULE, None),
+        "malformed request": ([first.id, first.id], NEW_RULE, ValidationError),
+        "id outside the group": ([first.id, 999999], NEW_RULE, CompetencyCriterion.DoesNotExist),
+        "archived criterion": ([first.id, archived.id], NEW_RULE, CompetencyCriterionArchivedError),
+        "no permission": (ids, NEW_RULE, PermissionDenied),
+    }
+    criterion_ids, rule, error = requests[case]
+    if case == "no permission":
+        rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, lambda _user, _object_id: False)
+    status_tables = [
+        model._meta.db_table
+        for model in (StudentCompetencyStatus, StudentCompetencyCriteriaGroupStatus, StudentCompetencyCriterionStatus)
+    ]
+
+    with CaptureQueriesContext(connection) as queries:
+        if error is None:
+            bulk_update_competency_criteria(criterion_ids, leaf.id, user=user, **rule)
+        else:
+            with pytest.raises(error):
+                bulk_update_competency_criteria(criterion_ids, leaf.id, user=user, **rule)
+
+    assert queries.captured_queries
+    assert not [q["sql"] for q in queries.captured_queries if any(table in q["sql"] for table in status_tables)]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty id list",
+        "duplicate id",
+        "both rule forms",
+        "neither rule form",
+        "rule type without payload",
+        "payload without rule type",
+        "unknown profile",
+        "archived profile",
+        "unsupported comparison",
+        "threshold above 1.0",
+        "threshold below 0.0",
+        "unimplemented rule type",
+    ],
+)
+def test_bulk_update_rejects_a_malformed_request_changing_nothing(  # pylint: disable=too-many-positional-arguments
+    case: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    default_rule_profile: CompetencyRuleProfile,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """Each malformed request is refused with an error naming what is wrong, and no criterion changes."""
+    first, second = batch
+    ids = [first.id, second.id]
+    archived = CompetencyRuleProfile.objects.create(
+        rule_type=RuleType.GRADE, rule_payload=NEW_PAYLOAD, competency_taxonomy=competency_taxonomy, archived=True,
+    )
+    requests: dict[str, tuple[list[int], dict[str, Any], str]] = {
+        "empty id list": ([], NEW_RULE, "criterion_ids"),
+        "duplicate id": ([first.id, first.id, second.id], NEW_RULE, "criterion_ids"),
+        "both rule forms": (
+            ids, {"rule_profile_id": default_rule_profile.id, **NEW_RULE}, "rule_profile_id",
+        ),
+        "neither rule form": (ids, {}, NON_FIELD_ERRORS),
+        "rule type without payload": (ids, {"rule_type_override": RuleType.GRADE}, "rule_type_override"),
+        "payload without rule type": (ids, {"rule_payload_override": NEW_PAYLOAD}, "rule_payload_override"),
+        "unknown profile": (ids, {"rule_profile_id": 999999}, "rule_profile_id"),
+        "archived profile": (ids, {"rule_profile_id": archived.id}, "rule_profile_id"),
+        "unsupported comparison": (
+            ids, {**NEW_RULE, "rule_payload_override": {**NEW_PAYLOAD, "op": "gt"}}, "rule_payload_override",
+        ),
+        "threshold above 1.0": (
+            ids, {**NEW_RULE, "rule_payload_override": {**NEW_PAYLOAD, "value": 1.5}}, "rule_payload_override",
+        ),
+        "threshold below 0.0": (
+            ids, {**NEW_RULE, "rule_payload_override": {**NEW_PAYLOAD, "value": -0.1}}, "rule_payload_override",
+        ),
+        "unimplemented rule type": (ids, {**NEW_RULE, "rule_type_override": "Completion"}, "rule_type_override"),
+    }
+    criterion_ids, rule, error_key = requests[case]
+    before = snapshot(batch)
+
+    with pytest.raises(ValidationError) as exc_info:
+        bulk_update_competency_criteria(criterion_ids, leaf.id, user=user, **rule)
+
+    assert list(exc_info.value.message_dict) == [error_key]
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_names_both_rule_forms_as_not_combinable(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """The refusal of a profile plus values says the two cannot be combined, not merely that the request failed."""
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        bulk_update_competency_criteria(
+            [c.id for c in batch], leaf.id, rule_profile_id=default_rule_profile.id, user=user, **NEW_RULE,
+        )
+
+
+def test_bulk_update_names_half_a_rule_as_needing_its_pair(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion], leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """A rule type without its payload is refused with a message saying the two must be supplied together."""
+    with pytest.raises(ValidationError, match="must be supplied together"):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, rule_type_override=RuleType.GRADE, user=user)
+
+
+@pytest.mark.parametrize("stray", ["from another group", "nonexistent"])
+def test_bulk_update_raises_does_not_exist_for_ids_outside_the_group(  # pylint: disable=too-many-positional-arguments
+    stray: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    tag: Tag,
+    course_run: CourseRun,
+) -> None:
+    """One id outside the group raises CompetencyCriterion.DoesNotExist naming it, and nothing changes."""
+    if stray == "from another group":
+        stray_id = make_criterion(_create_leaf_group(tag, course_run), "p3", **NEW_RULE).id
+    else:
+        stray_id = 999999
+    before = snapshot(batch)
+
+    with pytest.raises(CompetencyCriterion.DoesNotExist, match=str(stray_id)):
+        bulk_update_competency_criteria([batch[0].id, stray_id, batch[1].id], leaf.id, user=user, **SEEDED_RULE)
+
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_raises_does_not_exist_for_an_unknown_group(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion], user,
+) -> None:
+    """An unknown group id raises CompetencyCriteriaGroup.DoesNotExist."""
+    with pytest.raises(CompetencyCriteriaGroup.DoesNotExist):
+        bulk_update_competency_criteria([c.id for c in batch], 999999, user=user, **NEW_RULE)
+
+
+def test_bulk_update_refuses_the_whole_batch_if_any_criterion_is_archived(
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """One archived criterion refuses the whole batch, and nothing changes, not even the valid criteria."""
+    archived = make_criterion(leaf, "p3", rule_profile=default_rule_profile, archived=True)
+    criteria = [batch[0], archived, batch[1]]
+    before = snapshot(criteria)
+
+    with pytest.raises(CompetencyCriterionArchivedError, match=str(archived.id)):
+        bulk_update_competency_criteria([c.id for c in criteria], leaf.id, user=user, **NEW_RULE)
+
+    assert snapshot(criteria) == before
+
+
+@pytest.mark.parametrize("level", ["leaf", "course-level", "root"])
+def test_bulk_update_refuses_the_whole_batch_under_an_archived_group(
+    level: str, batch: tuple[CompetencyCriterion, CompetencyCriterion], leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """
+    An archived leaf, or an archived ancestor of it, refuses the batch, and nothing changes.
+
+    Archiving a group leaves its criteria unarchived, so the criterion check alone would let this through.
+    """
+    course_level = leaf.parent
+    assert course_level is not None and course_level.parent is not None
+    archived = {"leaf": leaf, "course-level": course_level, "root": course_level.parent}[level]
+    CompetencyCriteriaGroup.objects.filter(pk=archived.pk).update(archived=True)
+    assert not any(c.archived for c in batch)
+    before = snapshot(batch)
+
+    with pytest.raises(CompetencyCriterionArchivedError, match=f"group {archived.id}"):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    assert snapshot(batch) == before
+
+
+@pytest.mark.parametrize("level", ["root", "course-level"])
+def test_bulk_update_rejects_a_group_that_is_not_a_leaf(
+    level: str, leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """Only a leaf group holds criteria, so the root and course-level groups are refused."""
+    course_level = leaf.parent
+    assert course_level is not None and course_level.parent is not None
+    group = course_level.parent if level == "root" else course_level
+
+    with pytest.raises(ValidationError, match="group_id"):
+        bulk_update_competency_criteria([1], group.id, user=user, **NEW_RULE)
+
+
+def test_bulk_update_checks_permission_against_the_leafs_course(
+    checked_object_ids: list[str],
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    course_run: CourseRun,
+) -> None:
+    """The object-level check asks about the leaf's course, resolved through its course-level parent."""
+    bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    assert checked_object_ids == [str(course_run.course_key)]
+
+
+@pytest.mark.parametrize("lacks", ["course write access", "taxonomy view access"])
+def test_bulk_update_refuses_a_user_without_permission_changing_nothing(
+    lacks: str,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """A user failing oel_tagging.can_tag_object's taxonomy check or object_id check is refused, and nothing changes."""
+    if lacks == "course write access":
+        rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, lambda _user, _object_id: False)
+    else:
+        # can_tag_object's taxonomy check fails on a disabled taxonomy for anyone but a superuser.
+        competency_taxonomy.enabled = False
+        competency_taxonomy.save()
+    before = snapshot(batch)
+
+    with pytest.raises(PermissionDenied):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_rolls_back_every_criterion_if_one_save_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+) -> None:
+    """A failure partway through the batch undoes the saves already made, history included."""
+    before = snapshot(batch)
+    original_save = CompetencyCriterion.save
+    saves: list[int] = []
+
+    def _fail_on_second_save(self, *args, **kwargs) -> None:
+        saves.append(self.pk)
+        if len(saves) == 2:
+            raise IntegrityError("simulated failure")
+        original_save(self, *args, **kwargs)
+
+    monkeypatch.setattr(CompetencyCriterion, "save", _fail_on_second_save)
+
+    with pytest.raises(IntegrityError):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    monkeypatch.undo()
+    assert len(saves) == 2
+    assert snapshot(batch) == before
+
+
+# ==============================================================================================
+# get_competency_criteria_tree
+# ==============================================================================================
+
+
+def test_get_competency_criteria_tree_is_empty_when_no_groups_exist_yet(tag: Tag) -> None:
+    """A competency with no CompetencyCriteriaGroup rows at all returns two empty lists."""
+    tree = get_competency_criteria_tree(tag)
+
+    assert not tree.groups
+    assert not tree.criteria
+
+
+def test_get_competency_criteria_tree_returns_the_full_hierarchy_and_its_leaf_criterion(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A root, its course-level child, and a leaf under it, plus the leaf's one criterion, all come back."""
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+
+    tree = get_competency_criteria_tree(tag)
+
+    returned_groups_by_id = {group.id: group for group in tree.groups}
+    assert set(returned_groups_by_id) == {root.id, course_level.id, leaf.id}
+    assert returned_groups_by_id[root.id].parent_id is None
+    assert returned_groups_by_id[root.id].course_id is None
+    assert returned_groups_by_id[course_level.id].parent_id == root.id
+    assert returned_groups_by_id[leaf.id].parent_id == course_level.id
+    assert [c.id for c in tree.criteria] == [criterion.id]
+    assert tree.criteria[0].group_id == leaf.id
+
+
+def test_get_competency_criteria_tree_excludes_an_archived_group_and_its_archived_criterion(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An archived leaf group and an archived criterion under it are both left out."""
+    live_leaf = _create_leaf_group(tag, course_run)
+    live_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "live"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    live_criterion = CompetencyCriterion.objects.create(
+        group=live_leaf, object_tag=live_object_tag, rule_profile=default_rule_profile,
+    )
+    archived_leaf = _create_leaf_group(tag, course_run)
+    archived_leaf.archived = True
+    archived_leaf.save()
+    archived_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "archived"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    archived_criterion = CompetencyCriterion.objects.create(
+        group=archived_leaf, object_tag=archived_object_tag, rule_profile=default_rule_profile, archived=True,
+    )
+
+    tree = get_competency_criteria_tree(tag)
+
+    returned_group_ids = {group.id for group in tree.groups}
+    returned_criterion_ids = {criterion.id for criterion in tree.criteria}
+    assert live_leaf.id in returned_group_ids
+    assert archived_leaf.id not in returned_group_ids
+    assert live_criterion.id in returned_criterion_ids
+    assert archived_criterion.id not in returned_criterion_ids
+    assert tree.criteria_count == 1
+    assert tree.total_criteria_count == 1
+
+
+def test_get_competency_criteria_tree_excludes_archived_rows_when_scoped_to_their_own_course(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    An archived leaf group and an archived criterion under it stay excluded even when the
+    request is scoped to exactly the course run they belong to, not just when unscoped.
+    """
+    assert course_run.course_key is not None
+    live_leaf = _create_leaf_group(tag, course_run)
+    live_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "live"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    live_criterion = CompetencyCriterion.objects.create(
+        group=live_leaf, object_tag=live_object_tag, rule_profile=default_rule_profile,
+    )
+    archived_leaf = _create_leaf_group(tag, course_run)
+    archived_leaf.archived = True
+    archived_leaf.save()
+    archived_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "archived"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    archived_criterion = CompetencyCriterion.objects.create(
+        group=archived_leaf, object_tag=archived_object_tag, rule_profile=default_rule_profile, archived=True,
+    )
+
+    tree = get_competency_criteria_tree(tag, [course_run.course_key])
+
+    returned_group_ids = {group.id for group in tree.groups}
+    returned_criterion_ids = {criterion.id for criterion in tree.criteria}
+    assert live_leaf.id in returned_group_ids
+    assert archived_leaf.id not in returned_group_ids
+    assert live_criterion.id in returned_criterion_ids
+    assert archived_criterion.id not in returned_criterion_ids
+    assert tree.criteria_count == 1
+    assert tree.total_criteria_count == 1
+
+
+def test_get_competency_criteria_tree_combines_groups_and_criteria_from_every_course_unscoped(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Two course-level groups under one root, each with its own leaf and criterion, both come back together."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf1 = _create_leaf_group(tag, course_run)
+    leaf2 = _create_leaf_group(tag, other_course_run)
+    object_tag1 = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    object_tag2 = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    criterion1 = CompetencyCriterion.objects.create(
+        group=leaf1, object_tag=object_tag1, rule_profile=default_rule_profile,
+    )
+    criterion2 = CompetencyCriterion.objects.create(
+        group=leaf2, object_tag=object_tag2, rule_profile=default_rule_profile,
+    )
+
+    course_level1 = leaf1.parent
+    course_level2 = leaf2.parent
+    assert course_level1 is not None
+    assert course_level2 is not None
+    root1 = course_level1.parent
+    root2 = course_level2.parent
+    assert root1 is not None
+    assert root2 is not None
+
+    tree = get_competency_criteria_tree(tag)
+
+    assert course_level1.id != course_level2.id, "the two leaves should sit under different course-level groups"
+    assert root1.id == root2.id, "both course-level groups should share one root"
+    assert {group.id for group in tree.groups} == {
+        root1.id, course_level1.id, leaf1.id, course_level2.id, leaf2.id,
+    }
+    assert {criterion.id for criterion in tree.criteria} == {criterion1.id, criterion2.id}
+
+
+def test_get_competency_criteria_tree_prunes_rows_under_an_archived_ancestor(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Archiving only a course-level group removes its still-active leaf and criterion, so no parent_id dangles."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    pruned_leaf = _create_leaf_group(tag, course_run)
+    pruned_course_level = pruned_leaf.parent
+    assert pruned_course_level is not None
+    pruned_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "pruned"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    CompetencyCriterion.objects.create(
+        group=pruned_leaf, object_tag=pruned_object_tag, rule_profile=default_rule_profile,
+    )
+    kept_leaf = _create_leaf_group(tag, other_course_run)
+    kept_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "kept"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    kept_criterion = CompetencyCriterion.objects.create(
+        group=kept_leaf, object_tag=kept_object_tag, rule_profile=default_rule_profile,
+    )
+    kept_course_level = kept_leaf.parent
+    assert kept_course_level is not None
+    root = kept_course_level.parent
+    assert root is not None
+    pruned_course_level.archived = True
+    pruned_course_level.save()
+
+    tree = get_competency_criteria_tree(tag)
+
+    assert {group.id for group in tree.groups} == {root.id, kept_course_level.id, kept_leaf.id}
+    assert [criterion.id for criterion in tree.criteria] == [kept_criterion.id]
+
+
+def test_get_competency_criteria_tree_returns_nothing_under_an_archived_root(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An archived root hides its still-active course-level group, leaf, and criterion."""
+    leaf = _create_leaf_group(tag, course_run)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    root.archived = True
+    root.save()
+
+    tree = get_competency_criteria_tree(tag)
+
+    assert not tree.groups
+    assert not tree.criteria
+
+
+def test_get_competency_criteria_tree_prunes_two_levels_below_an_archived_group(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Archiving a course-level group also hides an active leaf below it and that leaf's active child group."""
+    leaf = _create_leaf_group(tag, course_run)
+    child_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=leaf, course_id=leaf.course_id)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    CompetencyCriterion.objects.create(group=child_group, object_tag=object_tag, rule_profile=default_rule_profile)
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    course_level.archived = True
+    course_level.save()
+
+    tree = get_competency_criteria_tree(tag)
+
+    assert {group.id for group in tree.groups} == {root.id}
+    assert not tree.criteria
+
+
+def test_get_competency_criteria_tree_keeps_a_group_moved_under_a_later_created_parent(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A group under a parent with a larger id, itself under a later group, is kept: pruning ignores id order."""
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    group_a = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    group_b = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    group_c = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    # A sits under B and B under C, so ordering by parent_id puts A before B: a single pass in
+    # that order would judge A before its parent B was kept. save() rejects a parent change, so
+    # build the shape the way only a bulk update can.
+    CompetencyCriteriaGroup.objects.filter(pk=group_b.pk).update(parent=group_c)
+    CompetencyCriteriaGroup.objects.filter(pk=group_a.pk).update(parent=group_b)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=group_a, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+
+    tree = get_competency_criteria_tree(tag)
+
+    assert {group_a.id, group_b.id, group_c.id} <= {group.id for group in tree.groups}
+    assert [c.id for c in tree.criteria] == [criterion.id]
+
+
+def test_get_competency_criteria_tree_orders_criteria_by_group_and_id(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Criteria come back by ``(group_id, id)`` whatever order they were created in."""
+    first_group = _create_leaf_group(tag, course_run)
+    second_group = _create_leaf_group(tag, course_run)
+    created = []
+    for group, name in ((second_group, "a"), (first_group, "b"), (second_group, "c"), (first_group, "d")):
+        object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, name), taxonomy=tag.taxonomy, tag=tag)
+        created.append(
+            CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
+        )
+
+    tree = get_competency_criteria_tree(tag)
+
+    expected = sorted(created, key=lambda c: (c.group_id, c.id))
+    assert [c.id for c in tree.criteria] == [c.id for c in expected]
+    assert [c.group_id for c in tree.criteria] == [first_group.id, first_group.id, second_group.id, second_group.id]
+
+
+def test_get_competency_criteria_tree_orders_groups_by_parent_ordering_and_id(
+    tag: Tag, course_run: CourseRun,
+) -> None:
+    """The root comes first, then siblings under one parent by ``ordering`` and then by ``id``."""
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    # Created out of ordering sequence; two share an ordering value so id breaks the tie.
+    late = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level, ordering=5)
+    early = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level, ordering=1)
+    tied_first = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level, ordering=3)
+    tied_second = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level, ordering=3)
+    leaf.ordering = 4
+    leaf.save()
+
+    tree = get_competency_criteria_tree(tag)
+
+    assert tree.groups[0].id == root.id
+    siblings = [group.id for group in tree.groups if group.parent_id == course_level.id]
+    assert siblings == [early.id, tied_first.id, tied_second.id, leaf.id, late.id]
+
+
+def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile, django_assert_num_queries,
+) -> None:
+    """
+    Reading several groups and criteria costs two queries unscoped and four scoped, not one per row.
+
+    Pins the select_related("course")/select_related("object_tag") calls in
+    get_competency_criteria_tree(): dropping either would still pass every other test in this
+    module (the rows returned would be identical), since select_related only changes how many
+    queries fetch them, not which rows come back. The two extra scoped queries resolve the course
+    keys to course run ids and count the criteria under every reachable group.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    assert course_run.course_key is not None
+    for i in range(3):
+        object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, f"p{i}"), taxonomy=tag.taxonomy, tag=tag)
+        CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+
+    with django_assert_num_queries(2):
+        tree = get_competency_criteria_tree(tag)
+        for group in tree.groups:
+            _ = group.course  # accessing the select_related'd relation must not add a query
+        for criterion in tree.criteria:
+            _ = criterion.object_tag
+
+    with django_assert_num_queries(4):
+        tree = get_competency_criteria_tree(tag, [course_run.course_key])
+        for group in tree.groups:
+            _ = group.course
+        for criterion in tree.criteria:
+            _ = criterion.object_tag
+
+
+def test_get_competency_criteria_tree_scoped_fetches_only_the_scoped_criteria_and_counts_the_rest(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A scoped read fetches criteria rows only for the groups it returns, and gets total_criteria_count
+    from a COUNT, so criteria of a course that was not requested are never loaded.
+    """
+    other_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf = _create_leaf_group(tag, course_run)
+    other_leaf = _create_leaf_group(tag, other_run)
+    for run, group in ((course_run, leaf), (other_run, other_leaf)):
+        object_tag = ObjectTag.objects.create(object_id=usage_key(run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+        CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
+    assert course_run.course_key is not None
+    assert other_leaf.parent is not None
+
+    with CaptureQueriesContext(connection) as queries:
+        tree = get_competency_criteria_tree(tag, [course_run.course_key])
+
+    criterion_queries = [q["sql"] for q in queries.captured_queries if "competencycriterion" in q["sql"].lower()]
+    selects = [sql for sql in criterion_queries if "COUNT(" not in sql.upper()]
+    counts = [sql for sql in criterion_queries if "COUNT(" in sql.upper()]
+    assert len(selects) == 1 and len(counts) == 1
+    in_list = re.search(r"IN \(([^)]*)\)", selects[0])
+    assert in_list is not None
+    selected_group_ids = {int(i) for i in re.findall(r"\d+", in_list.group(1))}
+    assert other_leaf.id not in selected_group_ids
+    assert other_leaf.parent.id not in selected_group_ids
+    assert tree.criteria_count == 1
+    assert tree.total_criteria_count == 2
+
+
+def test_get_competency_criteria_tree_costs_one_query_when_the_competency_has_no_groups(
+    tag: Tag, course_run: CourseRun, django_assert_num_queries,
+) -> None:
+    """A competency with no groups skips the criteria query and, when scoped, the course run lookup."""
+    assert course_run.course_key is not None
+    with django_assert_num_queries(1):
+        get_competency_criteria_tree(tag, [course_run.course_key])
+
+
+# ==============================================================================================
+# get_competency_criteria_tree: course_keys scoping
+# ==============================================================================================
+
+
+def test_get_competency_criteria_tree_course_keys_none_matches_unfiltered_behavior(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """course_keys=None is unfiltered, identical to omitting it, and criteria_count equals total_criteria_count."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf1 = _create_leaf_group(tag, course_run)
+    leaf2 = _create_leaf_group(tag, other_course_run)
+    object_tag1 = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    object_tag2 = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    CompetencyCriterion.objects.create(group=leaf1, object_tag=object_tag1, rule_profile=default_rule_profile)
+    CompetencyCriterion.objects.create(group=leaf2, object_tag=object_tag2, rule_profile=default_rule_profile)
+
+    unfiltered = get_competency_criteria_tree(tag)
+    explicit_none = get_competency_criteria_tree(tag, None)
+
+    assert {g.id for g in explicit_none.groups} == {g.id for g in unfiltered.groups}
+    assert {c.id for c in explicit_none.criteria} == {c.id for c in unfiltered.criteria}
+    assert explicit_none.criteria_count == len(explicit_none.criteria) == 2
+    assert explicit_none.criteria_count == explicit_none.total_criteria_count
+
+
+def test_get_competency_criteria_tree_course_keys_empty_list_returns_only_the_root(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """course_keys=[] scopes to the instance-wide subtree only: the root, no course-level or leaf groups."""
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+
+    tree = get_competency_criteria_tree(tag, [])
+
+    assert {g.id for g in tree.groups} == {root.id}
+    assert not tree.criteria
+    assert tree.criteria_count == 0
+    assert tree.total_criteria_count == 1
+
+
+def test_get_competency_criteria_tree_course_keys_scoped_to_one_course(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Scoping to course A's key returns only A's subtree and criteria, nothing from course B."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf_a = _create_leaf_group(tag, course_run)
+    leaf_b = _create_leaf_group(tag, other_course_run)
+    object_tag_a = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    object_tag_b = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    criterion_a = CompetencyCriterion.objects.create(
+        group=leaf_a, object_tag=object_tag_a, rule_profile=default_rule_profile,
+    )
+    CompetencyCriterion.objects.create(group=leaf_b, object_tag=object_tag_b, rule_profile=default_rule_profile)
+    course_level_a = leaf_a.parent
+    assert course_level_a is not None
+    root = course_level_a.parent
+    assert root is not None
+    assert course_run.course_key is not None
+
+    tree = get_competency_criteria_tree(tag, [course_run.course_key])
+
+    assert {g.id for g in tree.groups} == {root.id, course_level_a.id, leaf_a.id}
+    assert [c.id for c in tree.criteria] == [criterion_a.id]
+    assert tree.criteria_count == 1
+    assert tree.total_criteria_count == 2
+
+
+def test_get_competency_criteria_tree_course_keys_preserve_request_order(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Requesting [B, A] sorts B's groups/criteria before A's; requesting [A, B] reverses the order."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf_a = _create_leaf_group(tag, course_run)
+    leaf_b = _create_leaf_group(tag, other_course_run)
+    object_tag_a = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    object_tag_b = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    criterion_a = CompetencyCriterion.objects.create(
+        group=leaf_a, object_tag=object_tag_a, rule_profile=default_rule_profile,
+    )
+    criterion_b = CompetencyCriterion.objects.create(
+        group=leaf_b, object_tag=object_tag_b, rule_profile=default_rule_profile,
+    )
+    assert course_run.course_key is not None
+    assert other_course_run.course_key is not None
+    a_key = course_run.course_key
+    b_key = other_course_run.course_key
+    a_group_ids = {leaf_a.id, leaf_a.parent_id}
+    b_group_ids = {leaf_b.id, leaf_b.parent_id}
+
+    tree_b_first = get_competency_criteria_tree(tag, [b_key, a_key])
+    b_positions = [i for i, g in enumerate(tree_b_first.groups) if g.id in b_group_ids]
+    a_positions = [i for i, g in enumerate(tree_b_first.groups) if g.id in a_group_ids]
+    assert max(b_positions) < min(a_positions)
+    assert [c.id for c in tree_b_first.criteria] == [criterion_b.id, criterion_a.id]
+
+    tree_a_first = get_competency_criteria_tree(tag, [a_key, b_key])
+    a_positions2 = [i for i, g in enumerate(tree_a_first.groups) if g.id in a_group_ids]
+    b_positions2 = [i for i, g in enumerate(tree_a_first.groups) if g.id in b_group_ids]
+    assert max(a_positions2) < min(b_positions2)
+    assert [c.id for c in tree_a_first.criteria] == [criterion_a.id, criterion_b.id]
+
+
+def test_get_competency_criteria_tree_course_keys_unresolvable_key_is_silently_ignored(
+    tag: Tag, course_run: CourseRun,
+) -> None:
+    """A well-formed course key with no matching CourseRun is dropped: no error, no contribution to the result."""
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    unresolvable_key = CourseKey.from_string("course-v1:NoOrg+NoCourse+NoRun")
+
+    tree = get_competency_criteria_tree(tag, [unresolvable_key])
+
+    assert {g.id for g in tree.groups} == {root.id}
+    assert not tree.criteria
+    assert tree.criteria_count == 0
+
+
+def test_get_competency_criteria_tree_course_keys_scoped_to_a_course_with_nothing(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    Criteria exist under courses A and B; scoping to a real course C with nothing under it
+    returns zero criteria but still reports the true instance-wide total.
+    """
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    empty_course_run = make_course_run(organization, "Python300", "Fall2026")
+    leaf_a = _create_leaf_group(tag, course_run)
+    leaf_b = _create_leaf_group(tag, other_course_run)
+    object_tag_a = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    object_tag_b = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    CompetencyCriterion.objects.create(group=leaf_a, object_tag=object_tag_a, rule_profile=default_rule_profile)
+    CompetencyCriterion.objects.create(group=leaf_b, object_tag=object_tag_b, rule_profile=default_rule_profile)
+    assert empty_course_run.course_key is not None
+
+    tree = get_competency_criteria_tree(tag, [empty_course_run.course_key])
+
+    assert not tree.criteria
+    assert tree.criteria_count == 0
+    assert tree.total_criteria_count == 2
+
+
+def test_get_competency_criteria_tree_scoped_prunes_a_leaf_whose_course_level_parent_is_archived(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A non-archived leaf under an archived course-level parent is absent, even when its own course is
+    requested: the tree never returns a row whose ancestor is archived. Its criterion is also left
+    out of both counts.
+    """
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf_archived_parent = _create_leaf_group(tag, course_run)
+    course_level_group = leaf_archived_parent.parent
+    assert course_level_group is not None
+    course_level_group.archived = True
+    course_level_group.save()
+    leaf_other = _create_leaf_group(tag, other_course_run)
+    object_tag_archived_parent = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    object_tag_other = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "p1"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    CompetencyCriterion.objects.create(
+        group=leaf_archived_parent, object_tag=object_tag_archived_parent, rule_profile=default_rule_profile,
+    )
+    criterion_other = CompetencyCriterion.objects.create(
+        group=leaf_other, object_tag=object_tag_other, rule_profile=default_rule_profile,
+    )
+    assert course_run.course_key is not None
+    assert other_course_run.course_key is not None
+
+    tree = get_competency_criteria_tree(tag, [other_course_run.course_key, course_run.course_key])
+
+    assert leaf_archived_parent.id not in {g.id for g in tree.groups}
+    assert [c.id for c in tree.criteria] == [criterion_other.id]
+    assert tree.criteria_count == 1
+    assert tree.total_criteria_count == 1
+
+
+def test_get_competency_criteria_tree_scopes_a_branch_three_levels_below_its_course(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A group nested below the leaf level belongs to its course-level group's course run, so scoping
+    to that course keeps it and scoping to another course drops it.
+    """
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf = _create_leaf_group(tag, course_run)
+    deep_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=leaf)
+    deeper_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=deep_group)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=deeper_group, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+    assert course_run.course_key is not None
+    assert other_course_run.course_key is not None
+
+    scoped = get_competency_criteria_tree(tag, [course_run.course_key])
+    other = get_competency_criteria_tree(tag, [other_course_run.course_key])
+
+    assert {deep_group.id, deeper_group.id} <= {g.id for g in scoped.groups}
+    assert [c.id for c in scoped.criteria] == [criterion.id]
+    assert not {deep_group.id, deeper_group.id} & {g.id for g in other.groups}
+    assert not other.criteria
+    assert other.total_criteria_count == 1
+
+
+def test_get_competency_criteria_tree_handles_duplicate_and_unresolvable_keys_together(
+    tag: Tag, course_run: CourseRun, organization: Organization,
+) -> None:
+    """A repeated key and an unresolvable key in one request leave roots, then a's branch, then b's, once each."""
+    run_b = make_course_run(organization, "Python200", "Fall2026")
+    leaf_a = _create_leaf_group(tag, course_run)
+    leaf_b = _create_leaf_group(tag, run_b)
+    assert course_run.course_key is not None
+    assert run_b.course_key is not None
+    unknown = CourseKey.from_string("course-v1:NoOrg+NoCourse+NoRun")
+
+    tree = get_competency_criteria_tree(tag, [course_run.course_key, unknown, run_b.course_key, course_run.course_key])
+
+    course_level_a = leaf_a.parent
+    course_level_b = leaf_b.parent
+    assert course_level_a is not None
+    assert course_level_b is not None
+    root = course_level_a.parent
+    assert root is not None
+    assert [g.id for g in tree.groups] == [root.id, course_level_a.id, leaf_a.id, course_level_b.id, leaf_b.id]
+
+
+def test_total_criteria_count_excludes_criteria_under_an_archived_ancestor(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """total_criteria_count counts what the unscoped tree returns, leaving out criteria under an archived ancestor."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    live_leaf = _create_leaf_group(tag, course_run)
+    hidden_leaf = _create_leaf_group(tag, other_course_run)
+    hidden_course_level = hidden_leaf.parent
+    assert hidden_course_level is not None
+    hidden_course_level.archived = True
+    hidden_course_level.save()
+    live_object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "live"), taxonomy=tag.taxonomy, tag=tag)
+    hidden_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(other_course_run, "hidden"), taxonomy=tag.taxonomy, tag=tag,
+    )
+    CompetencyCriterion.objects.create(group=live_leaf, object_tag=live_object_tag, rule_profile=default_rule_profile)
+    CompetencyCriterion.objects.create(
+        group=hidden_leaf, object_tag=hidden_object_tag, rule_profile=default_rule_profile,
+    )
+    assert course_run.course_key is not None
+
+    scoped = get_competency_criteria_tree(tag, [course_run.course_key])
+    empty_scope = get_competency_criteria_tree(tag, [])
+
+    assert scoped.total_criteria_count == 1
+    assert empty_scope.total_criteria_count == 1
+    assert empty_scope.criteria_count == 0
+
+
+def test_get_competency_criteria_tree_zero_criteria_anywhere(tag: Tag) -> None:
+    """A competency with no criteria at all reports both counts as zero, with or without a course_keys scope."""
+    tree_unfiltered = get_competency_criteria_tree(tag)
+    tree_scoped = get_competency_criteria_tree(tag, [])
+
+    assert tree_unfiltered.criteria_count == 0
+    assert tree_unfiltered.total_criteria_count == 0
+    assert tree_scoped.criteria_count == 0
+    assert tree_scoped.total_criteria_count == 0
+
+
+def test_get_competency_criteria_tree_a_different_tag_never_leaks_into_this_ones_counts(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A second, independent competency tag with its own criteria never contributes to this tag's
+    returned rows or counts.
+
+    This test file's fixtures have no modeled "sub-competency" relationship distinct from an
+    ordinary Tag; two unrelated tags are the closest analogue available, and isolation here is
+    already guaranteed structurally by filtering the group query on tag_id.
+    """
+    assert tag.taxonomy is not None
+    other_tag = Tag.objects.create(taxonomy=tag.taxonomy, value="Other Competency")
+    leaf = _create_leaf_group(tag, course_run)
+    other_leaf = _create_leaf_group(other_tag, course_run)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    other_object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "p2"), taxonomy=tag.taxonomy, tag=other_tag,
+    )
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+    CompetencyCriterion.objects.create(group=other_leaf, object_tag=other_object_tag, rule_profile=default_rule_profile)
+
+    tree = get_competency_criteria_tree(tag)
+
+    assert [c.id for c in tree.criteria] == [criterion.id]
+    assert tree.criteria_count == 1
+    assert tree.total_criteria_count == 1
+
+
+def test_get_competency_criteria_tree_scoped_keeps_every_group_above_any_course(
+    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A group with no course on its path stays in a scoped result even when it is not a root, so no
+    returned parent_id names a group that was left out. Scoping to [] keeps only those groups.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    mid = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    course_level = CompetencyCriteriaGroup.objects.create(tag=tag, parent=mid, course=course_run)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+    assert course_run.course_key is not None
+
+    scoped = get_competency_criteria_tree(tag, [course_run.course_key])
+    empty = get_competency_criteria_tree(tag, [])
+
+    scoped_ids = {g.id for g in scoped.groups}
+    assert scoped_ids == {root.id, mid.id, course_level.id, leaf.id}
+    assert all(g.parent_id is None or g.parent_id in scoped_ids for g in scoped.groups)
+    assert {g.id for g in empty.groups} == {root.id, mid.id}
+
+
+def test_get_courses_with_relative_criteria_single_match(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A single tag with a live criterion in a course is returned, mapped to that tag."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
+
+    assert get_courses_with_relative_criteria([relative.id]) == {course_run: relative}
+
+
+def test_get_courses_with_relative_criteria_ties_break_on_the_lowest_tag_id(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """When two of the given tags both have a live criterion in the same course, the lower id tag wins."""
+    first = make_tag(competency_taxonomy, "First Relative")
+    second = make_tag(competency_taxonomy, "Second Relative")
+    assert first.id < second.id
+    make_leaf_criterion(first, course_run, default_rule_profile, "p1")
+    make_leaf_criterion(second, course_run, default_rule_profile, "p2")
+
+    result = get_courses_with_relative_criteria([second.id, first.id])
+
+    assert result == {course_run: first}
+
+
+def test_get_courses_with_relative_criteria_empty_input_yields_an_empty_result() -> None:
+    """An empty tag_ids collection yields an empty result, not an error."""
+    assert not get_courses_with_relative_criteria([])
+
+
+def test_get_courses_with_relative_criteria_excludes_a_group_with_no_live_criterion(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun,
+) -> None:
+    """A CompetencyCriteriaGroup for a relative tag with no attached criterion is not a conflict."""
+    relative = make_tag(competency_taxonomy, "Empty Relative")
+    _create_leaf_group(relative, course_run)
+
+    assert not get_courses_with_relative_criteria([relative.id])
+
+
+def test_get_courses_with_relative_criteria_ignores_an_archived_criterion(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An archived criterion is gone for authoring, so it blocks nothing."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    criterion = make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
+    CompetencyCriterion.objects.filter(pk=criterion.pk).update(archived=True)
+
+    assert not get_courses_with_relative_criteria([relative.id])
+
+
+def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archived_leaf_group(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A live criterion under an archived leaf group blocks nothing."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    criterion = make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
+    CompetencyCriteriaGroup.objects.filter(pk=criterion.group_id).update(archived=True)
+
+    assert not get_courses_with_relative_criteria([relative.id])
+
+
+def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archived_course_level_group(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A live criterion under an archived course-level group blocks nothing."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    criterion = make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
+    course_level_id = criterion.group.parent_id
+    assert course_level_id is not None
+    CompetencyCriteriaGroup.objects.filter(pk=course_level_id).update(archived=True)
+
+    assert not get_courses_with_relative_criteria([relative.id])
+
+
+def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archived_root_group(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A live criterion under an archived root group blocks nothing."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    criterion = make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
+    course_level = criterion.group.parent
+    assert course_level is not None
+    root_id = course_level.parent_id
+    assert root_id is not None
+    CompetencyCriteriaGroup.objects.filter(pk=root_id).update(archived=True)
+
+    assert not get_courses_with_relative_criteria([relative.id])
+
+
+def test_get_courses_with_relative_criteria_counts_a_course_with_one_live_and_one_archived_criterion(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Archiving one of a tag's two criteria in a course leaves the course blocked by the other."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    archived = make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
+    make_leaf_criterion(relative, course_run, default_rule_profile, "p2")
+    CompetencyCriterion.objects.filter(pk=archived.pk).update(archived=True)
+
+    assert get_courses_with_relative_criteria([relative.id]) == {course_run: relative}
+
+
+def test_validate_containment_rejects_an_ancestor_conflict(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A live criterion on an ancestor of group.tag, in the same course, is rejected."""
+    parent = make_tag(competency_taxonomy, "Ancestor Skill")
+    child = make_tag(competency_taxonomy, "Descendant Skill", parent=parent)
+    make_leaf_criterion(parent, course_run, default_rule_profile, "p1")
+    group = _create_leaf_group(child, course_run)
+
+    with pytest.raises(ValidationError, match="tag_id"):
+        cbe_api._validate_containment(group, course_run)  # pylint: disable=protected-access
+
+
+def test_validate_containment_rejects_a_descendant_conflict(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A live criterion on a descendant of group.tag, in the same course, is rejected."""
+    parent = make_tag(competency_taxonomy, "Ancestor Skill 2")
+    child = make_tag(competency_taxonomy, "Descendant Skill 2", parent=parent)
+    make_leaf_criterion(child, course_run, default_rule_profile, "p1")
+    group = _create_leaf_group(parent, course_run)
+
+    with pytest.raises(ValidationError, match="tag_id"):
+        cbe_api._validate_containment(group, course_run)  # pylint: disable=protected-access
+
+
+def test_validate_containment_allows_sibling_tags(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Two tags sharing a parent, neither one the other's ancestor, do not conflict."""
+    parent = make_tag(competency_taxonomy, "Shared Parent")
+    sibling_a = make_tag(competency_taxonomy, "Sibling A", parent=parent)
+    sibling_b = make_tag(competency_taxonomy, "Sibling B", parent=parent)
+    make_leaf_criterion(sibling_a, course_run, default_rule_profile, "p1")
+    group = _create_leaf_group(sibling_b, course_run)
+
+    cbe_api._validate_containment(group, course_run)  # pylint: disable=protected-access  # Must not raise.
+
+
+def test_validate_containment_allows_the_same_tag_in_a_different_course(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A live criterion for the same tag, scoped to a different course, does not block this course."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    make_leaf_criterion(tag, other_course_run, default_rule_profile, "p1")
+    group = _create_leaf_group(tag, course_run)
+
+    cbe_api._validate_containment(group, course_run)  # pylint: disable=protected-access  # Must not raise.
+
+
+def test_validate_containment_allows_a_tag_with_no_relatives(tag: Tag, course_run: CourseRun) -> None:
+    """A tag with neither ancestors nor descendants has nothing to conflict with."""
+    group = _create_leaf_group(tag, course_run)
+
+    cbe_api._validate_containment(group, course_run)  # pylint: disable=protected-access  # Must not raise.
+
+
+def test_get_courses_with_relative_criteria_narrows_to_the_given_course(
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """With ``course`` given, only that course's conflict comes back, though another course has one too."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
+    make_leaf_criterion(relative, other_course_run, default_rule_profile, "p1")
+
+    assert get_courses_with_relative_criteria([relative.id], course=course_run) == {course_run: relative}
+
+
+def test_get_courses_with_relative_criteria_ignores_a_criterion_outside_a_leaf(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A criterion on a group nested below a leaf, e.g. made through the admin, is skipped rather than crashing."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    leaf = _create_leaf_group(relative, course_run)
+    nested = CompetencyCriteriaGroup.objects.create(tag=relative, parent=leaf)
+    object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, "p1"), taxonomy=relative.taxonomy, tag=relative,
+    )
+    CompetencyCriterion.objects.create(group=nested, object_tag=object_tag, rule_profile=default_rule_profile)
+
+    assert not get_courses_with_relative_criteria([relative.id])
+
+
+def test_create_competency_criterion_uses_the_callers_course_run(
+    tag: Tag, course_run: CourseRun, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The caller already resolved the course run, so creating the criterion doesn't look it up again."""
+    def _fail(*args, **kwargs):
+        raise AssertionError("get_course_run() called again")
+    monkeypatch.setattr(cbe_api, "get_course_run", _fail)
+    group = _create_leaf_group(tag, course_run)
+
+    criterion = cbe_api.create_competency_criterion(group, usage_key(course_run, "p1"), course_run=course_run)
+
+    assert criterion.group_id == group.id
+
+
+def test_associate_competency_criterion_creates_the_course_runs_cbe_row(
+    tag: Tag, course_run: CourseRun,
+) -> None:
+    """A course's first criterion creates its CompetencyCourseRun row."""
+    associate_competency_criterion(tag.id, usage_key(course_run, "p1"))
+
+    assert CompetencyCourseRun.objects.filter(course_run=course_run).exists()
+
+
+def test_associate_competency_criterion_reuses_the_course_runs_cbe_row(
+    tag: Tag, course_run: CourseRun,
+) -> None:
+    """Later criteria in the same course reuse the one CompetencyCourseRun row."""
+    associate_competency_criterion(tag.id, usage_key(course_run, "p1"))
+    associate_competency_criterion(tag.id, usage_key(course_run, "p2"))
+
+    assert CompetencyCourseRun.objects.filter(course_run=course_run).count() == 1
+
+
+def test_associate_competency_criterion_does_not_lock_the_catalog_course_run(
+    tag: Tag, course_run: CourseRun, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-course lock is on CBE's own row, never on the catalog's CourseRun."""
+    def _fail(*args, **kwargs):
+        raise AssertionError("CourseRun row locked")
+    monkeypatch.setattr(CourseRun.objects, "select_for_update", _fail)
+
+    associate_competency_criterion(tag.id, usage_key(course_run, "p1"))
+
+
+def test_competency_course_run_is_deleted_with_its_course_run(
+    tag: Tag, course_run: CourseRun,
+) -> None:
+    """Deleting a course run deletes its CompetencyCourseRun row."""
+    associate_competency_criterion(tag.id, usage_key(course_run, "p1"))
+
+    course_run.delete()
+
+    assert not CompetencyCourseRun.objects.exists()
+
+
+# ==============================================================================================
+# update_competency_criteria_group (#760)
+# ==============================================================================================
+
+def course_level_of(leaf: CompetencyCriteriaGroup) -> CompetencyCriteriaGroup:
+    """Return the course-level group `leaf` sits under."""
+    assert leaf.parent is not None
+    return leaf.parent
+
+
+def root_of(leaf: CompetencyCriteriaGroup) -> CompetencyCriteriaGroup:
+    """Return the root group of `leaf`'s tree."""
+    root = course_level_of(leaf).parent
+    assert root is not None
+    return root
+
+
+def with_operator(group: CompetencyCriteriaGroup, logic_operator: str | None) -> CompetencyCriteriaGroup:
+    """Store `logic_operator` on `group` directly, as the starting state for a test."""
+    group.logic_operator = logic_operator
+    group.save()
+    return group
+
+
+def group_history(group: CompetencyCriteriaGroup):
+    """
+    Return `group`'s history rows, newest first.
+
+    Looked up through the app registry, as the model tests do, because simple_history's `.history`
+    descriptor has no type stubs.
+    """
+    historical_group = apps.get_model("openedx_learning", "HistoricalCompetencyCriteriaGroup")
+    return historical_group.objects.filter(id=group.pk).order_by("-history_date", "-history_id")
+
+
+def stored(group: CompetencyCriteriaGroup) -> tuple[dict, int]:
+    """Return `group`'s columns as stored and its history length, to show what a call changed."""
+    return model_to_dict(CompetencyCriteriaGroup.objects.get(pk=group.pk)), group_history(group).count()
+
+
+@pytest.mark.parametrize("level", ["course-level", "leaf"])
+@pytest.mark.parametrize(
+    "before, after", [(LogicOperator.AND, LogicOperator.OR), (LogicOperator.OR, LogicOperator.AND)],
+)
+def test_update_switches_how_a_group_combines_its_children(
+    level: str, before: str, after: str, leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """Either operator replaces the other, on a course-level group and on a leaf alike."""
+    group = with_operator(course_level_of(leaf) if level == "course-level" else leaf, before)
+
+    result = update_competency_criteria_group(group.id, logic_operator=after, user=user)
+
+    assert result.logic_operator == after
+    group.refresh_from_db()
+    assert group.logic_operator == after
+
+
+def test_update_writes_one_history_row_attributed_to_the_caller(
+    leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """A real change is one save, so one history row, attributed without any request middleware."""
+    rows_before = group_history(leaf).count()
+
+    update_competency_criteria_group(leaf.id, logic_operator=LogicOperator.AND, user=user)
+
+    assert group_history(leaf).count() == rows_before + 1
+    latest = group_history(leaf).first()
+    assert latest.history_user == user
+    assert latest.logic_operator == LogicOperator.AND
+
+
+def test_update_that_changes_nothing_saves_nothing(leaf: CompetencyCriteriaGroup, user) -> None:
+    """Asking for the operator a group already has succeeds without adding a history row."""
+    assert leaf.logic_operator == LogicOperator.OR
+    before = stored(leaf)
+
+    result = update_competency_criteria_group(leaf.id, logic_operator=LogicOperator.OR, user=user)
+
+    assert result.logic_operator == LogicOperator.OR
+    assert stored(leaf) == before
+
+
+def test_update_sets_an_unset_operator_even_to_or(leaf: CompetencyCriteriaGroup, user) -> None:
+    """
+    A null operator given OR is a real change.
+
+    Null is evaluated like OR, but it is stored differently, and the caller asked for an explicit value.
+    """
+    course_level = course_level_of(leaf)
+    assert course_level.logic_operator is None
+    rows_before = group_history(course_level).count()
+
+    update_competency_criteria_group(course_level.id, logic_operator=LogicOperator.OR, user=user)
+
+    course_level.refresh_from_db()
+    assert course_level.logic_operator == LogicOperator.OR
+    assert group_history(course_level).count() == rows_before + 1
+
+
+def test_update_leaves_everything_else_about_the_group_and_its_branch_unchanged(
+    leaf: CompetencyCriteriaGroup, user, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Only the operator changes: not the group's name, ordering, competency, course, or parent, nor anything below."""
+    course_level = with_operator(course_level_of(leaf), LogicOperator.AND)
+    # A non-default ordering, so that a reset to the default would show.
+    course_level.ordering = 3
+    course_level.save()
+    criterion = make_criterion(leaf, "p1", rule_profile=default_rule_profile)
+    group_before, _ = stored(course_level)
+    leaf_before = stored(leaf)
+    criterion_before = model_to_dict(criterion)
+
+    update_competency_criteria_group(course_level.id, logic_operator=LogicOperator.OR, user=user)
+
+    group_after, _ = stored(course_level)
+    assert group_after == {**group_before, "logic_operator": LogicOperator.OR}
+    assert stored(leaf) == leaf_before
+    assert model_to_dict(CompetencyCriterion.objects.get(pk=criterion.pk)) == criterion_before
+
+
+@pytest.mark.parametrize("children", [0, 1])
+def test_update_accepts_a_group_with_fewer_than_two_children(
+    children: int, leaf: CompetencyCriteriaGroup, user, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A group's child count is creation's and deletion's concern, so it never blocks this edit."""
+    for n in range(children):
+        make_criterion(leaf, f"p{n}", rule_profile=default_rule_profile)
+
+    result = update_competency_criteria_group(leaf.id, logic_operator=LogicOperator.AND, user=user)
+
+    assert result.logic_operator == LogicOperator.AND
+
+
+@pytest.mark.parametrize("logic_operator", [None, "", "XOR", "and", 1])
+def test_update_rejects_an_operator_the_group_cannot_store(
+    logic_operator, leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """Anything but AND or OR is refused, keyed by the field, and the group keeps its operator."""
+    before = stored(leaf)
+
+    with pytest.raises(ValidationError) as exc_info:
+        update_competency_criteria_group(leaf.id, logic_operator=logic_operator, user=user)
+
+    assert "logic_operator" in exc_info.value.message_dict
+    assert stored(leaf) == before
+
+
+@pytest.mark.parametrize("logic_operator", [LogicOperator.OR, LogicOperator.AND])
+def test_update_refuses_an_archived_group_even_when_nothing_would_change(
+    logic_operator: str, leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """
+    An archived group is refused outright, whatever the request.
+
+    Asking for the operator it already has is refused too. That pins the archived check ahead of the
+    no-op check, since a success would suggest the edit was accepted.
+    """
+    leaf.archived = True
+    leaf.save()
+    before = stored(leaf)
+
+    with pytest.raises(CompetencyCriteriaGroupArchivedError):
+        update_competency_criteria_group(leaf.id, logic_operator=logic_operator, user=user)
+
+    assert stored(leaf) == before
+
+
+def test_update_rejects_a_root_group_before_checking_permission(
+    checked_object_ids: list[str], leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """A root spans every course beneath it, so it is refused before any permission check or write."""
+    root = with_operator(root_of(leaf), LogicOperator.AND)
+    before = stored(root)
+
+    with pytest.raises(ValidationError, match="root") as exc_info:
+        update_competency_criteria_group(root.id, logic_operator=LogicOperator.OR, user=user)
+
+    assert "group_id" in exc_info.value.message_dict
+    assert not checked_object_ids
+    assert stored(root) == before
+
+
+def test_update_does_not_mistake_a_course_less_child_of_the_root_for_a_root(
+    checked_object_ids: list[str], tag: Tag, leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """
+    A group with a parent is no root, even with no course of its own and none above it.
+
+    The model and ADR-0002 allow such a group, but with no course anywhere above it there's nothing to check
+    permission against. So it's refused, for that reason and not as a root, before any permission check or write.
+    """
+    course_less = CompetencyCriteriaGroup.objects.create(
+        tag=tag, parent=root_of(leaf), logic_operator=LogicOperator.AND,
+    )
+    before = stored(course_less)
+
+    with pytest.raises(ValidationError, match="no course") as exc_info:
+        update_competency_criteria_group(course_less.id, logic_operator=LogicOperator.OR, user=user)
+
+    assert "root" not in str(exc_info.value)
+    assert "group_id" in exc_info.value.message_dict
+    assert not checked_object_ids
+    assert stored(course_less) == before
+
+
+def test_update_resolves_the_course_of_a_group_nested_below_a_leaf(
+    checked_object_ids: list[str], leaf: CompetencyCriteriaGroup, user, course_run: CourseRun,
+) -> None:
+    """ADR-0002 supports deeply nested groups, so one below a leaf takes the course of its nearest ancestor with one."""
+    nested = CompetencyCriteriaGroup.objects.create(tag=leaf.tag, parent=leaf, logic_operator=LogicOperator.OR)
+
+    result = update_competency_criteria_group(nested.id, logic_operator=LogicOperator.AND, user=user)
+
+    assert result.logic_operator == LogicOperator.AND
+    nested.refresh_from_db()
+    assert nested.logic_operator == LogicOperator.AND
+    assert checked_object_ids == [str(course_run.course_key)]
+
+
+def test_update_404s_for_a_group_whose_tag_is_not_on_a_competency_taxonomy(
+    checked_object_ids: list[str], course_run: CourseRun, user,
+) -> None:
+    """A group under any other kind of taxonomy isn't a competency's group, so it's missing, and nothing changes."""
+    plain_tag = Tag.objects.create(taxonomy=Taxonomy.objects.create(name="Plain Tags", export_id="plain-v1"), value="x")
+    root = CompetencyCriteriaGroup.objects.create(tag=plain_tag, parent=None)
+    # Shaped like any editable group, so only its taxonomy sets it apart.
+    course_level = CompetencyCriteriaGroup.objects.create(
+        tag=plain_tag, course=course_run, parent=root, logic_operator=LogicOperator.AND,
+    )
+    before = stored(course_level)
+
+    with pytest.raises(Tag.DoesNotExist):
+        update_competency_criteria_group(course_level.id, logic_operator=LogicOperator.OR, user=user)
+
+    assert not checked_object_ids
+    assert stored(course_level) == before
+
+
+def test_update_raises_does_not_exist_for_an_unknown_group(user) -> None:
+    """An unknown group id raises CompetencyCriteriaGroup.DoesNotExist."""
+    with pytest.raises(CompetencyCriteriaGroup.DoesNotExist):
+        update_competency_criteria_group(999999, logic_operator=LogicOperator.AND, user=user)
+
+
+@pytest.mark.parametrize("level", ["course-level", "leaf"])
+def test_update_checks_permission_against_the_groups_course(  # pylint: disable=too-many-positional-arguments
+    level: str,
+    checked_object_ids: list[str],
+    leaf: CompetencyCriteriaGroup,
+    user,
+    course_run: CourseRun,
+    organization: Organization,
+) -> None:
+    """A course-level group's own course is checked, and a leaf's is resolved through its course-level parent."""
+    # Another course under the same root, so checking any course but the group's own would show.
+    _create_leaf_group(leaf.tag, make_course_run(organization, "Python200", "Fall2026"))
+    group = course_level_of(leaf) if level == "course-level" else leaf
+
+    update_competency_criteria_group(group.id, logic_operator=LogicOperator.AND, user=user)
+
+    assert checked_object_ids == [str(course_run.course_key)]
+
+
+@pytest.mark.parametrize("lacks", ["course write access", "taxonomy view access"])
+def test_update_refuses_a_user_without_permission_changing_nothing(
+    lacks: str, leaf: CompetencyCriteriaGroup, user, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """A user failing oel_tagging.can_tag_object's taxonomy check or object_id check is refused, and nothing changes."""
+    if lacks == "course write access":
+        rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, lambda _user, _object_id: False)
+    else:
+        # can_tag_object's taxonomy check fails on a disabled taxonomy for anyone but a superuser.
+        competency_taxonomy.enabled = False
+        competency_taxonomy.save()
+    before = stored(leaf)
+
+    with pytest.raises(PermissionDenied):
+        update_competency_criteria_group(leaf.id, logic_operator=LogicOperator.AND, user=user)
+
+    assert stored(leaf) == before
+
+
+@pytest.mark.parametrize("path", ["changed", "no-op", "archived", "root", "unsupported operator"])
+def test_update_never_reads_or_writes_learner_status(
+    path: str, leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """
+    No path issues a query against a StudentCompetency*Status table.
+
+    Whether learners have progress under a group plays no part in this edit; warning about that is #723's job.
+    """
+    group, logic_operator = leaf, str(LogicOperator.AND)
+    if path == "no-op":
+        logic_operator = LogicOperator.OR
+    elif path == "archived":
+        leaf.archived = True
+        leaf.save()
+    elif path == "root":
+        group = root_of(leaf)
+    elif path == "unsupported operator":
+        logic_operator = "XOR"
+
+    with CaptureQueriesContext(connection) as queries:
+        try:
+            update_competency_criteria_group(group.id, logic_operator=logic_operator, user=user)
+        except (ValidationError, CompetencyCriteriaGroupArchivedError):
+            pass
+
+    assert not [q for q in queries.captured_queries if "studentcompetency" in q["sql"].lower()]

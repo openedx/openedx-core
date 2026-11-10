@@ -17,7 +17,7 @@ from django.utils.translation import gettext_lazy as _
 from openedx_django_lib.fields import MultiCollationTextField, case_insensitive_char_field, case_sensitive_char_field
 
 from ..data import TagDataQuerySet
-from .utils import RESERVED_TAG_CHARS
+from .utils import RESERVED_TAG_CHARS, tag_external_id_candidate
 
 # Maximum depth of tags that can be created. Internally, the system has no depth limits, but for reasonable performance
 # guarantees we enforce this depth. Note: depth is zero-indexed so "5" means 6 levels of depth are allowed.
@@ -63,7 +63,6 @@ class Tag(models.Model):
     )
     external_id = case_insensitive_char_field(
         max_length=255,
-        null=True,  # To allow multiple values with our UNIQUE constraint, we need to use NULL values here instead of ""
         blank=True,
         help_text=_(
             "Used to link an Open edX Tag with a tag in an externally-defined taxonomy."
@@ -135,9 +134,7 @@ class Tag(models.Model):
         """
         String representation of a Tag used on user logs.
         """
-        if self.external_id:
-            return f"<{self.__class__.__name__}> ({self.external_id} / {self.value})"
-        return f"<{self.__class__.__name__}> ({self.value})"
+        return f"<{self.__class__.__name__}> ({self.external_id} / {self.value})"
 
     def get_lineage(self) -> Lineage:
         """
@@ -174,6 +171,22 @@ class Tag(models.Model):
         Compute and persist depth and lineage before saving, then cascade any changes to descendants.
         """
         self.clean()
+        if not self.external_id:
+            assert self.taxonomy is not None
+            candidate = tag_external_id_candidate(self.value, 1)
+            if self.taxonomy.tag_set.filter(external_id__iexact=candidate).exists():
+                # Collision on the first attempt: load all other external_ids in this taxonomy once,
+                # and generate further candidates in memory rather than re-querying per attempt.
+                existing = {
+                    eid.casefold() for eid in
+                    self.taxonomy.tag_set.exclude(pk=self.pk).values_list("external_id", flat=True)
+                }
+                attempt = 2
+                candidate = tag_external_id_candidate(self.value, attempt)
+                while candidate.casefold() in existing:
+                    attempt += 1
+                    candidate = tag_external_id_candidate(self.value, attempt)
+            self.external_id = candidate
         old_values = (
             Tag.objects.filter(pk=self.pk).values("depth", "lineage").first()
             if self.pk else None
@@ -524,6 +537,9 @@ class Taxonomy(models.Model):
 
         if self.tag_set.filter(value__iexact=tag_value).exists():
             raise ValueError(f"Tag with value '{tag_value}' already exists for taxonomy.")
+
+        if external_id and self.validate_external_id(external_id):
+            raise ValueError(f"Tag with external_id '{external_id}' already exists for taxonomy.")
 
         parent = None
         if parent_tag_value:

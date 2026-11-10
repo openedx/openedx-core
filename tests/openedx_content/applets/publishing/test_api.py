@@ -991,6 +991,50 @@ class PublishLogTestCase(TestCase):
         )
         assert publish_log.records.get(entity=entity).direct is True
 
+    def test_publish_mix_of_new_and_already_published(self) -> None:
+        """
+        Publishing never-published and already-published entities together.
+
+        The Published rows are written with a single upsert: a new row for the
+        entity that has never been published, and an update of the version and
+        log record for the one that has.
+        """
+        entity_1 = publishing_api.create_publishable_entity(
+            self.learning_package_1.id, "entity_1", created=self.now, created_by=None,
+        )
+        entity_1_v1 = publishing_api.create_publishable_entity_version(
+            entity_1.id, version_num=1, title="Entity 1 v1", created=self.now, created_by=None,
+        )
+        first_log = publishing_api.publish_all_drafts(self.learning_package_1.id)
+        assert publishing_api.get_published_version(entity_1.id) == entity_1_v1
+
+        # entity_1 gets a newer draft (its Published row must be updated) and
+        # entity_2 is brand new (a Published row must be inserted):
+        entity_1_v2 = publishing_api.create_publishable_entity_version(
+            entity_1.id, version_num=2, title="Entity 1 v2", created=self.now, created_by=None,
+        )
+        entity_2 = publishing_api.create_publishable_entity(
+            self.learning_package_1.id, "entity_2", created=self.now, created_by=None,
+        )
+        entity_2_v1 = publishing_api.create_publishable_entity_version(
+            entity_2.id, version_num=1, title="Entity 2 v1", created=self.now, created_by=None,
+        )
+
+        with self.assertNumQueries(19):
+            second_log = publishing_api.publish_all_drafts(self.learning_package_1.id)
+
+        entities = PublishableEntity.objects.select_related("published__publish_log_record")
+        published_1 = entities.get(id=entity_1.id).published
+        assert published_1.version_id == entity_1_v2.id
+        assert published_1.publish_log_record.publish_log_id == second_log.id
+        assert published_1.publish_log_record.old_version_id == entity_1_v1.id
+        published_2 = entities.get(id=entity_2.id).published
+        assert published_2.version_id == entity_2_v1.id
+        assert published_2.publish_log_record.publish_log_id == second_log.id
+        assert published_2.publish_log_record.old_version_id is None
+        # The first publish's record for entity_1 is untouched:
+        assert PublishLogRecord.objects.get(publish_log=first_log, entity=entity_1).new_version_id == entity_1_v1.id
+
     def test_publish_log_record_direct_defaults_to_false(self) -> None:
         """
         New PublishLogRecords default to direct=False (not None).

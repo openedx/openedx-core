@@ -11,4 +11,10 @@
         // https://pytest-django.readthedocs.io/en/stable/configuring_django.html#order-of-choosing-settings
         "--ds=test_settings"
     ],
+    // Format Python code with ruff (requires the charliermarsh.ruff extension),
+    // using the configuration in pyproject.toml.
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+    },
 }

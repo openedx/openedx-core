@@ -1969,7 +1969,8 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         self.assertIsNotNone(data.get("_id"))
         self.assertEqual(data.get("value"), new_tag_value)
         self.assertIsNone(data.get("parent_value"))
-        self.assertIsNone(data.get("external_id"))
+        # No external_id was supplied, so one is generated from the tag's name.
+        self.assertEqual(data.get("external_id"), new_tag_value)
         self.assertIsNone(data.get("sub_tags_link"))
         self.assertEqual(data.get("child_count"), 0)
 
@@ -1999,6 +2000,42 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         self.assertEqual(data.get("external_id"), new_external_id)
         self.assertIsNone(data.get("sub_tags_link"))
         self.assertEqual(data.get("child_count"), 0)
+
+    def test_create_tag_in_taxonomy_with_duplicate_external_id(self):
+        self.client.force_authenticate(user=self.staff)
+        existing_external_id = "dup-ext-id"
+
+        create_data = {
+            "tag": "First Tag With External Id",
+            "external_id": existing_external_id,
+        }
+        response = self.client.post(
+            self.small_taxonomy_url, create_data, format="json"
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+
+        tag_count_before = self.small_taxonomy.tag_set.count()
+
+        # Exact duplicate external_id:
+        response = self.client.post(
+            self.small_taxonomy_url,
+            {"tag": "Second Tag", "external_id": existing_external_id},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert existing_external_id in str(response.data)
+
+        # Duplicate that only differs in case:
+        response = self.client.post(
+            self.small_taxonomy_url,
+            {"tag": "Third Tag", "external_id": existing_external_id.upper()},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert existing_external_id.upper() in str(response.data)
+
+        # Neither rejected request should have created a new tag:
+        assert self.small_taxonomy.tag_set.count() == tag_count_before
 
     def test_create_tag_in_invalid_taxonomy(self):
         self.client.force_authenticate(user=self.staff)

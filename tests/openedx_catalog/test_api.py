@@ -178,6 +178,50 @@ def test_get_course_run(python100_summer26: CourseRun) -> None:
     assert run == python100_summer26
 
 
+# get_course_run_ids
+
+
+def test_get_course_run_ids_empty_input_returns_empty_dict_with_no_queries(django_assert_num_queries) -> None:
+    """An empty course_keys input returns {} and costs zero queries: nothing to look up."""
+    with django_assert_num_queries(0):
+        assert api.get_course_run_ids([]) == {}
+
+
+def test_get_course_run_ids_unknown_key_is_absent_from_the_result() -> None:
+    """A course key with no matching CourseRun is simply absent from the result, not an error or a None value."""
+    unknown_key = CourseKey.from_string("course-v1:NoOrg+NoCourse+NoRun")
+
+    result = api.get_course_run_ids([unknown_key])
+
+    assert result == {}
+
+
+def test_get_course_run_ids_duplicate_key_yields_one_entry(python100_summer26: CourseRun) -> None:
+    """The same course key passed twice in the input produces exactly one entry in the result dict."""
+    assert python100_summer26.course_key is not None
+    key = python100_summer26.course_key
+
+    result = api.get_course_run_ids([key, key])
+
+    assert result == {key: python100_summer26.id}
+
+
+def test_get_course_run_ids_maps_found_keys_and_omits_the_unknown_one(
+    python100_summer26: CourseRun, python100_winter26: CourseRun,
+) -> None:
+    """With two keys that resolve and one that does not, the result maps exactly the two found keys to their ids."""
+    assert python100_summer26.course_key is not None
+    assert python100_winter26.course_key is not None
+    unknown_key = CourseKey.from_string("course-v1:NoOrg+NoCourse+NoRun")
+
+    result = api.get_course_run_ids([python100_summer26.course_key, unknown_key, python100_winter26.course_key])
+
+    assert result == {
+        python100_summer26.course_key: python100_summer26.id,
+        python100_winter26.course_key: python100_winter26.id,
+    }
+
+
 # sync_course_run_details
 
 
@@ -266,7 +310,7 @@ def test_create_course_run_for_modulestore_course_with_existing_org_different_ca
     # Verify that a warning was logged. We actually get two warnings - one from the API and one from model.clean():
     assert caplog.record_tuples == [
         (
-            "openedx_catalog.api_impl",
+            "openedx_catalog.api_impl.courses",
             logging.WARN,
             'The course with ID "course-v1:NewOrg+Test+2026" does not match its Organization.short_name "nEWoRG"',
         ),
@@ -348,7 +392,7 @@ def test_create_course_run_for_modulestore_course_run_that_exists(caplog: pytest
     # Verify that a warning was logged:
     assert caplog.record_tuples == [
         (
-            "openedx_catalog.api_impl",
+            "openedx_catalog.api_impl.courses",
             logging.WARN,
             'Expected to create CourseRun for "course-v1:NewOrg+Test+2026" but it already existed.',
         ),

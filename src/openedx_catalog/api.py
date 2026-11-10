@@ -25,6 +25,7 @@ determining which courses are visible to which users.
 
 # Import only the public API methods denoted with __all__
 # pylint: disable=wildcard-import
-from .api_impl import *
+from .api_impl.courses import *
+from .api_impl.pathways import *
 
 # You'll also want the models from .models_api

@@ -15,7 +15,7 @@ taxonomy; put a queryset through ``select_competency_taxonomies()`` first when c
 list, so the whole list costs one query instead of one per row. Keeping the check here is
 what lets ``openedx_tagging`` stay a generic tagging library that never learns CBE exists.
 
-The criteria, rule profile, and learner status tables this applet still needs are designed
-in ``docs/openedx_learning/decisions/``. ``openedx_tagging`` ADR 0013 covers how
+The criteria, rule profile, and learner status tables are designed in
+``docs/openedx_learning/decisions/``. ``openedx_tagging`` ADR 0013 covers how
 ``openedx-platform`` calls ``is_competency_taxonomy()`` to report a taxonomy's type to
 Studio.

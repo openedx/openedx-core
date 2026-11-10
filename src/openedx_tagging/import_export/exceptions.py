@@ -49,6 +49,64 @@ class ImportActionError(TagImportError):
         ).format(name=action.name, index=action.index, message=message)
 
 
+class DuplicateFinalIdError(TagImportError):
+    """
+    Exception raised when two or more rows in the same import claim the
+    same final id, so it's ambiguous which row's changes should land on
+    that tag.
+    """
+
+    def __init__(self, tag_id: str, row_indexes: list[int], **kargs):
+        super().__init__(**kargs)
+        self.message = _(
+            "Duplicate id ({tag_id}): file rows {row_indexes} all claim it as "
+            "their final id. Each row's id must be unique within a single import."
+        ).format(tag_id=tag_id, row_indexes=", ".join(str(index) for index in row_indexes))
+
+
+class StaleIdTargetedByPlainRowError(TagImportError):
+    """
+    Exception raised when a plain row (no previous_id) in an import targets
+    an id that a different row in the same import is renaming away from,
+    rather than the already-supported case of a rename row landing on it.
+    """
+
+    def __init__(self, tag_id: str, plain_row: int, rename_row: int, **kargs):
+        super().__init__(**kargs)
+        self.message = _(
+            "Row {plain_row}'s id ({tag_id}) is renamed away by row {rename_row} in this "
+            "same import. A plain row (no previous_id) may not target an id another row "
+            "is renaming away from."
+        ).format(tag_id=tag_id, plain_row=plain_row, rename_row=rename_row)
+
+
+class ParentCycleError(TagImportError):
+    """
+    Exception raised when a row's parent_id would make its tag its own ancestor.
+
+    ``row`` is the 1-based position of the row among the file's data rows, as
+    in DuplicateFinalIdError.
+    """
+
+    def __init__(self, row: int, parent_id: str, **kargs):
+        super().__init__(**kargs)
+        self.message = _(
+            "Row {row}'s parent_id ({parent_id}) creates a parent cycle."
+        ).format(row=row, parent_id=parent_id)
+
+
+class TagTooDeepError(TagImportError):
+    """
+    Exception raised when the import would leave a tag deeper than the taxonomy allows.
+    """
+
+    def __init__(self, tag_id: str, max_levels: int, **kargs):
+        super().__init__(**kargs)
+        self.message = _(
+            "This import would leave tag {tag_id} more than {max_levels} levels deep."
+        ).format(tag_id=tag_id, max_levels=max_levels)
+
+
 class ImportActionConflict(ImportActionError):
     """
     Exception used when exists a conflict between actions
