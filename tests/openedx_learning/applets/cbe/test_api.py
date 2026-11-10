@@ -495,6 +495,26 @@ def test_resolve_supplied_leaf_group_rejects_an_archived_leaf(tag: Tag, course_r
     assert "archived" in str(exc_info.value.message_dict["group_id"])
 
 
+def test_resolve_supplied_leaf_group_rejects_an_active_leaf_under_an_archived_course_level_group(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    An active leaf under an archived course-level group is rejected, keyed ``group_id``.
+
+    Only rows written outside the API produce this state. The check mirrors
+    ``get_courses_with_relative_criteria()``, which also treats such a leaf as archived.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    assert leaf.parent is not None
+    leaf.parent.archived = True
+    leaf.parent.save()
+
+    with pytest.raises(ValidationError) as exc_info:
+        resolve_supplied_leaf_group(leaf.id, tag, course_run)
+
+    assert "archived" in str(exc_info.value.message_dict["group_id"])
+
+
 def test_resolve_supplied_leaf_group_still_resolves_an_active_leaf_beside_an_archived_one(
     tag: Tag, course_run: CourseRun
 ) -> None:
