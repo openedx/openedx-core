@@ -6,126 +6,154 @@
 Status
 ------
 
-Draft. Depends on :ref:`openedx-content-adr-0013` and :ref:`openedx-content-adr-0014`.
+Draft. Depends on :ref:`openedx-content-adr-0012`, :ref:`openedx-content-adr-0013` and :ref:`openedx-content-adr-0016`.
 
 Context
 -------
 
 When a course author uploads an image to a course's "Files", stored as an :class:`Asset` (a shared static asset: a :class:`PublishableEntity` whose :class:`AssetVersion` points to a single :class:`Media`) per :ref:`openedx-content-adr-0013`, Studio automatically generates a smaller thumbnail image. This lets the Files page show a preview of each image without loading the full file.
 
+The Files page is not the only place that needs smaller versions of an image. Today, edx-platform also generates two sizes of each course's card image for the dashboard and the about page (``CourseOverviewImageConfig``, 375×200 and 750×400 by default), and content library "cards" should show image previews too. Other places, like oversized images in HTML content, would also benefit from being resized before being sent to the browser.
+
 Three properties of the existing design shape this decision:
 
 - :class:`PublishableEntityVersion` objects, which back every :class:`AssetVersion` (as well as every :class:`ComponentVersion`), are created once and never updated.
-- A thumbnail is not authored content: it is a derived, disposable artifact that can always be regenerated from the original file. The legacy contentstore already treats it this way — it is generated whenever an asset is uploaded or a course is imported, but never written into a course's export package.
-- :class:`Media` is a self-contained model for storing and deduplicating binary data by content hash within a :class:`LearningPackage`. Its own documentation explicitly invites third-party apps to extend it with a ``OneToOneField``, independent of any :class:`Asset` or :class:`Component`.
+- A thumbnail is not authored content: it is a derived, disposable artifact that can always be regenerated from the original file. The legacy contentstore already treats it this way: it is generated whenever an asset is uploaded or a course is imported, but never written into a course's export package.
+- :class:`Media` is content-addressed: its file is stored under a path derived from the hash of its bytes, inside the ``media_file_namespace`` of its :class:`LearningPackage` (:ref:`openedx-content-adr-0012`, decision 6). Two :class:`Media` rows with the same bytes in the same namespace share a single stored file, even when they belong to different learning packages.
 
 Decisions
 ---------
 
-1. Thumbnails are not versioned
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1. Thumbnails are derived files, not content
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Creating or regenerating a thumbnail never creates a new version of the :class:`Asset`. The source image continues to be versioned normally, like any other :class:`Asset` content, but the thumbnail itself is not authored content and does not participate in that versioning.
+A thumbnail is never a :class:`PublishableEntity`, a :class:`PublishableEntityVersion` or a :class:`Media` row, and it is never associated with an :class:`AssetVersion` or a :class:`ComponentVersion`. Creating a thumbnail never creates a new version of anything. The source image continues to be versioned normally, like any other :class:`Asset` content, but the thumbnail does not participate in that versioning, in draft/publish, or in export and backup.
 
-2. Thumbnail metadata lives platform-side, not in ``openedx_content``
+2. Thumbnail generation is a generic API in openedx-core
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The code that computes thumbnail paths and generates thumbnails lives in a new app in openedx-core, outside of the learning package infrastructure. It exposes a generic API that takes a source :class:`Media` and the name of a variant (e.g. ``get_thumbnail(media, variant="files")``). The app does not define any variants of its own: it looks up the variant's dimensions in the setting from decision 4, where the platform and plugins define them.
+
+Because the API only accepts variant names, a caller cannot request arbitrary dimensions. A plugin that passed a value taken from a request directly to the API would get an error for any name not listed in that setting, instead of generating a new size.
+
+3. A thumbnail's storage path is a pure function of the source bytes and the resize parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Thumbnails are stored as plain files, under a path computed from the source :class:`Media` and the parameters used to generate them:
+
+``thumbnails/{media_file_namespace}/{source-media-hash}-{width}x{height}-{algorithm-version}.{ext}``
+
+This mirrors the ``content/{media_file_namespace}/{hash_digest}`` path that :class:`Media` files already use (:ref:`openedx-content-adr-0012`, decision 6), under a separate ``thumbnails/`` prefix.
+
+There is no database model that maps a source image to its thumbnails. Given a source :class:`Media` and a size, the path is computed, and the thumbnail either already exists there or does not.
+
+- The **source hash** is the content hash that :class:`Media` already uses to store its own file, so the same image bytes always map to the same thumbnail, regardless of which :class:`Asset`, :class:`Component` or learning package they belong to.
+- The **width and height** are the actual dimensions requested. Changing the configured size of a thumbnail therefore produces new files, instead of leaving stale ones under the same name.
+- The **algorithm version** is bumped whenever the resizing code or its output format changes in a way that changes the result, so that existing thumbnails are never overwritten with different content.
+
+4. Thumbnail sizes are named, configured variants
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Callers never request arbitrary dimensions. Each consumer defines the sizes it needs as named variants (for example, one for the Files page, one for content library cards, and the two course card image sizes). Requests ask for a variant by name, and the variant's configured dimensions are used to compute the path from decision 3.
+
+This bounds how many thumbnails can exist for each image, and prevents a request from forcing the generation of an unbounded number of sizes.
+
+Variants are defined in a single Django setting, read by the openedx-core app from decision 2. The platform provides the default variants in code, which each deployment can override, and plugins and other apps that use the API add their own to the same setting. Variants are not configurable at runtime (e.g. through the Django admin), because:
+
+- **Variant names are a contract with the frontend.** Each UI requests the variant it was built for, so adding or removing a variant only makes sense together with the code that uses it.
+- **Dimensions are a UI decision.** The size of a thumbnail follows the layout that displays it, and should change together with that layout's code.
+- **Changing a variant's dimensions is expensive.** It leaves every existing thumbnail of that variant unused (see Consequences) and causes all of them to be generated again.
+
+The openedx-core app only generates thumbnails for the variants listed in that setting, so the limit on the number of sizes does not depend on each consumer following this convention.
+
+The name and format of the setting, and which properties a variant has beyond its dimensions, are left to the implementation.
+
+5. Thumbnails are generated eagerly when possible, and lazily as a fallback
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Thumbnails for the configured variants are generated eagerly at the points where the legacy contentstore already generates them: when an author uploads an image, and when a course is imported.
+
+When a thumbnail is requested and its file does not exist yet, it is generated at that moment from the source :class:`Media`, stored at its path, and served. Because the path is a pure function of its inputs, two concurrent requests for the same missing thumbnail produce the same file at the same path.
+
+The lazy fallback covers every case where no eager generation happened, without any special handling: courses migrated from contentstore, whose thumbnails are not migrated; reruns, copies and syncs into other learning packages; past versions of an :class:`Asset`; and new variants added after the image was uploaded.
+
+6. Thumbnails are requested through their source, not by storage path
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A new Django model, ``ImageMediaThumbnail``, owned by openedx-platform, is keyed to the **source image**, not to the :class:`Asset` — via a ``ForeignKey`` referencing the source image's ``ImageMedia`` entry (:ref:`openedx-content-adr-0013`), and records which :class:`Media` object is the current thumbnail for that source image, together with any other presentation-adjacent fields the platform needs for that asset. Consistent with Decision 1, this model is a plain, mutable Django row: creating a new thumbnail or changing these fields is a simple update, not a new version.
+The storage path from decision 3 is an internal key, not a public URL. A thumbnail is requested through the same URL that already serves its source file, with the variant name added as a query parameter:
 
-Keying on ``ImageMedia`` rather than the :class:`Asset` means a thumbnail is a property of a specific, immutable set of image bytes. This matters because an :class:`Asset` can hold more than one image over its history, and, per :ref:`openedx-content-adr-0013`'s Decision 2, a single File component can also group more than one image file at once. It also means, by construction, that only ``Media`` already confirmed to be a valid image (i.e. one that has an ``ImageMedia`` entry) can ever have a thumbnail.
+- A shared :class:`Asset`, at its learning-package-level URL, e.g. ``.../assets/published/images/fig1.png?thumbnail=files``.
+- A file attached to a :class:`Component`, at the Component's file URL, e.g. ``.../{component_key}/published/static/fig1.png?thumbnail=library_card``.
 
-3. Thumbnail bytes are stored as ``Media``, referenced by a direct foreign key
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The view that serves the source file handles the request exactly as it would for the file itself, and only changes what it serves at the end:
 
-The thumbnail image itself is written to ``openedx_content`` as an ordinary :class:`Media` object. The platform-side model from Decision 2 holds a second, separate foreign key to that :class:`Media` row — alongside its key relationship to the source image's ``ImageMedia`` — and regenerating a thumbnail simply repoints that second foreign key at a new, or existing and content-identical, :class:`Media` row.
+- **The source is identified by the URL.** Both shared Assets and files attached to Components are covered, including the fallback from a Component's file URL to a shared Asset.
+- **The version is chosen by the URL.** ``draft`` (used by Studio, including the Files page), ``published`` (used by the LMS), and ``?v=N`` for historical versions follow the same rules as for the file. The thumbnail is computed from the :class:`Media` of whichever version is resolved.
+- **The same permission checks are applied.** For a shared Asset, its permissions mode; for a file attached to a Component, the Component's permissions. A thumbnail is never more visible than its source: a user who cannot access an image cannot access any of its thumbnails.
 
-Critically, neither the source image's :class:`Media` nor the thumbnail's :class:`Media` gain any new association with an :class:`AssetVersion` (or with a :class:`ComponentVersion` through ``ComponentVersionMedia``) as a result of this model. It is a sibling piece of data that happens to live in the same :class:`LearningPackage`, addressed and deduplicated the same way as any other :class:`Media`, but outside of the versioned graph that the :class:`Asset` participates in.
-
-This gives the thumbnail the storage and deduplication properties of :class:`Media`, including sharing bytes across reruns of a course via ``media_file_namespace``.
-
-4. The platform-side model supports multiple thumbnail variants per source image
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Rather than a single thumbnail per source image, the model from Decision 2 is keyed on ``(image_media, variant)``, where ``image_media`` is the ``ForeignKey`` to the source image's ``ImageMedia`` from Decision 2, and ``variant`` is a short string identifying the size or context a thumbnail was generated for (e.g. ``"default"``), with a ``UniqueConstraint`` on that pair. Each ``(image_media, variant)`` row has its own foreign key to a :class:`Media` row for the thumbnail itself, per Decision 3.
-
-Only one variant (``"default"``) is ever generated for now. Nothing here commits to building multiple sizes now; it only keeps the schema from needing a breaking migration if and when a second size is needed.
-
-That single ``"default"`` size is meant to serve more than one consumer at once: Studio's Files page preview, and the "card" preview shown when browsing or searching for content to reuse in a content library. Choosing its dimensions to match that card size means both use cases share the same variant, rather than needing a second one just to support the library card view.
-
-5. Thumbnail generation remains synchronous, at upload and at import time
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Thumbnails continue to be generated eagerly, at the same points where the legacy contentstore already generates them: when an author uploads an image, and when a course is imported. No thumbnail is generated speculatively ahead of need, and none is generated lazily at serving time.
-
-The same idea applies to a course rerun, to copy/paste, and to syncing a downstream :class:`Asset` with a newer published version of its upstream. Because the model from Decision 2 is keyed on the source image's ``ImageMedia`` rather than on the :class:`Asset`, this often requires no action at all: if the destination ends up with the exact same source :class:`Media` (and therefore the same ``ImageMedia``, since it is a pure function of those bytes), the existing thumbnail row is already correct, since the key it's looked up by hasn't changed. A new thumbnail only needs to be generated when a genuinely new source :class:`Media` appears with no existing thumbnail row — for example, an :class:`Asset` copied into a Learning Package that doesn't already have that exact image, or a sync that pulls in a new, edited version of the source image. In that case, the new ``Media`` also needs its own ``ImageMedia`` before a thumbnail can be keyed to it, but that is already required independently of thumbnails, per :ref:`openedx-content-adr-0013`.
-
-6. Thumbnails are served by a dedicated platform-side endpoint, not the general asset-serving API
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The URL scheme :ref:`openedx-content-adr-0005` defines is resolved by looking up ``(component_version, path)`` in ``ComponentVersionMedia``, and per Decision 3, a thumbnail's :class:`Media` is never registered there. So a thumbnail cannot be served through that same endpoint.
-
-Instead, the platform-side app that owns the model from Decision 2 exposes its own endpoint, e.g. ``GET /api/contentstore/v2/file_components/{component_key}/thumbnail``. Given a File component, it resolves the source image's current draft :class:`Media` through ``ComponentVersionMedia`` (the same way any other file attached to that version is resolved), then that ``Media``'s ``ImageMedia``, looks up the thumbnail's :class:`Media` for that ``(image_media, variant)`` from the model in Decision 2, and serves it, reusing the same underlying serving mechanism :ref:`openedx-content-adr-0005` already defines for any ``Media``.
+Once the source :class:`Media` is resolved and access is granted, the view calls the API from decision 2 with that :class:`Media` and the requested variant, and serves the resulting thumbnail file the same way it serves any other file. Placeholders and deleted Assets, which have no current :class:`Media`, return the same response as a request for the file itself.
 
 Consequences
 ------------
 
-- No schema changes are required in ``openedx_content``. The File component remains, as :ref:`openedx-content-adr-0013` describes it, a dumb mapping of paths to :class:`Media`.
-- Thumbnails do not participate in draft/publish, backup and restore, or any other machinery that assumes a :class:`PublishableEntityVersion` is immutable once created, because a thumbnail never becomes one.
-- Thumbnails are not included in a course's export package, and are regenerated from the source asset on import. This preserves the behavior the legacy contentstore already has today. No new mechanism is introduced to make thumbnails portable, because they were never treated as portable content: the source image is the asset of record, and the thumbnail is a derived, disposable artifact of it.
-- Regenerating a thumbnail repoints the platform-side model's foreign key at a new :class:`Media` row; it does not delete or overwrite the previous one, which is left unreferenced. ``openedx_content`` has no deletion or garbage-collection mechanism for individual :class:`Media` rows today.
-- Although the platform-side model is not versioned, the thumbnail for a past version of an :class:`Asset` can still be retrieved: since the model is keyed on the source image's ``ImageMedia`` rather than on the :class:`Asset`, looking up which :class:`Media` a past :class:`ComponentVersion` used (via ``ComponentVersionMedia``, which already records this), then that ``Media``'s ``ImageMedia``, and then looking up that ``ImageMedia``'s thumbnail works for any version, past or present.
-- Thumbnails are naturally deduplicated across Assets: if two different :class:`Asset`\ s happen to hold byte-identical source images (the same :class:`Media`, whether by coincidence or because one was copied from the other), they share a single thumbnail row and a single thumbnail :class:`Media`, rather than each generating and storing its own copy.
+- No schema changes are required in ``openedx_content``, and no new database models are required anywhere: :class:`Asset` and :class:`AssetVersion` are used as defined in :ref:`openedx-content-adr-0013`.
+- Thumbnails are deduplicated within a ``media_file_namespace``: the same image bytes used by different :class:`Asset`\ s, by files attached to :class:`Component`\ s, or by different learning packages (e.g. a course and its reruns) share the same thumbnail files.
+- Copying content between learning packages (reruns, copy/paste, library sync) requires no thumbnail-specific handling.
+- Migrating a course from contentstore requires no thumbnail-specific step: thumbnails are generated on first request.
+- The thumbnail for a past version of an :class:`Asset` can be retrieved the same way as the current one, starting from that version's :class:`Media`.
+- Supporting a new size only requires configuring a new variant.
+- Thumbnails are not included in a course's export package, and are regenerated after import. This preserves the behavior the legacy contentstore already has today.
+- Since there is no database record of which thumbnails exist, serving a thumbnail requires checking whether its file exists in storage. With remote storage (e.g. S3), this check adds latency to every thumbnail request. Eager generation (decision 5) means the file almost always exists, so a request rarely has to wait for a thumbnail to be generated, but it still pays for the check. If this becomes a problem, the check can be avoided later (e.g. by caching which thumbnails exist, or by redirecting to the expected URL) without changing this design.
+- Thumbnail files are never deleted. When a configured size or the algorithm version changes, the previous files are left behind. ``openedx_content`` has no garbage-collection mechanism for :class:`Media` files either.
+- There is no inventory of thumbnails: finding which thumbnails exist for a :class:`Media` requires listing the storage under its hash. No such inventory is needed for now, because nothing in this design has to enumerate thumbnails.
+- Thumbnails are not covered by the per-learning-package storage accounting and cleanup that :class:`Media` rows support. A thumbnail is shared by every learning package that uses the same image bytes, so it cannot be attributed to a single one. Because every thumbnail path starts with ``thumbnails/{media_file_namespace}/``, thumbnails can still be measured or removed per organization by storage prefix, and any removed thumbnail is regenerated on its next request.
 
 Rejected Alternatives
 ---------------------
 
-Storing the thumbnail in an ``openedx_content`` metadata model
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A platform-side model mapping each source image to its thumbnail
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:ref:`openedx-content-adr-0013` introduces ``FileComponentMetadata``, a separate, unversioned model keyed by a ``OneToOneField(primary_key=True)`` to :class:`Component`, for per-asset metadata that does not fit within the existing :class:`Component`/:class:`Media` models (``locked``, ``private`` and ``legacy_path``). Those fields are generic: they apply the same way to a File component regardless of what kind of file it holds. Decision 2 of this ADR follows that same trivial-unversioned-model *shape*, but for a purpose specific to image content, not a generic one.
+An earlier version of this ADR proposed an ``ImageMediaThumbnail`` model, keyed on ``(image_media, variant)``, with a foreign key to the :class:`Media` row holding the thumbnail. This was rejected because:
 
-:ref:`openedx-content-adr-0013` also introduces ``ImageMedia``, a model that extends :class:`Media` with a ``OneToOneField`` to capture metadata "purely derived from the image byte data itself" (e.g. dimensions). Storing the current thumbnail as a field on ``ImageMedia`` was considered instead, since it would use the same extension pattern and the same :class:`Media`-backed deduplication as Decision 3.
+- Every input of a thumbnail (the source bytes and the resize parameters) is immutable, so a mutable row that is "repointed" when a thumbnail is regenerated adds state without adding information.
+- :class:`Media` rows belong to a single learning package, so every rerun or copy into another learning package would need new rows, even though the files themselves are shared.
 
-We reject this because a thumbnail does not meet the "purely derived from the image byte data itself" bar that ``ImageMedia`` is scoped to. Unlike dimensions, which are a fixed function of the bytes alone, the correct thumbnail for a given image also depends on an external, configurable parameter — the target size and resizing algorithm. If that parameter changes, the correct thumbnail for the same, unchanged image bytes changes with it — something that can never happen to an image's dimensions.
+Storing the thumbnail inside the source's versioned data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-More fundamentally, a thumbnail only makes sense for image content, is driven by that platform-configurable parameter rather than being a fixed function of the bytes, and, per Decision 4 of this ADR, needs to support more than one value per image — since ``ImageMedia`` is 1:1 with a single :class:`Media`, a single ``thumbnail`` field on it could not represent more than one size, short of adding one field per size or a separate table keyed by size. None of that fits a model that is meant to stay a simple, purely-derived reflection of a single image's byte data, nor the generic, file-type-agnostic pattern ``FileComponentMetadata`` follows above.
-
-This is a different thing from Decision 2's choice to key the platform-side model on ``ImageMedia`` itself, rather than on the :class:`Asset`. Both approaches use ``ImageMedia`` to identify the source image, but Decision 2's model is a new, purpose-built table that merely holds a ``ForeignKey`` to ``ImageMedia`` (and supports multiple ``variant`` rows per ``ImageMedia``), rather than a field bolted directly onto ``ImageMedia`` itself, whose own documented contract is to stay a pure function of an image's bytes alone. Referencing ``ImageMedia`` from an external table doesn't have to honor that contract; adding a field to ``ImageMedia`` would.
-
-Creating a new ``openedx-core`` app for this metadata
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Rather than putting the model from Decision 2 in openedx-platform, we could add a new sibling app to ``openedx-core`` itself, following the same pattern ``openedx_learning`` and ``openedx_catalog`` use, keyed with ``ForeignKey``\ s to the source image's ``ImageMedia`` and the thumbnail's :class:`Media` the same way. This is technically straightforward: a new app can sit above ``openedx_content`` without violating the layering enforced by ``.importlinter``.
-
-We reject this for now because the use cases are very limited at first, and it may not be worth the packaging and versioning overhead of a new, small ``openedx-core`` app for something only used in one place. This is not because the size and resizing algorithm used to generate a thumbnail would force ``openedx-core`` to depend on platform-specific configuration: a generic API, where the caller supplies the desired dimensions and the app itself has no notion of "variants" of its own, would avoid that coupling. If thumbnails gain more consumers or more variants in the future, revisiting this as an ``openedx-core`` app with such a generic, parameter-driven API is a reasonable next step.
-
-Grouping the thumbnail as a second file within the source File component
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-:ref:`openedx-content-adr-0013` allows a File component to group multiple related files together (e.g. different resolutions of the same image), which could in principle hold the thumbnail alongside the original. This was rejected because ``ComponentVersionMedia`` is a full snapshot of a version's media, not a delta: regenerating the thumbnail would force a new :class:`ComponentVersion` that also rewrites the unrelated, unchanged association to the original file. Grouped files also carry no notion of which one is a derived thumbnail versus the source, so this approach would still require a naming convention to tell them apart, without avoiding the versioning cost.
-
-Making ``ComponentVersionMedia`` mutable for derived files
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-To avoid the cost above, we considered allowing certain paths within a ``ComponentVersionMedia`` mapping to be updated in place, without creating a new :class:`ComponentVersion`. This was rejected because :class:`PublishableEntityVersion` is immutable by design across all of ``openedx_content`` — other systems (backup and restore, course export/import, version history and diff tooling) already depend on a version being a fixed, reproducible snapshot in time. Carving out a mutability exception for one kind of derived file would undermine that guarantee platform-wide, for a benefit that only this feature needs.
+An :class:`Asset` holds exactly one file per version (:ref:`openedx-content-adr-0013`), so a thumbnail cannot be grouped with its source in the same :class:`AssetVersion`. Storing it as a separate version, or making versions mutable for derived files, was rejected because :class:`PublishableEntityVersion` is immutable by design: backup and restore, export/import and version history all depend on a version being a fixed snapshot. Adding a derived file must never create a new version of authored content.
 
 Keeping thumbnails in the legacy MongoDB-backed contentstore
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Leaving thumbnails behind in the legacy contentstore would keep a MongoDB dependency alive for one narrow piece of functionality, working against the eventual retirement of ``contentstore``.
+Leaving thumbnails behind in the legacy contentstore would keep a MongoDB dependency alive for one narrow piece of functionality, working against the retirement of contentstore planned in :ref:`openedx-content-adr-0016`.
 
-An independent storage model with no relationship to ``Media``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A dedicated endpoint for thumbnails
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A platform-side model with its own image field and storage backend, entirely disconnected from ``openedx_content`` — the pattern ``edxval.VideoImage`` already uses for video thumbnails — was considered. It is a simpler design, but it forfeits the content-addressed deduplication that :class:`Media` already provides, and it does not follow the extension pattern that :class:`Media` explicitly documents for third-party apps.
+An earlier version of this ADR proposed a separate platform endpoint for thumbnails (e.g. ``/api/contentstore/v2/.../thumbnail``). It was rejected because that endpoint would have to duplicate the logic that resolves a file's source, chooses its version and checks its permissions.
 
-Generating thumbnails on the fly at serving time
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Allowing arbitrary dimensions in thumbnail requests
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Rather than generating a thumbnail eagerly at upload and import time, we considered generating it lazily, the first time it is requested, and caching the result. This would avoid spending storage and CPU on thumbnails that are never viewed, and would let the same design serve multiple sizes on demand instead of a single fixed one. We reject it for now on the grounds of added complexity: it requires a caching strategy and changes to the asset-serving view, beyond what this ADR needs to resolve. Nothing about this design precludes adding on-the-fly generation as a future enhancement layered on top of the same storage model.
+Letting callers request any width and height would be more flexible, but combined with lazy generation it would let a single client force the generation and storage of an unbounded number of files.
+
+Configuring variants at runtime through a model
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Variants could be stored in a model editable through the Django admin. This would allow changing sizes without a deployment. It was rejected because variant names and dimensions are tied to the frontend code that requests and displays them, and because a change made from the admin would silently cause every thumbnail of that variant to be generated again.
+
+Generating thumbnails only at upload and import time
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Generating thumbnails only eagerly would avoid any image processing during requests, but every case not covered by an upload or import (migrated courses, copies into other learning packages, new variants, past versions) would then need its own explicit generation step. The lazy fallback (decision 5) handles all of them with a single mechanism.
 
 Open Questions
 --------------
 
-- **Exact location of the platform-side model.** This ADR specifies that the thumbnail metadata model lives in openedx-platform, but does not pin down which Django app owns it. This is left to implementation.
+- **Deduplicating thumbnails across the whole site.** Using a single storage location for all thumbnails, instead of one per ``media_file_namespace``, would deduplicate more, but would make it harder to remove all of an organization's files. This ADR starts with per-namespace storage.
+- **Image metadata.** An ``ImageMedia`` model, joined 1:1 with :class:`Media` and holding metadata derived from the image bytes (e.g. dimensions), is not needed by this design, but could complement it (e.g. to avoid upscaling small images, or to show dimensions on the Files page).
+- **Images that fail to generate.** If a :class:`Media` declares an ``image/*`` type but cannot be decoded, no thumbnail file is ever created, and every request tries to generate it again. A first version can accept this, since such images should be rare. If it becomes a problem, failures could be remembered for a while (e.g. a cache entry with an expiry, or a marker file in storage) so they are not retried on every request.
+- **Name of the openedx-core app.** Decision 2 places the code in a new openedx-core app, but does not fix its name.
 - **Thumbnails of XBlocks, not just images.** This ADR is scoped to thumbnails of image files. A related, but architecturally distinct, need is a visual preview of an XBlock component itself (e.g. a Problem or an HTML interactive), generated by rendering the component rather than resizing an existing image — useful for content library "card" views that cover any component type, not just ones with an attached image. That is out of scope here, but worth exploring as a future extension.
