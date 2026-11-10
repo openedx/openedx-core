@@ -671,43 +671,69 @@ def test_associate_competency_criterion_rolls_back_root_reactivation_when_the_co
     assert CompetencyCriterion.objects.count() == criterion_count
 
 
-def test_associate_competency_criterion_allows_re_association_while_a_sibling_keeps_the_course_level_group_alive(
+def test_associate_competency_criterion_archived_criterion_blocks_re_association_while_a_sibling_keeps_the_group_alive(
     tag: Tag, course_run: CourseRun
 ) -> None:
     """
-    Re-associating after an archive succeeds while a sibling leaf keeps the course-level group active.
+    An archived criterion for the content blocks a derive-path re-add even while the course-level group is active.
 
     The setup mirrors the archive cascade: the first criterion and its own leaf are archived, but the
-    course-level group stays active because the sibling's leaf is still live. The new criterion gets its own
-    leaf under that same course-level group and reuses the ObjectTag.
+    course-level group stays active because the sibling's leaf is still live. With no ``group_id``, the archived
+    criterion blocks anywhere under the competency, and the error says the association was archived.
     """
     first = associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
-    sibling = associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p2"))
+    associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p2"))
     first.archived = True
     first.save()
     first.group.archived = True
     first.group.save()
+    group_count = CompetencyCriteriaGroup.objects.count()
+    criterion_count = CompetencyCriterion.objects.count()
 
-    second = associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
 
-    first.refresh_from_db()
-    assert second.group_id != first.group_id
-    assert second.object_tag_id == first.object_tag_id
-    assert second.group.parent_id == sibling.group.parent_id
-    assert first.archived is True
+    assert "previously associated" in str(exc_info.value.message_dict["object_id"])
+    assert "archived" in str(exc_info.value.message_dict["object_id"])
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+    assert CompetencyCriterion.objects.count() == criterion_count
 
 
-def test_associate_competency_criterion_archived_criterion_does_not_mask_the_archived_branch_error(
+def test_associate_competency_criterion_active_match_keeps_the_plain_duplicate_message_beside_an_archived_one(
     tag: Tag, course_run: CourseRun
 ) -> None:
     """
-    An archived criterion for the same content does not hide the archived-branch rejection.
+    When an active and an archived criterion both match the content, the plain duplicate message applies.
+
+    The archived-state message is reserved for the case where every matching criterion is archived.
+    """
+    object_id = usage_key(course_run, "p1")
+    archived = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    active = associate_competency_criterion(
+        tag_id=tag.id, object_id=object_id, group_id=_create_leaf_group(tag, course_run).id,
+    )
+    archived.archived = True
+    archived.save()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    with pytest.raises(ValidationError) as group_exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=active.group_id)
+
+    assert "previously" not in str(exc_info.value.message_dict["object_id"])
+    assert "previously" not in str(group_exc_info.value.message_dict["group_id"])
+
+
+def test_associate_competency_criterion_archived_criterion_blocks_re_add_before_the_branch_state_is_consulted(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    An archived criterion blocks the re-add before the archived branch is checked.
 
     Scenario 3 of #717 with the archive cascade's full result: the criterion, its leaf, the course-level
-    group, and the root are all archived. The duplicate check ignores the archived criterion, so the request
-    reaches the archived course-level group and is refused there, keyed ``object_id``. Like the test above,
-    this guards the ``transaction.atomic()`` wrapper: the root stays archived only because the rejection rolls
-    back the reactivation.
+    group, and the root are all archived. The duplicate check runs first and refuses the request with the
+    archived-duplicate message keyed ``object_id``, not the archived-course-level-group message, and the root
+    is not reactivated.
     """
     object_id = usage_key(course_run, "p1")
     first = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
@@ -724,7 +750,7 @@ def test_associate_competency_criterion_archived_criterion_does_not_mask_the_arc
     with pytest.raises(ValidationError) as exc_info:
         associate_competency_criterion(tag_id=tag.id, object_id=object_id)
 
-    assert "archived" in str(exc_info.value.message_dict["object_id"])
+    assert "previously associated" in str(exc_info.value.message_dict["object_id"])
     root.refresh_from_db()
     assert root.archived is True
     assert CompetencyCriterion.objects.count() == criterion_count

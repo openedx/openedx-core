@@ -617,13 +617,15 @@ def test_derive_path_reactivates_an_archived_root_instead_of_creating_a_second_o
     assert other_course_level.archived is True
 
 
-def test_re_association_while_a_sibling_keeps_the_course_level_group_alive_is_created(
+def test_re_association_while_a_sibling_keeps_the_course_level_group_alive_is_rejected_as_archived(
     user_client: APIClient, tag: Tag, course_run: CourseRun,
 ) -> None:
     """
-    A fresh association of an archived (tag, object_id) is created while a sibling keeps the course-level group alive.
+    A derive-path POST for an archived (tag, object_id) is a 400 keyed ``object_id`` even with a live sibling.
 
     The archive state mirrors the cascade: the first criterion and its leaf are archived, the sibling's leaf is not.
+    With no ``group_id``, the archived criterion blocks anywhere under the competency, and the message names the
+    archived state.
     """
     object_id = usage_key(course_run, "p1")
     first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
@@ -635,22 +637,26 @@ def test_re_association_while_a_sibling_keeps_the_course_level_group_alive_is_cr
     criterion.save()
     criterion.group.archived = True
     criterion.group.save()
+    group_count = CompetencyCriteriaGroup.objects.count()
+    criterion_count = CompetencyCriterion.objects.count()
 
     response = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
 
-    assert response.status_code == status.HTTP_201_CREATED
-    new_criterion = CompetencyCriterion.objects.get(pk=response.data["id"])
-    assert new_criterion.object_tag_id == criterion.object_tag_id
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "previously associated" in str(response.data["object_id"])
+    assert "archived" in str(response.data["object_id"])
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+    assert CompetencyCriterion.objects.count() == criterion_count
 
 
-def test_supplied_group_holding_an_archived_criterion_for_the_same_content_accepts_a_new_one(
+def test_supplied_group_holding_an_archived_criterion_for_the_same_content_is_rejected_as_archived(
     user_client: APIClient, tag: Tag, course_run: CourseRun,
 ) -> None:
     """
-    Scenario 6 of #717 at the POST level: an archived criterion does not block re-association into its own leaf.
+    Scenario 6 of #717 at the POST level: an archived criterion blocks re-association into its own leaf.
 
     The leaf is active and holds only an archived criterion for the content. A request supplying that
-    ``group_id`` creates a second criterion in the same leaf on the same ObjectTag, and the archived one is untouched.
+    ``group_id`` is a 400 keyed ``group_id`` whose message names the archived state, and nothing is created.
     """
     object_id = usage_key(course_run, "p1")
     first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
@@ -658,14 +664,44 @@ def test_supplied_group_holding_an_archived_criterion_for_the_same_content_accep
     archived_criterion = CompetencyCriterion.objects.get(pk=first.data["id"])
     archived_criterion.archived = True
     archived_criterion.save()
+    criterion_count = CompetencyCriterion.objects.count()
 
     response = user_client.post(
         criterion_create_url(tag.id), {"object_id": object_id, "group_id": first.data["group_id"]}, format="json",
     )
 
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "previously associated" in str(response.data["group_id"])
+    assert "archived" in str(response.data["group_id"])
+    assert CompetencyCriterion.objects.count() == criterion_count
+    archived_criterion.refresh_from_db()
+    assert archived_criterion.archived is True
+
+
+def test_supplied_different_group_accepts_content_whose_criterion_in_another_group_is_archived(
+    user_client: APIClient, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    A criterion for the content in a different active group is accepted although another group holds an archived one.
+
+    The archived criterion blocks only its own group, or the no-``group_id`` path. A different explicit group is a
+    deliberate second association (ADR-0002).
+    """
+    object_id = usage_key(course_run, "p1")
+    first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
+    assert first.status_code == status.HTTP_201_CREATED
+    archived_criterion = CompetencyCriterion.objects.get(pk=first.data["id"])
+    archived_criterion.archived = True
+    archived_criterion.save()
+    other_leaf = _create_leaf_group(tag, course_run)
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": object_id, "group_id": other_leaf.id}, format="json",
+    )
+
     assert response.status_code == status.HTTP_201_CREATED
     new_criterion = CompetencyCriterion.objects.get(pk=response.data["id"])
-    assert new_criterion.group_id == archived_criterion.group_id
+    assert new_criterion.group_id == other_leaf.id
     assert new_criterion.object_tag_id == archived_criterion.object_tag_id
     archived_criterion.refresh_from_db()
     assert archived_criterion.archived is True

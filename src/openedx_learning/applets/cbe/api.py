@@ -494,9 +494,11 @@ def create_competency_criterion(
 
 def _reject_duplicate_criterion(tag: Tag, object_id: str, group_id: int | None) -> None:
     """
-    Raise ValidationError if an active criterion already associates ``object_id`` with ``tag``.
+    Raise ValidationError if a criterion, active or archived, already associates ``object_id`` with ``tag``.
 
-    The check is scoped to ``group_id`` when supplied.
+    The check is scoped to ``group_id`` when supplied. The error is keyed ``object_id`` without a ``group_id``
+    and ``group_id`` with one. When every matching criterion is archived, the message says the association was
+    archived.
 
     Must run inside a transaction holding the tag row lock.
     """
@@ -506,19 +508,34 @@ def _reject_duplicate_criterion(tag: Tag, object_id: str, group_id: int | None) 
     ).first()
     if existing_object_tag is None:
         return
-    # An archived criterion keeps its ObjectTag for history; it must not block a fresh association.
-    duplicate_criteria = CompetencyCriterion.objects.filter(object_tag=existing_object_tag, archived=False)
+    # An archived criterion keeps blocking: ADR 0002 makes archiving permanent below the root for the MVP, and a
+    # criterion is no exception. At most one criterion row per content per group also leaves the data clean for a
+    # post-MVP unarchive (ticket owner's decision on #717).
+    duplicate_criteria = CompetencyCriterion.objects.filter(object_tag=existing_object_tag)
     if group_id is None:
-        # Can't know which group slot is intended, so any active criterion is a duplicate.
-        if duplicate_criteria.exists():
-            raise ValidationError(
-                {"object_id": _("A CompetencyCriterion already associates this tag with this object_id.")}
-            )
-    elif duplicate_criteria.filter(group_id=group_id).exists():
-        # A different explicit group is a deliberate second association (ADR-0002), not a duplicate.
+        # Can't know which group slot is intended, so any criterion is a duplicate.
+        archived_flags = list(duplicate_criteria.values_list("archived", flat=True))
+        if not archived_flags:
+            return
+        if all(archived_flags):
+            raise ValidationError({"object_id": _(
+                "This content was previously associated with this competency and the association was archived."
+            )})
         raise ValidationError(
-            {"group_id": _("A CompetencyCriterion already associates this tag with this object_id in this group.")}
+            {"object_id": _("A CompetencyCriterion already associates this tag with this object_id.")}
         )
+    # A different explicit group is a deliberate second association (ADR-0002), not a duplicate.
+    archived_flags = list(duplicate_criteria.filter(group_id=group_id).values_list("archived", flat=True))
+    if not archived_flags:
+        return
+    if all(archived_flags):
+        raise ValidationError({"group_id": _(
+            "This content was previously associated with this competency in this group and the association "
+            "was archived."
+        )})
+    raise ValidationError(
+        {"group_id": _("A CompetencyCriterion already associates this tag with this object_id in this group.")}
+    )
 
 
 def _validate_rule_fields(
@@ -575,8 +592,10 @@ def associate_competency_criterion(
     created and any root reactivation.
 
     An archived leaf group (``group_id``) or an archived course-level group is rejected. When no
-    ``group_id`` is supplied, an archived root group is reactivated. An archived criterion doesn't
-    count as a duplicate.
+    ``group_id`` is supplied, an archived root group is reactivated. An archived criterion blocks
+    re-association like an active one: in the supplied group, or anywhere under the competency
+    when no ``group_id`` is supplied. The error then says the association was archived, under the
+    same ``object_id`` or ``group_id`` key as an active duplicate.
 
     Raises ValidationError (never DRF's) on rejected input, including an invalid combination of
     rule fields or a missing or archived ``rule_profile_id``; Tag.DoesNotExist if ``tag_id``
