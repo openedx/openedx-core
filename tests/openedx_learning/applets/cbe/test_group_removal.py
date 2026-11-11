@@ -480,7 +480,7 @@ def test_integrity_error_unrelated_to_learner_progress_is_raised_instead_of_arch
     target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
     criterion = _make_criterion(target, object_tag, default_rule_profile)
 
-    with patch.object(cbe_api, "_delete_orphaned_object_tags", side_effect=IntegrityError):
+    with patch.object(cbe_api, "_reconcile_object_tags", side_effect=IntegrityError):
         with pytest.raises(IntegrityError):
             delete_or_archive_competency_criteria_group(target.id, user)
 

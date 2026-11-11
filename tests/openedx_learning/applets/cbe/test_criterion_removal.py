@@ -13,6 +13,7 @@ from rules.permissions import permissions as rule_permissions
 
 from openedx_learning.api import delete_or_archive_competency_criterion
 from openedx_learning.applets.cbe import api as cbe_api
+from openedx_learning.applets.cbe.api import _reconcile_object_tags
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
     CompetencyCriterion,
@@ -22,6 +23,7 @@ from openedx_learning.models import (
     StudentCompetencyCriteriaGroupStatus,
     StudentCompetencyCriterionStatus,
 )
+from openedx_tagging.api import lock_object_tags_for_deletion
 from openedx_tagging.models import ObjectTag, Tag
 
 pytestmark = pytest.mark.django_db
@@ -229,6 +231,117 @@ def test_hard_delete_removes_only_the_criterions_own_object_tag(
     assert not ObjectTag.objects.filter(id=object_tag.id).exists()
     assert CompetencyCriterion.objects.filter(id=other_criterion.id).exists()
     assert ObjectTag.objects.filter(id=other_object_tag.id).exists()
+
+
+# =================================================================================================
+# Reconciling the ObjectTags of removed criteria
+# =================================================================================================
+
+
+def _make_archived_criterion(
+    group: CompetencyCriteriaGroup, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> CompetencyCriterion:
+    """Create a CompetencyCriterion under `group` and archive it directly, bypassing the removal API."""
+    criterion = _make_criterion(group, object_tag, default_rule_profile)
+    criterion.archived = True
+    criterion.save()
+    return criterion
+
+
+def test_reconcile_leaves_an_association_an_active_criterion_uses(
+    tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An association that an active criterion still uses is neither archived nor locked."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    _make_criterion(CompetencyCriteriaGroup.objects.create(tag=tag, parent=root), object_tag, default_rule_profile)
+    _make_criterion(CompetencyCriteriaGroup.objects.create(tag=tag, parent=root), object_tag, default_rule_profile)
+
+    _reconcile_object_tags({object_tag.id})
+
+    row = ObjectTag.objects.get(pk=object_tag.pk)
+    assert row.archived is False
+    assert row.deletion_locked is False
+
+
+def test_reconcile_locks_and_archives_an_association_only_archived_criteria_use(
+    tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An association used only by archived criteria is locked and archived, and the criterion row survives."""
+    criterion = _make_archived_criterion(
+        CompetencyCriteriaGroup.objects.create(tag=tag), object_tag, default_rule_profile
+    )
+
+    _reconcile_object_tags({object_tag.id})
+
+    row = ObjectTag.objects.get(pk=object_tag.pk)
+    assert row.archived is True
+    assert row.deletion_locked is True
+    assert CompetencyCriterion.objects.filter(pk=criterion.pk).exists()
+
+
+def test_reconcile_deletes_an_association_nothing_references(
+    competency_taxonomy: CompetencyTaxonomy, tag: Tag,
+) -> None:
+    """An association no criterion references is deleted."""
+    orphan = _make_object_tag(competency_taxonomy, tag, "obj-orphan")
+
+    _reconcile_object_tags({orphan.id})
+
+    assert not ObjectTag.objects.filter(pk=orphan.pk).exists()
+
+
+def test_reconcile_is_idempotent_on_an_already_archived_association(
+    tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Reconciling an association that is already locked and archived changes nothing, however often it runs."""
+    criterion = _make_archived_criterion(
+        CompetencyCriteriaGroup.objects.create(tag=tag), object_tag, default_rule_profile
+    )
+    lock_object_tags_for_deletion(object_tag.pk)
+    ObjectTag.objects.filter(pk=object_tag.pk).delete()
+
+    _reconcile_object_tags({object_tag.id})
+    _reconcile_object_tags({object_tag.id})
+
+    row = ObjectTag.objects.get(pk=object_tag.pk)
+    assert row.archived is True
+    assert row.deletion_locked is True
+    assert CompetencyCriterion.objects.filter(pk=criterion.pk).exists()
+    assert ObjectTag.objects.filter(pk=object_tag.pk).count() == 1
+
+
+def test_reconcile_skips_an_id_that_no_longer_exists(object_tag: ObjectTag) -> None:
+    """An id with no ObjectTag row is skipped without an error, and the existing association is untouched."""
+    _reconcile_object_tags({object_tag.id + 1000})
+
+    row = ObjectTag.objects.get(pk=object_tag.pk)
+    assert row.archived is False
+    assert row.deletion_locked is False
+
+
+def test_hard_delete_of_a_rule_sharing_an_association_with_an_archived_rule_archives_it(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    Hard-deleting the only live criterion on an association an archived criterion also uses archives the
+    association instead of deleting it, so the archived criterion row survives.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    live = _make_criterion(
+        CompetencyCriteriaGroup.objects.create(tag=tag, parent=root), object_tag, default_rule_profile
+    )
+    archived = _make_archived_criterion(
+        CompetencyCriteriaGroup.objects.create(tag=tag, parent=root), object_tag, default_rule_profile
+    )
+
+    delete_or_archive_competency_criterion(live.id, user)
+
+    assert not CompetencyCriterion.objects.filter(pk=live.pk).exists()
+    archived.refresh_from_db()
+    assert archived.archived is True
+    row = ObjectTag.objects.get(pk=object_tag.pk)
+    assert row.archived is True
+    assert row.deletion_locked is True
 
 
 # =================================================================================================

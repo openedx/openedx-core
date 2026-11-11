@@ -1242,9 +1242,8 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
         object_tag = criterion.object_tag
         _set_history_user(criterion, user)
         criterion.delete()
-        # Only this criterion's own ObjectTag is a candidate, and only while no other criterion uses it.
-        if not CompetencyCriterion.objects.filter(object_tag_id=object_tag.id).exists():
-            ObjectTag.objects.filter(pk=object_tag.id).delete()
+        # Only this criterion's own ObjectTag is a candidate; the helper keeps it for any criterion still using it.
+        _reconcile_object_tags({object_tag.id})
         _cascade_remove_from_group(group, user)
         return CriterionDeletionResult(id=criterion_id, archived=False)
 
@@ -1315,19 +1314,44 @@ def _subtree_has_learner_progress(group_ids: set[int], criterion_ids: list[int])
     )
 
 
-def _delete_orphaned_object_tags(candidate_objecttag_ids: set[int]) -> None:
+def _reconcile_object_tags(candidate_ids: set[int]) -> None:
     """
-    Delete each ObjectTag in ``candidate_objecttag_ids`` that no CompetencyCriterion references, and nothing else.
+    Settle each ObjectTag in ``candidate_ids`` after criteria that used it were hard-deleted.
 
-    Must run after the criteria that used these ObjectTags are deleted, inside the transaction that
-    holds the competency's Tag lock. No other ObjectTag on the object, in any taxonomy, is read or written.
+    ``candidate_ids`` are the ObjectTag ids of the deleted criteria. Each id ends in one of three states,
+    and no other ObjectTag on the object, in any taxonomy, is read or written:
+
+    - Left alone, if an active criterion still uses it.
+    - Locked with ``lock_object_tags_for_deletion()`` and then deleted, which archives it, if only archived
+      criteria use it. Hard-deleting it would cascade into those criteria through
+      ``CompetencyCriterion.object_tag``, so the association is archived and the archived criteria keep it.
+    - Deleted, if no criterion uses it. An association that is already locked is archived by the deletion
+      instead.
+
+    An id with no ObjectTag row is skipped, so a repeat call is harmless.
+
+    The caller must hold the competency's ``Tag`` row lock, because the reference check is check-then-act.
+    :func:`delete_or_archive_competency_criterion` records the races that lock settles. The ``ObjectTag``
+    row locks the tagging layer takes during the lock and delete steps come after the ``Tag`` lock, so a
+    concurrent ``record_graded_object_statuses()`` over overlapping associations can deadlock with this
+    call. The database aborts one side with a deadlock error (MySQL 1213) and no data is corrupted, the
+    same class of risk that lock comment records.
     """
-    still_referenced = set(
-        CompetencyCriterion.objects.filter(
-            object_tag_id__in=candidate_objecttag_ids,
-        ).values_list("object_tag_id", flat=True)
+    if not candidate_ids:
+        return
+    active = set(
+        CompetencyCriterion.objects.filter(object_tag_id__in=candidate_ids, archived=False).values_list(
+            "object_tag_id", flat=True
+        )
     )
-    ObjectTag.objects.filter(pk__in=candidate_objecttag_ids - still_referenced).delete()
+    # Ids come back from the database because lock_object_tags_for_deletion() raises on an unknown id.
+    existing = set(ObjectTag.objects.filter(pk__in=candidate_ids - active).values_list("pk", flat=True))
+    referenced = set(
+        CompetencyCriterion.objects.filter(object_tag_id__in=existing).values_list("object_tag_id", flat=True)
+    )
+    if referenced:
+        lock_object_tags_for_deletion(referenced)
+    ObjectTag.objects.filter(pk__in=existing).delete()
 
 
 def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -> GroupDeletionResult:
@@ -1345,8 +1369,8 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
     if any does. Either way, each ancestor left with no live children is then hard-deleted or
     archived, as for a criterion delete (ADR-0002 Decision 2).
 
-    On a hard delete, only the ObjectTags of the subtree's criteria that no other criterion
-    references are removed; no other tag on the object is touched.
+    On a hard delete, only the ObjectTags of the subtree's criteria are touched, each as
+    :func:`_reconcile_object_tags` describes; no other tag on the object is changed.
 
     The first read and the permission check run before the lock. The rest runs in one transaction that
     takes only one explicit lock, on the competency's Tag row, the same lock a create or a criterion
@@ -1411,7 +1435,7 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
                     parent_group = target_group.parent
                     _set_history_user(target_group, user)
                     target_group.delete()
-                    _delete_orphaned_object_tags({criterion.object_tag_id for criterion in criteria})
+                    _reconcile_object_tags({criterion.object_tag_id for criterion in criteria})
                     if parent_group is not None:
                         _cascade_remove_from_group(parent_group, user)
             except IntegrityError:
