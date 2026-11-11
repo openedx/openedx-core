@@ -35,6 +35,7 @@ For the initial implementation, versioning and traceability of competency achiev
 
    - Before any related learner status exists, edits and deletes are allowed.
    - After any related learner status exists, disassociation/deletion is archive-only (soft delete), not hard delete.
+   - An association that only archived ``CompetencyCriteria`` rows still reference is archived and locked against hard deletion, whether or not a learner status exists for it, because a hard delete would cascade into those archived rows. This is the case for a criterion with no learner status of its own that is archived together with its group. Creating a criterion for the same content again revives the archived association in place, and the association keeps its lock.
    - Ordinary reads (tag lists, object-tag-for-an-object lookups used by authoring UIs, and similar) exclude archived rows, so an archived association behaves as gone from those paths.
    - The read path that resolves a learner status row back to the ``ObjectTag`` it references is exempt from that exclusion: archived rows remain queryable on that path, so learner status records can continue to be traced back to their source association.
 
@@ -128,3 +129,10 @@ Rejected Alternatives
 11. Drop the database-level foreign key constraint on the learner column.
      - Cons:
          - This repo's convention is a real foreign key to ``settings.AUTH_USER_MODEL``. Reports of contention on the user row exist elsewhere in the ecosystem, but are not understood well enough here to design around.
+
+Changelog
+---------
+
+2026-11-11:
+
+* Amended Decision 3 for issue #817: an association that only archived criteria reference is archived and locked even when no learner status exists for it, and creating a criterion for the same content again revives it in place.

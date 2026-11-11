@@ -731,7 +731,7 @@ def lock_object_tags_for_deletion(object_tag_ids: int | Iterable[int]) -> None:
     """
     Lock the given ObjectTags against deletion.
 
-    A locked association is archived rather than deleted, because a learner competency status depends on it.
+    A locked association is archived rather than deleted, because something outside the tagging app depends on it.
     Locks are permanent; there is no unlock.
 
     :param object_tag_ids: One ObjectTag primary key, or an iterable of them.
