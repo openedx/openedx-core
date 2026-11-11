@@ -524,25 +524,22 @@ def test_archived_criterion_is_skipped(
     assert not StudentCompetencyCriterionStatus.objects.filter(criterion=without_status).exists()
 
 
-def test_active_criterion_on_a_shared_tag_is_evaluated(
+def test_active_criterion_sharing_an_object_tag_is_evaluated(
     user, group: CompetencyCriteriaGroup, object_tag: ObjectTag, rule_profile_75: CompetencyRuleProfile,
 ) -> None:
-    """
-    Archiving one of two criteria that share a single ObjectTag leaves the other evaluated at its
-    own threshold: the filter reads `CompetencyCriterion.archived`, nothing on `ObjectTag`. No
-    authoring endpoint puts two criteria on one ObjectTag, so the test builds that state directly.
-    """
+    """Archiving one of two criteria on a shared ObjectTag leaves the other evaluated at its own threshold."""
     child_group = CompetencyCriteriaGroup.objects.create(tag=group.tag, parent=group)
-    active = _make_criterion(group=group, object_tag=object_tag, rule_profile=rule_profile_75)
     archived = _make_criterion(
         group=child_group, object_tag=object_tag,
         override=(RuleType.GRADE, {"op": "gte", "value": 0.9, "scale": "percent"}),
     )
     archived.archived = True
     archived.save()
+    active = _make_criterion(group=group, object_tag=object_tag, rule_profile=rule_profile_75)
 
+    # 0.78 meets only the active criterion's 0.75 threshold, not the default 0.8 or the archived 0.9.
     changed = record_graded_object_statuses(
-        user_id=user.id, scores=[GradedObjectScore(object_id=object_tag.object_id, fraction=Decimal("0.8"))],
+        user_id=user.id, scores=[GradedObjectScore(object_id=object_tag.object_id, fraction=Decimal("0.78"))],
     )
 
     assert changed == 1
@@ -553,10 +550,7 @@ def test_active_criterion_on_a_shared_tag_is_evaluated(
 def test_criterion_archived_with_its_group_is_skipped(
     user, group: CompetencyCriteriaGroup, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """
-    A criterion archived together with its group is skipped like one archived directly, while a
-    criterion under the non-archived root is evaluated.
-    """
+    """A criterion archived with its group is skipped like one archived directly."""
     tag = group.tag
     archived_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=group, archived=True)
     cascaded = _make_criterion(group=archived_group, object_tag=object_tag, rule_profile=default_rule_profile)
