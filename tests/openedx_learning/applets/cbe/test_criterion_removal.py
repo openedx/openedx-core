@@ -2,6 +2,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +12,12 @@ from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from rules.permissions import permissions as rule_permissions
 
-from openedx_learning.api import delete_or_archive_competency_criterion
+from openedx_catalog.models import CourseRun
+from openedx_learning.api import (
+    GradedObjectScore,
+    delete_or_archive_competency_criterion,
+    record_graded_object_statuses,
+)
 from openedx_learning.applets.cbe import api as cbe_api
 from openedx_learning.applets.cbe.api import _reconcile_object_tags
 from openedx_learning.models import (
@@ -23,7 +29,7 @@ from openedx_learning.models import (
     StudentCompetencyCriteriaGroupStatus,
     StudentCompetencyCriterionStatus,
 )
-from openedx_tagging.api import lock_object_tags_for_deletion
+from openedx_tagging.api import get_object_tags, lock_object_tags_for_deletion
 from openedx_tagging.models import ObjectTag, Tag
 
 pytestmark = pytest.mark.django_db
@@ -110,6 +116,84 @@ def test_archive_path_leaves_the_row_and_its_object_tag_in_place(
     if other is not None:
         other.refresh_from_db()
         assert other.archived is False
+
+
+def test_archiving_the_last_rule_archives_its_association(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    Archiving the only rule on an association archives the association too, so the assignment stops
+    showing the tag. The archived rule and the learner's status row survive and still point at it.
+    """
+    group = CompetencyCriteriaGroup.objects.create(tag=tag)
+    criterion = _make_criterion(group, object_tag, default_rule_profile)
+    record_graded_object_statuses(
+        user_id=user.id, scores=[GradedObjectScore(object_id=object_tag.object_id, fraction=Decimal("0.9"))],
+    )
+
+    result = delete_or_archive_competency_criterion(criterion.id, user)
+
+    assert result.archived is True
+    row = ObjectTag.objects.get(pk=object_tag.pk)
+    assert row.archived is True
+    assert not get_object_tags(object_tag.object_id).exists()
+    status = StudentCompetencyCriterionStatus.objects.get(criterion=criterion, user_id=user.id)
+    assert status.criterion.object_tag_id == object_tag.pk
+
+
+def test_archiving_one_of_two_rules_on_an_association_leaves_it_active(
+    user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """An association another active rule still uses stays active when one of its rules is archived."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    leaf_a = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    leaf_b = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    first = _make_criterion(leaf_a, object_tag, default_rule_profile)
+    second = _make_criterion(leaf_b, object_tag, default_rule_profile)
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=first, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    result = delete_or_archive_competency_criterion(first.id, user)
+
+    assert result.archived is True
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.archived is True
+    assert second.archived is False
+    assert ObjectTag.objects.get(pk=object_tag.pk).archived is False
+    assert [row.pk for row in get_object_tags(object_tag.object_id)] == [object_tag.pk]
+
+
+def test_archiving_a_rule_whose_association_an_active_rule_in_another_course_uses_leaves_it(
+    *,
+    user, tag: Tag, course_run: CourseRun, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile,
+    now: datetime,
+) -> None:
+    """
+    An active rule in another run of the same course keeps the association out of the lock step. The
+    status row is created directly so that no earlier lock exists to mask a wrong decision.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    course_a = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    leaf_a = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_a)
+    other_run = CourseRun.objects.create(catalog_course=course_run.catalog_course, run_code="Spring2027")
+    course_b = CompetencyCriteriaGroup.objects.create(tag=tag, course=other_run, parent=root)
+    leaf_b = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_b)
+    first = _make_criterion(leaf_a, object_tag, default_rule_profile)
+    second = _make_criterion(leaf_b, object_tag, default_rule_profile)
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=first, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    result = delete_or_archive_competency_criterion(first.id, user)
+
+    assert result.archived is True
+    row = ObjectTag.objects.get(pk=object_tag.pk)
+    assert row.archived is False
+    assert row.deletion_locked is False
+    second.refresh_from_db()
+    assert second.archived is False
 
 
 def _latest_history_user(model_name: str, pk: int):

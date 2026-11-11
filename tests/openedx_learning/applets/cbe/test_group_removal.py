@@ -555,6 +555,115 @@ def test_object_tag_is_untouched_on_archive(
     assert (object_tag.object_id, object_tag.tag_id) == before
 
 
+def test_group_archive_with_group_level_progress_archives_every_rule_association(
+    user, *, competency_taxonomy: CompetencyTaxonomy, tag: Tag, course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    A leaf archived because of a group-level status, with no criterion status anywhere, archives and
+    locks the association of each of its rules, so the assignments stop showing the tag.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=target)
+    object_tag_a = _make_object_tag(competency_taxonomy, tag, "obj-a")
+    object_tag_b = _make_object_tag(competency_taxonomy, tag, "obj-b")
+    criterion_a = _make_criterion(leaf, object_tag_a, default_rule_profile)
+    criterion_b = _make_criterion(leaf, object_tag_b, default_rule_profile)
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=leaf, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    result = delete_or_archive_competency_criteria_group(leaf.id, user)
+
+    assert result.archived is True
+    for object_tag in (object_tag_a, object_tag_b):
+        row = ObjectTag.objects.get(pk=object_tag.pk)
+        assert row.archived is True
+        assert row.deletion_locked is True
+    for criterion in (criterion_a, criterion_b):
+        criterion.refresh_from_db()
+        assert criterion.archived is True
+
+
+def test_group_archive_leaves_an_association_an_active_rule_outside_the_subtree_uses(
+    user, *, competency_taxonomy: CompetencyTaxonomy, tag: Tag, course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """An association a live rule in a sibling leaf still uses stays active when the target leaf is archived."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=target)
+    sibling = CompetencyCriteriaGroup.objects.create(tag=tag, parent=target)
+    shared = _make_object_tag(competency_taxonomy, tag, "obj-shared")
+    own = _make_object_tag(competency_taxonomy, tag, "obj-own")
+    _make_criterion(leaf, shared, default_rule_profile)
+    _make_criterion(leaf, own, default_rule_profile)
+    live = _make_criterion(sibling, shared, default_rule_profile)
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=leaf, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    result = delete_or_archive_competency_criteria_group(leaf.id, user)
+
+    assert result.archived is True
+    assert ObjectTag.objects.get(pk=shared.pk).archived is False
+    assert ObjectTag.objects.get(pk=own.pk).archived is True
+    live.refresh_from_db()
+    assert live.archived is False
+
+
+def test_group_hard_delete_that_falls_back_to_archive_reconciles_once(
+    user, *, tag: Tag, course_run: CourseRun, object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    A hard delete that rolls back on a late status and falls through to the archive reconciles the
+    association once: it ends archived, and no duplicate row appears for the same object and tag.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    criterion = _make_criterion(target, object_tag, default_rule_profile)
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    with _progress_check_misses_the_status_once():
+        result = delete_or_archive_competency_criteria_group(target.id, user)
+
+    assert result.archived is True
+    rows = ObjectTag.objects.filter(object_id=object_tag.object_id, tag=tag)
+    assert [row.pk for row in rows] == [object_tag.pk]
+    assert rows[0].archived is True
+
+
+def test_mixed_subtree_archives_the_shared_association_once(
+    user, *, tag: Tag, course_run: CourseRun, object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    Two rules on one association, only one of them with progress, archive the whole subtree and the
+    shared association once.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    criterion_a = _make_criterion(target, object_tag, default_rule_profile)
+    criterion_b = _make_criterion(target, object_tag, default_rule_profile)
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion_b, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    result = delete_or_archive_competency_criteria_group(target.id, user)
+
+    assert result.archived is True
+    rows = ObjectTag.objects.filter(object_id=object_tag.object_id, tag=tag)
+    assert [row.pk for row in rows] == [object_tag.pk]
+    assert rows[0].archived is True
+    for criterion in (criterion_a, criterion_b):
+        criterion.refresh_from_db()
+        assert criterion.archived is True
+
+
 # =================================================================================================
 # The ancestor cascade, above the target
 # =================================================================================================

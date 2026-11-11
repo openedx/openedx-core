@@ -1237,12 +1237,13 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
         # An archived criterion stays archived: a group subtree archive leaves criteria archived with no status.
         if criterion.archived or _criterion_has_learner_progress(criterion_id):
             _archive_criterion(criterion, user)
+            _reconcile_object_tags({criterion.object_tag_id})
             return CriterionDeletionResult(id=criterion_id, archived=True)
         group = criterion.group
         object_tag = criterion.object_tag
         _set_history_user(criterion, user)
         criterion.delete()
-        # Only this criterion's own ObjectTag is a candidate; the helper keeps it for any criterion still using it.
+        # Only this criterion's own ObjectTag is a candidate; the helper decides whether to keep, archive or delete it.
         _reconcile_object_tags({object_tag.id})
         _cascade_remove_from_group(group, user)
         return CriterionDeletionResult(id=criterion_id, archived=False)
@@ -1297,11 +1298,13 @@ def _archive_competency_criteria_subtree(
 ) -> None:
     """Archive every group and criterion in the subtree, then cascade the archive above the target."""
     # The criteria are written without #674's per-criterion cascade: every group in the subtree is archived
-    # here, and the one upward walk below covers the target's ancestors. Never touches any ObjectTag.
+    # here, and the one upward walk below covers the target's ancestors. The subtree's associations are
+    # reconciled after the archive, so an assignment nothing measures stops showing the tag.
     for group in CompetencyCriteriaGroup.objects.filter(id__in=all_group_ids, archived=False):
         _archive_group(group, user)
     for criterion in criteria:
         _write_criterion_archived(criterion, user)
+    _reconcile_object_tags({criterion.object_tag_id for criterion in criteria})
     if target_group.parent is not None:
         _cascade_remove_from_group(target_group.parent, user)
 
@@ -1369,8 +1372,9 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
     if any does. Either way, each ancestor left with no live children is then hard-deleted or
     archived, as for a criterion delete (ADR-0002 Decision 2).
 
-    On a hard delete, only the ObjectTags of the subtree's criteria are touched, each as
-    :func:`_reconcile_object_tags` describes; no other tag on the object is changed.
+    Only the ObjectTags of the subtree's criteria are touched, hard delete or archive alike, and each
+    is kept while an active criterion uses it, archived when only archived criteria do, and deleted
+    otherwise; no other tag on the object is changed.
 
     The first read and the permission check run before the lock. The rest runs in one transaction that
     takes only one explicit lock, on the competency's Tag row, the same lock a create or a criterion
