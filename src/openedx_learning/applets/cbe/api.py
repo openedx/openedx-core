@@ -520,9 +520,9 @@ def create_competency_criterion(
     and archive behavior may change this function's shape without a deprecation cycle.
 
     Adds only this competency's ObjectTag to the object through ``tagging_api.add_tag_to_object()``,
-    reusing it if it already exists. Other tags on the object, including other competencies' tags in
-    the same taxonomy, are never changed, so a concurrent create or delete for another competency
-    cannot be undone by this one.
+    reusing it if it already exists; an archived association for the same object and tag is revived
+    in place. Other tags on the object, including other competencies' tags in the same taxonomy, are
+    never changed, so a concurrent create or delete for another competency cannot be undone by this one.
     Raises ValidationError (keyed "object_id") when the taxonomy allows one tag per object and the
     object already has a tag in it, or when the object is at the tag limit.
 

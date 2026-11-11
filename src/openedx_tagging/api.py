@@ -571,7 +571,9 @@ def add_tag_to_object(object_id: str, tag: Tag) -> ObjectTag:
     Unlike :func:`tag_object`, no other ObjectTag of the object is read for replacement or changed,
     so a concurrent write of another tag on the same object, even one in the same taxonomy, is not
     undone by this call. If ``tag`` is already applied to the object, its existing ObjectTag is
-    returned and nothing is written.
+    returned and nothing is written; an archived ObjectTag for the same object and tag is revived in
+    place (``archived=False``) and returned, keeping its ``deletion_locked`` flag, because the unique
+    constraint allows one row per object and tag and a new row would drop that lock.
 
     Raises ValueError if the taxonomy of ``tag`` allows only one tag per object and the object
     already has a different tag in it, or if the object already has the maximum number of tags
@@ -588,6 +590,9 @@ def add_tag_to_object(object_id: str, tag: Tag) -> ObjectTag:
 
     object_tag = ObjectTag.objects.filter(object_id=object_id, taxonomy_id=taxonomy.id, tag_id=tag.id).first()
     if object_tag is not None:
+        if object_tag.archived:
+            object_tag.archived = False
+            object_tag.save(update_fields=["archived"])
         return object_tag
 
     if not taxonomy.allow_multiple:

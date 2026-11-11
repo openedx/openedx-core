@@ -5,6 +5,7 @@ Fixtures live in this directory's conftest.py. Several scenarios here create rul
 directly rather than through a live call, because no create or archive endpoint exists yet.
 """
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Generator
 from unittest import mock
 from urllib.parse import urlencode
@@ -20,7 +21,8 @@ from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.test import APIClient, APIRequestFactory
 
-from openedx_catalog.models import CourseRun
+from openedx_catalog.models import CatalogCourse, CourseRun
+from openedx_learning.api import GradedObjectScore, record_graded_object_statuses
 from openedx_learning.applets.cbe import api as cbe_api
 from openedx_learning.applets.cbe.api import _create_leaf_group
 from openedx_learning.applets.cbe.rest_api.paginators import CompetencyBlockedCoursesPagination
@@ -534,6 +536,33 @@ def test_duplicate_association_supplying_a_different_existing_leaf_creates_a_sec
         .values_list("group_id", flat=True)
     )
     assert criterion_group_ids == {first_group_id, other_leaf.id}
+
+
+def test_creating_a_rule_in_another_group_revives_an_archived_association(
+    user_client: APIClient, user, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    POSTing a rule for content whose association was archived, aimed at another group, returns 201.
+
+    The criterion points at the original ObjectTag row, which is active again.
+    """
+    object_id = usage_key(course_run, "p1")
+    first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
+    user_client.post(criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p2")}, format="json")
+    other_leaf = _create_leaf_group(tag, course_run)
+    record_graded_object_statuses(
+        user_id=user.id, scores=[GradedObjectScore(object_id=object_id, fraction=Decimal("0.9"))],
+    )
+    cbe_api.delete_or_archive_competency_criterion(first.data["id"], user)
+    assert ObjectTag.objects.get(pk=first.data["object_tag_id"]).archived is True
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": object_id, "group_id": other_leaf.id}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+    assert response.data["object_tag_id"] == first.data["object_tag_id"]
+    assert ObjectTag.objects.get(pk=first.data["object_tag_id"]).archived is False
 
 
 def test_duplicate_association_via_the_derive_path_is_rejected_before_creating_a_group(

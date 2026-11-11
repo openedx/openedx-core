@@ -3,11 +3,13 @@ Tests for the CBE public API surface (openedx_learning.api).
 """
 import re
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import Any
 
 import pytest
 import rules
 from django.apps import apps
+from django.contrib.auth import get_user_model
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
 from django.db import connection
 from django.db.utils import IntegrityError
@@ -22,15 +24,18 @@ from openedx_learning.api import (
     BlockedCourse,
     CompetencyCriteriaGroupArchivedError,
     CompetencyCriterionArchivedError,
+    GradedObjectScore,
     associate_competency_criterion,
     bulk_update_competency_criteria,
     create_competency_criterion,
     create_competency_taxonomy,
+    delete_or_archive_competency_criterion,
     get_blocked_courses,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
     get_courses_with_live_criteria,
     is_competency_taxonomy,
+    record_graded_object_statuses,
     resolve_supplied_leaf_group,
     select_competency_taxonomies,
     update_competency_criteria_group,
@@ -49,6 +54,7 @@ from openedx_learning.models import (
     StudentCompetencyCriterionStatus,
     StudentCompetencyStatus,
 )
+from openedx_tagging.api import tag_object
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
 from .utils import make_course_run, make_leaf_criterion, make_skill_family, make_tag, usage_key
@@ -769,6 +775,103 @@ def test_associate_competency_criterion_rolls_back_root_reactivation_when_the_do
     assert root.archived is True
     assert CompetencyCriteriaGroup.objects.count() == group_count
     assert CompetencyCriterion.objects.count() == criterion_count
+
+
+def _archive_a_locked_association(
+    user, tag: Tag, course_run: CourseRun,
+) -> tuple[CompetencyCriterion, CompetencyCriteriaGroup]:
+    """
+    Archive the association behind a criterion with learner progress, the way the product does.
+
+    Returns the archived criterion and an empty, active leaf under the same course-level group. A second
+    criterion on another object keeps the course-level group live, so the leaf stays a valid create target.
+    """
+    object_id = usage_key(course_run, "p1")
+    criterion = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p2"))
+    other_leaf = _create_leaf_group(tag, course_run)
+    record_graded_object_statuses(
+        user_id=user.id, scores=[GradedObjectScore(object_id=object_id, fraction=Decimal("0.9"))],
+    )
+    delete_or_archive_competency_criterion(criterion.id, user)
+    object_tag = ObjectTag.objects.get(pk=criterion.object_tag_id)
+    assert object_tag.archived is True
+    assert object_tag.deletion_locked is True
+    return criterion, other_leaf
+
+
+def test_recreating_a_rule_in_a_different_group_revives_the_archived_association(
+    user, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    A new rule in another group reuses the archived association row and un-archives it, keeping the lock.
+
+    The old rule stays archived and is not touched.
+    """
+    old, other_leaf = _archive_a_locked_association(user, tag, course_run)
+    object_id = usage_key(course_run, "p1")
+
+    new = associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=other_leaf.id)
+
+    assert new.object_tag_id == old.object_tag_id
+    row = ObjectTag.objects.get(pk=old.object_tag_id)
+    assert row.archived is False
+    assert row.deletion_locked is True
+    assert ObjectTag.objects.filter(object_id=object_id, tag=tag).count() == 1
+    assert CompetencyCriterion.objects.get(pk=old.pk).archived is True
+
+
+def test_recreating_a_rule_without_a_group_is_rejected_and_leaves_the_association_archived(
+    user, tag: Tag, course_run: CourseRun,
+) -> None:
+    """Without a group_id the archived rule blocks the create, so the association is not revived."""
+    old, _other_leaf = _archive_a_locked_association(user, tag, course_run)
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
+
+    assert "archived" in str(exc_info.value.message_dict["object_id"])
+    assert ObjectTag.objects.get(pk=old.object_tag_id).archived is True
+
+
+def test_recreating_a_rule_after_studio_retagged_reuses_the_revived_row(
+    user, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    When Studio re-applied the tag first, the association is already active and the new rule reuses that row.
+    """
+    old, other_leaf = _archive_a_locked_association(user, tag, course_run)
+    object_id = usage_key(course_run, "p1")
+    assert tag.taxonomy is not None
+    tag_object(object_id, tag.taxonomy, [tag.value])
+    assert ObjectTag.objects.get(pk=old.object_tag_id).archived is False
+
+    new = associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=other_leaf.id)
+
+    assert new.object_tag_id == old.object_tag_id
+    row = ObjectTag.objects.get(pk=old.object_tag_id)
+    assert row.archived is False
+    assert row.deletion_locked is True
+    assert ObjectTag.objects.filter(object_id=object_id, tag=tag).count() == 1
+    assert CompetencyCriterion.objects.get(pk=old.pk).archived is True
+
+
+def test_a_revived_association_is_evaluated_for_the_new_rule_only(
+    user, tag: Tag, course_run: CourseRun,
+) -> None:
+    """A learner's grade after the revive produces a status for the new rule and none for the archived one."""
+    old, other_leaf = _archive_a_locked_association(user, tag, course_run)
+    object_id = usage_key(course_run, "p1")
+    new = associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=other_leaf.id)
+    second_learner = get_user_model().objects.create(username="second-learner")
+
+    record_graded_object_statuses(
+        user_id=second_learner.id, scores=[GradedObjectScore(object_id=object_id, fraction=Decimal("0.9"))],
+    )
+
+    statuses = StudentCompetencyCriterionStatus.objects.filter(user=second_learner)
+    assert set(statuses.values_list("criterion_id", flat=True)) == {new.pk}
+    assert not statuses.filter(criterion=old).exists()
 
 
 # ==============================================================================================
