@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import rules
 from django.apps import apps
+from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
 from rules.permissions import permissions as rule_permissions
@@ -165,6 +166,15 @@ def test_archiving_one_of_two_rules_on_an_association_leaves_it_active(
     assert ObjectTag.objects.get(pk=object_tag.pk).archived is False
     assert [row.pk for row in get_object_tags(object_tag.object_id)] == [object_tag.pk]
 
+    # The remaining rule still records mastery on a grade, and the archived rule gains no status.
+    learner = get_user_model().objects.create(username="grade-after-archive")
+    record_graded_object_statuses(
+        user_id=learner.id, scores=[GradedObjectScore(object_id=object_tag.object_id, fraction=Decimal("0.9"))],
+    )
+    learner_statuses = StudentCompetencyCriterionStatus.objects.filter(user=learner)
+    assert set(learner_statuses.values_list("criterion_id", flat=True)) == {second.pk}
+    assert StudentCompetencyCriterionStatus.objects.filter(criterion=first).count() == 1
+
 
 def test_archiving_a_rule_whose_association_an_active_rule_in_another_course_uses_leaves_it(
     *,
@@ -318,6 +328,35 @@ def test_hard_delete_removes_only_the_criterions_own_object_tag(
     assert ObjectTag.objects.filter(id=other_object_tag.id).exists()
 
 
+def test_archive_leaves_another_competencys_object_tag_on_the_object_untouched(
+    *,
+    user,
+    competency_taxonomy: CompetencyTaxonomy,
+    tag: Tag,
+    object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile,
+    now: datetime,
+) -> None:
+    """
+    An archive settles only the criterion's own ObjectTag. An ObjectTag for another competency on the same
+    object, with no criterion of its own (as Studio tagging creates it), stays active and unlocked.
+    """
+    other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Reading Poetry")
+    other_object_tag = _make_object_tag(competency_taxonomy, other_tag, object_tag.object_id)
+    criterion = _make_criterion(CompetencyCriteriaGroup.objects.create(tag=tag), object_tag, default_rule_profile)
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    result = delete_or_archive_competency_criterion(criterion.id, user)
+
+    assert result.archived is True
+    assert ObjectTag.objects.get(pk=object_tag.pk).archived is True
+    other_row = ObjectTag.objects.get(pk=other_object_tag.pk)
+    assert other_row.archived is False
+    assert other_row.deletion_locked is False
+
+
 # =================================================================================================
 # Reconciling the ObjectTags of removed criteria
 # =================================================================================================
@@ -395,9 +434,15 @@ def test_reconcile_is_idempotent_on_an_already_archived_association(
     assert ObjectTag.objects.filter(pk=object_tag.pk).count() == 1
 
 
-def test_reconcile_skips_an_id_that_no_longer_exists(object_tag: ObjectTag) -> None:
+def test_reconcile_skips_an_id_that_no_longer_exists(
+    competency_taxonomy: CompetencyTaxonomy, tag: Tag, object_tag: ObjectTag,
+) -> None:
     """An id with no ObjectTag row is skipped without an error, and the existing association is untouched."""
-    _reconcile_object_tags({object_tag.id + 1000})
+    removed = _make_object_tag(competency_taxonomy, tag, "obj-removed")
+    removed_id = removed.id
+    removed.delete()
+
+    _reconcile_object_tags({removed_id})
 
     row = ObjectTag.objects.get(pk=object_tag.pk)
     assert row.archived is False

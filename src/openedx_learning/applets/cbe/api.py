@@ -20,12 +20,7 @@ from opaque_keys.edx.keys import CourseKey, UsageKey
 from openedx_catalog.api import get_course_run, get_course_run_ids
 from openedx_catalog.models_api import CourseRun
 from openedx_tagging import api as tagging_api
-from openedx_tagging.api import (
-    create_taxonomy,
-    get_ancestor_tags,
-    get_descendant_tags,
-    lock_object_tags_for_deletion,
-)
+from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags, lock_object_tags_for_deletion
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 from openedx_tagging.rules import ObjectTagPermissionItem, UserType
 

@@ -849,24 +849,65 @@ def test_recreating_a_rule_in_the_same_group_is_rejected_after_a_real_archive(
     assert ObjectTag.objects.get(pk=old.object_tag_id).archived is True
 
 
-def test_reviving_an_archived_association_respects_a_single_tag_taxonomy(
-    user, course_run: CourseRun,
+@pytest.mark.parametrize(
+    ("allow_multiple", "max_tags", "message"),
+    [
+        (False, None, "only allows one tag"),
+        (True, 1, "Cannot add more than 1 tags"),
+    ],
+    ids=["single_tag_taxonomy", "object_max_tags"],
+)
+def test_reviving_an_archived_association_respects_the_tag_limits(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    user,
+    course_run: CourseRun,
+    allow_multiple: bool,
+    max_tags: int | None,
+    message: str,
 ) -> None:
     """
     Studio may tag the object with another competency while the first association is archived. Reviving the
-    first one then would leave two active tags in a taxonomy that allows one, so the create is rejected.
+    first one then would exceed a limit (one tag in a single-tag taxonomy, or the per-object maximum), so the
+    create is rejected and the association stays archived.
     """
-    single_tag_taxonomy = create_competency_taxonomy(name="Single", allow_multiple=False, export_id="single-v1")
-    first = make_tag(single_tag_taxonomy, "T1")
-    make_tag(single_tag_taxonomy, "T2")
+    taxonomy = create_competency_taxonomy(name="Limited", allow_multiple=allow_multiple, export_id="limited-v1")
+    first = make_tag(taxonomy, "T1")
+    make_tag(taxonomy, "T2")
     old, other_leaf = _archive_a_locked_association(user, first, course_run)
     object_id = usage_key(course_run, "p1")
-    tag_object(object_id, single_tag_taxonomy, ["T2"])
+    if max_tags is not None:
+        # Lowered so one existing tag reaches the limit, instead of creating 100 rows.
+        monkeypatch.setattr("openedx_tagging.api.OBJECT_MAX_TAGS", max_tags)
+    tag_object(object_id, taxonomy, ["T2"])
 
     with pytest.raises(ValidationError) as exc_info:
         associate_competency_criterion(tag_id=first.id, object_id=object_id, group_id=other_leaf.id)
 
-    assert "only allows one tag" in str(exc_info.value.message_dict["object_id"])
+    assert message in str(exc_info.value.message_dict["object_id"])
+    assert ObjectTag.objects.get(pk=old.object_tag_id).archived is True
+
+
+@pytest.mark.parametrize(
+    ("allow_multiple", "max_tags"),
+    [(False, None), (True, 1)],
+    ids=["single_tag_taxonomy", "object_max_tags"],
+)
+def test_archived_associations_do_not_count_toward_the_create_limits(
+    monkeypatch: pytest.MonkeyPatch, user, course_run: CourseRun, allow_multiple: bool, max_tags: int | None,
+) -> None:
+    """An archived association does not block a create for another tag, under either tag limit."""
+    taxonomy = create_competency_taxonomy(name="Limited", allow_multiple=allow_multiple, export_id="limited-v1")
+    first = make_tag(taxonomy, "T1")
+    second = make_tag(taxonomy, "T2")
+    old, _other_leaf = _archive_a_locked_association(user, first, course_run)
+    if max_tags is not None:
+        # Lowered so one archived tag would reach the limit, instead of creating 100 rows.
+        monkeypatch.setattr("openedx_tagging.api.OBJECT_MAX_TAGS", max_tags)
+
+    created = associate_competency_criterion(tag_id=second.id, object_id=usage_key(course_run, "p1"))
+
+    assert ObjectTag.objects.get(pk=created.object_tag_id).archived is False
     assert ObjectTag.objects.get(pk=old.object_tag_id).archived is True
 
 
@@ -895,9 +936,14 @@ def test_recreating_a_rule_after_studio_retagged_reuses_the_revived_row(
 def test_a_revived_association_is_evaluated_for_the_new_rule_only(
     user, tag: Tag, course_run: CourseRun,
 ) -> None:
-    """A learner's grade after the revive produces a status for the new rule and none for the archived one."""
+    """
+    A learner's grade after the revive produces a status for the new rule and none for the archived one.
+
+    The first learner's status on the archived rule and the archived rule itself are left unchanged.
+    """
     old, other_leaf = _archive_a_locked_association(user, tag, course_run)
     object_id = usage_key(course_run, "p1")
+    first_status_before = StudentCompetencyCriterionStatus.objects.filter(user=user, criterion=old).values().get()
     new = associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=other_leaf.id)
     second_learner = get_user_model().objects.create(username="second-learner")
 
@@ -908,6 +954,31 @@ def test_a_revived_association_is_evaluated_for_the_new_rule_only(
     statuses = StudentCompetencyCriterionStatus.objects.filter(user=second_learner)
     assert set(statuses.values_list("criterion_id", flat=True)) == {new.pk}
     assert not statuses.filter(criterion=old).exists()
+    first_status_after = StudentCompetencyCriterionStatus.objects.filter(user=user, criterion=old).values().get()
+    assert first_status_after == first_status_before
+    assert CompetencyCriterion.objects.get(pk=old.pk).archived is True
+
+
+def test_deleting_the_revived_rule_leaves_the_association_archived_and_locked(
+    user, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    The revived rule has no learner progress and is hard-deleted. The association ends archived again, because the
+    old archived rule still references it, and stays locked from the earlier grade.
+    """
+    old, other_leaf = _archive_a_locked_association(user, tag, course_run)
+    new = associate_competency_criterion(
+        tag_id=tag.id, object_id=usage_key(course_run, "p1"), group_id=other_leaf.id,
+    )
+
+    result = delete_or_archive_competency_criterion(new.id, user)
+
+    assert result.archived is False
+    assert not CompetencyCriterion.objects.filter(pk=new.pk).exists()
+    assert CompetencyCriterion.objects.get(pk=old.pk).archived is True
+    row = ObjectTag.objects.get(pk=old.object_tag_id)
+    assert row.archived is True
+    assert row.deletion_locked is True
 
 
 # ==============================================================================================

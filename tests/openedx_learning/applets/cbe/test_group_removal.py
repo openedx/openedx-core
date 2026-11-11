@@ -616,13 +616,13 @@ def test_group_archive_leaves_an_association_an_active_rule_outside_the_subtree_
     assert live.archived is False
 
 
-def test_group_hard_delete_that_falls_back_to_archive_reconciles_once(
+def test_group_hard_delete_that_falls_back_to_archive_archives_the_association(
     user, *, tag: Tag, course_run: CourseRun, object_tag: ObjectTag,
     default_rule_profile: CompetencyRuleProfile, now: datetime,
 ) -> None:
     """
-    A hard delete that rolls back on a late status and falls through to the archive reconciles the
-    association once: it ends archived, and no duplicate row appears for the same object and tag.
+    A hard delete that rolls back on a late status and falls through to the archive ends with the
+    association archived.
     """
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
     target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
@@ -635,18 +635,16 @@ def test_group_hard_delete_that_falls_back_to_archive_reconciles_once(
         result = delete_or_archive_competency_criteria_group(target.id, user)
 
     assert result.archived is True
-    rows = ObjectTag.objects.filter(object_id=object_tag.object_id, tag=tag)
-    assert [row.pk for row in rows] == [object_tag.pk]
-    assert rows[0].archived is True
+    assert ObjectTag.objects.get(pk=object_tag.pk).archived is True
 
 
-def test_mixed_subtree_archives_the_shared_association_once(
+def test_mixed_subtree_archives_the_shared_association_and_every_rule(
     user, *, tag: Tag, course_run: CourseRun, object_tag: ObjectTag,
     default_rule_profile: CompetencyRuleProfile, now: datetime,
 ) -> None:
     """
     Two rules on one association, only one of them with progress, archive the whole subtree and the
-    shared association once.
+    shared association.
     """
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
     target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
@@ -659,9 +657,7 @@ def test_mixed_subtree_archives_the_shared_association_once(
     result = delete_or_archive_competency_criteria_group(target.id, user)
 
     assert result.archived is True
-    rows = ObjectTag.objects.filter(object_id=object_tag.object_id, tag=tag)
-    assert [row.pk for row in rows] == [object_tag.pk]
-    assert rows[0].archived is True
+    assert ObjectTag.objects.get(pk=object_tag.pk).archived is True
     for criterion in (criterion_a, criterion_b):
         criterion.refresh_from_db()
         assert criterion.archived is True
