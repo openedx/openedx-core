@@ -524,7 +524,8 @@ def create_competency_criterion(
     in place. Other tags on the object, including other competencies' tags in the same taxonomy, are
     never changed, so a concurrent create or delete for another competency cannot be undone by this one.
     Raises ValidationError (keyed "object_id") when the taxonomy allows one tag per object and the
-    object already has a tag in it, or when the object is at the tag limit.
+    object already has an active tag in it, or when the object is at the tag limit. Archived ObjectTags
+    do not count, and the same limits apply when an archived association is revived.
 
     When no rule fields are supplied, resolves to the live profile scoped to the tag's taxonomy,
     else the live system default, rather than persisting null: ADR-0002 Decision 4 always
@@ -1180,8 +1181,8 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     otherwise, including when only archived children remain. See ADR-0002 Decision 2.
 
     The criterion's own ObjectTag, on a hard delete or an archive alike, is kept while an active
-    criterion uses it, archived when only archived criteria do, and deleted otherwise. No other
-    ObjectTag on the object is touched.
+    criterion uses it, archived when only archived criteria do, and otherwise deleted, or archived if it was
+    already locked. No other ObjectTag on the object is touched.
 
     A repeat call on an archived criterion is a no-op that returns ``archived=True``, whether or not a
     learner status row references it. A criterion archived by a group subtree archive may have none.
@@ -1297,7 +1298,9 @@ def _archive_competency_criteria_subtree(
     criteria: list[CompetencyCriterion],
     user: UserType,
 ) -> None:
-    """Archive every group and criterion in the subtree, then cascade the archive above the target."""
+    """
+    Archive every group and criterion in the subtree, reconcile the subtree's associations, then cascade above it.
+    """
     # The criteria are written without #674's per-criterion cascade: every group in the subtree is archived
     # here, and the one upward walk below covers the target's ancestors. The subtree's associations are
     # reconciled after the archive, so an assignment nothing measures stops showing the tag.
@@ -1336,10 +1339,10 @@ def _reconcile_object_tags(candidate_ids: set[int]) -> None:
 
     The caller must hold the competency's ``Tag`` row lock, because the reference check is check-then-act.
     :func:`delete_or_archive_competency_criterion` records the races that lock settles. The ``ObjectTag``
-    row locks the tagging layer takes during the lock and delete steps come after the ``Tag`` lock, so a
-    concurrent ``record_graded_object_statuses()`` over overlapping associations can deadlock with this
-    call. The database aborts one side with a deadlock error (MySQL 1213) and no data is corrupted, the
-    same class of risk that the comment on the ``Tag`` lock in that function records.
+    row locks the tagging layer takes during the lock and delete steps come after the ``Tag`` lock, so
+    writers that lock ``ObjectTag`` rows without holding the ``Tag`` lock, such as tagging-layer deletes and
+    ``record_graded_object_statuses()``, can deadlock with this call. One side fails with a MySQL 1213
+    error and no data is corrupted.
     """
     if not candidate_ids:
         return
@@ -1348,14 +1351,16 @@ def _reconcile_object_tags(candidate_ids: set[int]) -> None:
             "object_tag_id", flat=True
         )
     )
-    # Ids come back from the database because lock_object_tags_for_deletion() raises on an unknown id.
-    existing = set(ObjectTag.objects.filter(pk__in=candidate_ids - active).values_list("pk", flat=True))
+    to_remove = candidate_ids - active
+    # Read from CompetencyCriterion, whose foreign key guarantees these ObjectTag rows exist, which
+    # lock_object_tags_for_deletion() needs because it raises on an unknown id. The delete below ignores a
+    # missing id.
     referenced = set(
-        CompetencyCriterion.objects.filter(object_tag_id__in=existing).values_list("object_tag_id", flat=True)
+        CompetencyCriterion.objects.filter(object_tag_id__in=to_remove).values_list("object_tag_id", flat=True)
     )
     if referenced:
         lock_object_tags_for_deletion(referenced)
-    ObjectTag.objects.filter(pk__in=existing).delete()
+    ObjectTag.objects.filter(pk__in=to_remove).delete()
 
 
 def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -> GroupDeletionResult:
@@ -1374,8 +1379,8 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
     archived, as for a criterion delete (ADR-0002 Decision 2).
 
     Only the ObjectTags of the subtree's criteria are touched, hard delete or archive alike, and each
-    is kept while an active criterion uses it, archived when only archived criteria do, and deleted
-    otherwise; no other tag on the object is changed.
+    is kept while an active criterion uses it, archived when only archived criteria do, and otherwise
+    deleted, or archived if it was already locked; no other tag on the object is changed.
 
     The first read and the permission check run before the lock. The rest runs in one transaction that
     takes only one explicit lock, on the competency's Tag row, the same lock a create or a criterion

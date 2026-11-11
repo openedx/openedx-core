@@ -834,6 +834,42 @@ def test_recreating_a_rule_without_a_group_is_rejected_and_leaves_the_associatio
     assert ObjectTag.objects.get(pk=old.object_tag_id).archived is True
 
 
+def test_recreating_a_rule_in_the_same_group_is_rejected_after_a_real_archive(
+    user, tag: Tag, course_run: CourseRun,
+) -> None:
+    """The archived rule's own group stays blocked after the real archive path, and the association stays archived."""
+    old, _other_leaf = _archive_a_locked_association(user, tag, course_run)
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(
+            tag_id=tag.id, object_id=usage_key(course_run, "p1"), group_id=old.group_id,
+        )
+
+    assert "archived" in str(exc_info.value.message_dict["group_id"])
+    assert ObjectTag.objects.get(pk=old.object_tag_id).archived is True
+
+
+def test_reviving_an_archived_association_respects_a_single_tag_taxonomy(
+    user, course_run: CourseRun,
+) -> None:
+    """
+    Studio may tag the object with another competency while the first association is archived. Reviving the
+    first one then would leave two active tags in a taxonomy that allows one, so the create is rejected.
+    """
+    single_tag_taxonomy = create_competency_taxonomy(name="Single", allow_multiple=False, export_id="single-v1")
+    first = make_tag(single_tag_taxonomy, "T1")
+    make_tag(single_tag_taxonomy, "T2")
+    old, other_leaf = _archive_a_locked_association(user, first, course_run)
+    object_id = usage_key(course_run, "p1")
+    tag_object(object_id, single_tag_taxonomy, ["T2"])
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=first.id, object_id=object_id, group_id=other_leaf.id)
+
+    assert "only allows one tag" in str(exc_info.value.message_dict["object_id"])
+    assert ObjectTag.objects.get(pk=old.object_tag_id).archived is True
+
+
 def test_recreating_a_rule_after_studio_retagged_reuses_the_revived_row(
     user, tag: Tag, course_run: CourseRun,
 ) -> None:

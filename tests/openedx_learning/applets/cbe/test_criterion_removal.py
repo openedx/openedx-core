@@ -139,6 +139,7 @@ def test_archiving_the_last_rule_archives_its_association(
     assert not get_object_tags(object_tag.object_id).exists()
     status = StudentCompetencyCriterionStatus.objects.get(criterion=criterion, user_id=user.id)
     assert status.criterion.object_tag_id == object_tag.pk
+    assert status.criterion.object_tag.tag_id == tag.id
 
 
 def test_archiving_one_of_two_rules_on_an_association_leaves_it_active(

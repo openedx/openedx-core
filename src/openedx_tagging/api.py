@@ -577,9 +577,10 @@ def add_tag_to_object(object_id: str, tag: Tag) -> ObjectTag:
 
     Raises ValueError if the taxonomy of ``tag`` allows only one tag per object and the object
     already has a different tag in it, or if the object already has the maximum number of tags
-    (``OBJECT_MAX_TAGS``). Both use the same messages as :func:`tag_object`. Raises ValueError if
-    ``tag`` does not belong to a taxonomy. Raises Django's ``ValidationError`` if the new ObjectTag
-    fails ``full_clean()``.
+    (``OBJECT_MAX_TAGS``). Both use the same messages as :func:`tag_object`, and as there, archived
+    ObjectTags do not count toward either limit. A revive meets the same limits as a new tag, since
+    the object may have been tagged since the archive. Raises ValueError if ``tag`` does not belong
+    to a taxonomy. Raises Django's ``ValidationError`` if the new ObjectTag fails ``full_clean()``.
 
     The checks and the insert are not atomic, so a caller that needs them to hold against concurrent
     writers must serialize those writers itself.
@@ -589,18 +590,21 @@ def add_tag_to_object(object_id: str, tag: Tag) -> ObjectTag:
         raise ValueError(_("Tag ({value}) does not belong to a taxonomy.").format(value=tag.value))
 
     object_tag = ObjectTag.objects.filter(object_id=object_id, taxonomy_id=taxonomy.id, tag_id=tag.id).first()
-    if object_tag is not None:
-        if object_tag.archived:
-            object_tag.archived = False
-            object_tag.save(update_fields=["archived"])
+    if object_tag is not None and not object_tag.archived:
         return object_tag
 
+    # An active row would be the one after the active rows the object already has. Archived rows
+    # don't count toward either limit, as in tag_object(), and the row about to be revived is
+    # archived, so it never counts against itself.
+    active_tags = ObjectTag.objects.unarchived().filter(object_id=object_id)
     if not taxonomy.allow_multiple:
-        # The new tag would be the one after the ones the object already has in this taxonomy.
-        existing_count = ObjectTag.objects.filter(object_id=object_id, taxonomy_id=taxonomy.id).count()
-        _check_taxonomy_allows_tag_count(taxonomy, existing_count + 1)
-    _check_object_tag_limit(ObjectTag.objects.filter(object_id=object_id).count(), 1, object_id)
+        _check_taxonomy_allows_tag_count(taxonomy, active_tags.filter(taxonomy_id=taxonomy.id).count() + 1)
+    _check_object_tag_limit(active_tags.count(), 1, object_id)
 
+    if object_tag is not None:
+        object_tag.archived = False
+        object_tag.save(update_fields=["archived"])
+        return object_tag
     object_tag = ObjectTag(taxonomy=taxonomy, object_id=object_id, tag=tag)
     object_tag.full_clean()
     object_tag.save()
