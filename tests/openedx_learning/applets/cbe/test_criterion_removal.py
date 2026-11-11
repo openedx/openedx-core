@@ -87,15 +87,15 @@ def test_hard_delete_with_no_status_removes_the_row_and_its_object_tag(
 
 
 @pytest.mark.parametrize("shared_object_tag", [False, True], ids=["own object_tag", "shared object_tag"])
-def test_archive_path_leaves_the_row_and_its_object_tag_in_place(
+def test_archive_path_keeps_the_row_and_settles_its_object_tag(
     *,
     user, tag: Tag, object_tag: ObjectTag, default_rule_profile: CompetencyRuleProfile, now: datetime,
     shared_object_tag: bool,
 ) -> None:
     """
     Deleting a criterion that a learner status row already references archives it instead of
-    hard-deleting it: the row and its object_tag both survive, and archived=True comes back. Another
-    criterion on the same object_tag is left in place too.
+    hard-deleting it: the row and its object_tag both survive, and archived=True comes back. The
+    object_tag is archived when no other criterion uses it, and stays active when another one does.
     """
     group = CompetencyCriteriaGroup.objects.create(tag=tag)
     criterion = _make_criterion(group, object_tag, default_rule_profile)
@@ -112,7 +112,7 @@ def test_archive_path_leaves_the_row_and_its_object_tag_in_place(
     assert result.archived is True
     criterion.refresh_from_db()
     assert criterion.archived is True
-    assert ObjectTag.objects.filter(id=object_tag.id).exists()
+    assert ObjectTag.objects.get(pk=object_tag.pk).archived is not shared_object_tag
     if other is not None:
         other.refresh_from_db()
         assert other.archived is False

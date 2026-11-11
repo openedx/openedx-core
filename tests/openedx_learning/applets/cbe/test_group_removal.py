@@ -535,24 +535,27 @@ def test_archive_when_status_exists_only_on_a_descendant_group(
     assert ObjectTag.objects.filter(id=object_tag.id).exists()
 
 
-def test_object_tag_is_untouched_on_archive(
+def test_object_tag_row_survives_a_group_archive_as_archived(
     user, *, tag: Tag, course_run: CourseRun, object_tag: ObjectTag,
     default_rule_profile: CompetencyRuleProfile, now: datetime,
 ) -> None:
-    """Archiving a subtree leaves the criterion's ObjectTag row exactly as it was."""
+    """
+    Archiving a subtree whose only rule has a criterion status keeps the object_tag row, now archived
+    and locked, and keeps the archived criterion that still points at it.
+    """
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
     target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
     criterion = _make_criterion(target, object_tag, default_rule_profile)
     StudentCompetencyCriterionStatus.objects.create(
         user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
-    before = (object_tag.object_id, object_tag.tag_id)
-
     result = delete_or_archive_competency_criteria_group(target.id, user)
 
     assert result.archived is True
-    object_tag.refresh_from_db()
-    assert (object_tag.object_id, object_tag.tag_id) == before
+    row = ObjectTag.objects.get(pk=object_tag.pk)
+    assert row.archived is True
+    assert row.deletion_locked is True
+    assert CompetencyCriterion.objects.filter(pk=criterion.pk, object_tag_id=object_tag.pk).exists()
 
 
 def test_group_archive_with_group_level_progress_archives_every_rule_association(

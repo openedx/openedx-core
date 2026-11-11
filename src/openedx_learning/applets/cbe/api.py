@@ -1179,8 +1179,9 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
     turn: hard-deleted if it has no children of any kind and no group-level status of its own, archived
     otherwise, including when only archived children remain. See ADR-0002 Decision 2.
 
-    On a hard delete, the criterion's own ObjectTag is deleted too, and only when no other
-    criterion references it. No other ObjectTag on the object is touched.
+    The criterion's own ObjectTag, on a hard delete or an archive alike, is kept while an active
+    criterion uses it, archived when only archived criteria do, and deleted otherwise. No other
+    ObjectTag on the object is touched.
 
     A repeat call on an archived criterion is a no-op that returns ``archived=True``, whether or not a
     learner status row references it. A criterion archived by a group subtree archive may have none.
@@ -1319,9 +1320,9 @@ def _subtree_has_learner_progress(group_ids: set[int], criterion_ids: list[int])
 
 def _reconcile_object_tags(candidate_ids: set[int]) -> None:
     """
-    Settle each ObjectTag in ``candidate_ids`` after criteria that used it were hard-deleted.
+    Settle each ObjectTag in ``candidate_ids`` after criteria that used it were removed or archived.
 
-    ``candidate_ids`` are the ObjectTag ids of the deleted criteria. Each id ends in one of three states,
+    ``candidate_ids`` are the ObjectTag ids of the removed or archived criteria. Each id ends in one of three states,
     and no other ObjectTag on the object, in any taxonomy, is read or written:
 
     - Left alone, if an active criterion still uses it.
