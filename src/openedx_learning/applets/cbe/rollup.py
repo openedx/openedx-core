@@ -155,32 +155,26 @@ def _raise_competency_status(user_id: int, tag_id: int, status: MasteryStatus | 
     )
 
 
-def _recompute_group(
-    user_id: int, group: CompetencyCriteriaGroup, child_statuses: list[MasteryStatus | None], now: datetime,
-) -> MasteryStatus | None:
-    """Raise the group's stored status to its children's combined result and return that result."""
-    status = combine_children(group.logic_operator, child_statuses)
-    _raise_group_status(user_id, group.pk, status, now)
-    return status
+def _raise_competency_from_root(user_id: int, root: CompetencyCriteriaGroup, now: datetime) -> None:
+    """Raise the competency's status from the status stored for its root group; no stored status writes nothing."""
+    status = _stored_group_status(user_id, root.pk)
+    if status is not None:
+        _raise_competency_status(user_id, root.tag_id, _competency_level(status), now)
 
 
 def _roll_up_group(
     user_id: int, group: CompetencyCriteriaGroup, child_statuses: list[MasteryStatus | None], now: datetime,
 ) -> None:
     """
-    Recompute one group, and for a root group raise its competency's status from the root's status.
+    Recompute one group, and for a root group raise its competency's status from the root's stored status.
 
-    An archived group is not recomputed, and an archived root passes on the status it already holds.
+    An archived group is not recomputed.
     """
-    is_root = group.parent_id is None
     if not group.archived:
-        status = _recompute_group(user_id, group, child_statuses, now)
-    elif is_root:
-        status = _stored_group_status(user_id, group.pk)
-    else:
-        status = None
-    if is_root and status is not None:
-        _raise_competency_status(user_id, group.tag_id, _competency_level(status), now)
+        _raise_group_status(user_id, group.pk, combine_children(group.logic_operator, child_statuses), now)
+    # The stored status can be higher than this recomputation, and the competency has to match it.
+    if group.parent_id is None:
+        _raise_competency_from_root(user_id, group, now)
 
 
 def _roll_up_group_level(user_id: int, group_ids: set[int], now: datetime) -> list[CompetencyCriteriaGroup]:
