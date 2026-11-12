@@ -4,10 +4,11 @@ Public API for Competency-Based Education (CBE).
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Iterable, Sequence
+from typing import Any, Collection, Iterable, Sequence
 
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
 from django.db import connection, transaction
@@ -39,12 +40,14 @@ from .rule_payloads import evaluate_rule
 from .statuses import raise_status
 
 __all__ = [
+    "CompetencyCriteriaCopyResult",
     "CompetencyCriteriaGroupArchivedError",
     "CompetencyCriteriaTree",
     "CompetencyCriterionArchivedError",
     "GradedObjectScore",
     "associate_competency_criterion",
     "bulk_update_competency_criteria",
+    "copy_competency_criteria_for_course_rerun",
     "create_competency_criterion",
     "create_competency_taxonomy",
     "get_competency_criteria_tree",
@@ -917,3 +920,201 @@ def update_competency_criteria_group(
         # Never QuerySet.update(): it skips post_save, so simple_history would record nothing.
         group.save(update_fields=["logic_operator"])
         return group
+
+
+@dataclass(frozen=True, slots=True)
+class CompetencyCriteriaCopyResult:
+    """
+    How many rows :func:`copy_competency_criteria_for_course_rerun` created.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a deprecation cycle.
+    """
+
+    groups_created: int
+    criteria_created: int
+
+
+def copy_competency_criteria_for_course_rerun(
+    source_course_key: CourseKey,
+    destination_course_key: CourseKey,
+    *,
+    skipped_taxonomy_ids: Collection[int] = (),
+) -> CompetencyCriteriaCopyResult:
+    """
+    Copy the source run's in-force criteria tree, minus ``skipped_taxonomy_ids``, onto the destination run.
+
+    The destination run's ObjectTags must already exist: a missing one raises ObjectTag.DoesNotExist, and a
+    missing destination CourseRun raises CourseRun.DoesNotExist. A source key with no CourseRun copies nothing and
+    returns zero counts. A competency already on the destination run is skipped with a warning. Everything runs in
+    one transaction, so a failure copies nothing.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this function's shape may change without a
+    deprecation cycle.
+    """
+    with transaction.atomic():
+        try:
+            source_run = get_course_run(source_course_key)
+        except CourseRun.DoesNotExist:
+            return CompetencyCriteriaCopyResult(0, 0)
+        destination_run = get_course_run(destination_course_key)
+
+        course_level_groups = _get_course_level_groups_to_copy(source_run, destination_run, skipped_taxonomy_ids)
+        if not course_level_groups:
+            return CompetencyCriteriaCopyResult(0, 0)
+        child_groups_by_parent_id, criteria_by_group_id = _load_in_force_subtrees(course_level_groups)
+        destination_object_tags = _get_destination_object_tags(criteria_by_group_id, destination_course_key)
+
+        name_max_length = CompetencyCriteriaGroup._meta.get_field("name").max_length
+        groups_created = criteria_created = 0
+        pending: deque[tuple[int, CompetencyCriteriaGroup]] = deque()
+        for source_group in course_level_groups:
+            if source_group.id not in criteria_by_group_id and source_group.id not in child_groups_by_parent_id:
+                continue
+            copied_group = CompetencyCriteriaGroup.objects.create(
+                tag=source_group.tag,
+                course=destination_run,
+                parent_id=source_group.parent_id,
+                # The name _create_leaf_group() gives a course-level group.
+                name=f"{source_group.tag.value} — {destination_run.title}"[:name_max_length],
+                ordering=source_group.ordering,
+                logic_operator=source_group.logic_operator,
+            )
+            groups_created += 1
+            pending.append((source_group.id, copied_group))
+        while pending:
+            source_group_id, copied_group = pending.popleft()
+            for criterion in criteria_by_group_id.get(source_group_id, []):
+                CompetencyCriterion.objects.create(
+                    group=copied_group,
+                    object_tag=destination_object_tags[criterion.id],
+                    rule_profile_id=criterion.rule_profile_id,
+                    rule_type_override=criterion.rule_type_override,
+                    rule_payload_override=criterion.rule_payload_override,
+                )
+                criteria_created += 1
+            for child in child_groups_by_parent_id.get(source_group_id, []):
+                copied_child = CompetencyCriteriaGroup.objects.create(
+                    tag_id=child.tag_id,
+                    parent=copied_group,
+                    name=child.name,
+                    ordering=child.ordering,
+                    logic_operator=child.logic_operator,
+                )
+                groups_created += 1
+                pending.append((child.id, copied_child))
+        return CompetencyCriteriaCopyResult(groups_created, criteria_created)
+
+
+def _get_course_level_groups_to_copy(
+    source_run: CourseRun, destination_run: CourseRun, skipped_taxonomy_ids: Collection[int],
+) -> list[CompetencyCriteriaGroup]:
+    """
+    Return the source run's in-force course-level groups, minus ``skipped_taxonomy_ids``, to copy.
+
+    A competency that already has a group on the destination run is left out with a warning.
+    """
+    source_course_level_groups = (
+        CompetencyCriteriaGroup.objects.filter(
+            course=source_run, archived=False, parent__isnull=False, parent__archived=False,
+        )
+        # create_competency_criterion() gives each criterion its group's tag, so this skips every criterion too.
+        .exclude(tag__taxonomy_id__in=skipped_taxonomy_ids)
+        .select_related("tag")
+        .order_by("id")
+    )
+    destination_tag_ids = set(
+        CompetencyCriteriaGroup.objects.filter(course=destination_run).values_list("tag_id", flat=True)
+    )
+    course_level_groups: list[CompetencyCriteriaGroup] = []
+    for source_group in source_course_level_groups:
+        # Lets a retry after a partly failed rerun finish instead of hitting the course-level unique constraint.
+        if source_group.tag_id in destination_tag_ids:
+            log.warning(
+                "Skipping competency %r (tag %s) in the copy from %s to %s: it already has a group on the "
+                "destination run.",
+                source_group.tag.value, source_group.tag_id, source_run.course_key, destination_run.course_key,
+            )
+        else:
+            course_level_groups.append(source_group)
+    return course_level_groups
+
+
+def _load_in_force_subtrees(
+    course_level_groups: list[CompetencyCriteriaGroup],
+) -> tuple[dict[int, list[CompetencyCriteriaGroup]], dict[int, list[CompetencyCriterion]]]:
+    """
+    Return the groups below ``course_level_groups`` by parent id, and their criteria by group id.
+
+    Only non-archived criteria are returned, and only groups with one of them somewhere beneath, so an archived
+    group's subtree and an emptied group drop out.
+    """
+    # Loads every non-archived descendant of these competencies, on any run, so the depth costs no extra queries.
+    descendants = CompetencyCriteriaGroup.objects.filter(
+        tag_id__in={group.tag_id for group in course_level_groups},
+        course__isnull=True,
+        parent__isnull=False,
+        archived=False,
+    ).order_by("ordering", "id")
+    all_child_groups_by_parent_id: dict[int, list[CompetencyCriteriaGroup]] = {}
+    for group in descendants:
+        assert group.parent_id is not None
+        all_child_groups_by_parent_id.setdefault(group.parent_id, []).append(group)
+
+    parent_id_by_group_id: dict[int, int | None] = {group.id: None for group in course_level_groups}
+    pending = list(parent_id_by_group_id)
+    while pending:
+        group_id = pending.pop()
+        for child in all_child_groups_by_parent_id.get(group_id, []):
+            parent_id_by_group_id[child.id] = group_id
+            pending.append(child.id)
+
+    criteria = (
+        CompetencyCriterion.objects.filter(group_id__in=parent_id_by_group_id.keys(), archived=False)
+        .select_related("object_tag")
+        .order_by("id")
+    )
+    criteria_by_group_id: dict[int, list[CompetencyCriterion]] = {}
+    in_force_group_ids: set[int] = set()
+    for criterion in criteria:
+        criteria_by_group_id.setdefault(criterion.group_id, []).append(criterion)
+        ancestor_id: int | None = criterion.group_id
+        while ancestor_id is not None and ancestor_id not in in_force_group_ids:
+            in_force_group_ids.add(ancestor_id)
+            ancestor_id = parent_id_by_group_id[ancestor_id]
+
+    child_groups_by_parent_id = {
+        parent_id: [child for child in children if child.id in in_force_group_ids]
+        for parent_id, children in all_child_groups_by_parent_id.items()
+        if parent_id in in_force_group_ids
+    }
+    return child_groups_by_parent_id, criteria_by_group_id
+
+
+def _get_destination_object_tags(
+    criteria_by_group_id: dict[int, list[CompetencyCriterion]],
+    destination_course_key: CourseKey,
+) -> dict[int, ObjectTag]:
+    """
+    Return the destination run's ObjectTag for each criterion, keyed by criterion id.
+
+    Raises ObjectTag.DoesNotExist if the same block in ``destination_course_key`` lacks the criterion's tag.
+    """
+    criteria = [criterion for group_criteria in criteria_by_group_id.values() for criterion in group_criteria]
+    mapped_object_ids = {
+        criterion.id: str(UsageKey.from_string(criterion.object_tag.object_id).map_into_course(destination_course_key))
+        for criterion in criteria
+    }
+    object_tags_by_key = {
+        (object_tag.object_id, object_tag.taxonomy_id, object_tag.tag_id): object_tag
+        for object_tag in ObjectTag.objects.filter(
+            object_id__in=set(mapped_object_ids.values()),
+            tag_id__in={criterion.object_tag.tag_id for criterion in criteria},
+        )
+    }
+    destination_object_tags: dict[int, ObjectTag] = {}
+    for criterion in criteria:
+        key = (mapped_object_ids[criterion.id], criterion.object_tag.taxonomy_id, criterion.object_tag.tag_id)
+        if key not in object_tags_by_key:
+            raise ObjectTag.DoesNotExist(f"No ObjectTag {key} on the destination run.")
+        destination_object_tags[criterion.id] = object_tags_by_key[key]
+    return destination_object_tags
