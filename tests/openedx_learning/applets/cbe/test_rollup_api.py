@@ -32,7 +32,7 @@ pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.usefixtures("
 
 DEMONSTRATED = MasteryStatus.DEMONSTRATED
 PARTIAL = MasteryStatus.PARTIALLY_ATTEMPTED
-FAILED = MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
+NOT_DEMONSTRATED = MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 ASSIGNMENT_1 = "block-v1:Org1+Python100+Fall2026+problem+a1"
@@ -133,11 +133,11 @@ def test_completing_one_of_several_requirements_shows_progress(user, tag, and_tr
 def test_failing_one_of_two_attempted_requirements_shows_the_failure_on_the_group(user, tag, and_tree) -> None:
     """Holds when both grades are recorded before the first rollup; see the next test for the other order."""
     _record(user, and_tree.first, DEMONSTRATED)
-    _record(user, and_tree.second, FAILED)
+    _record(user, and_tree.second, NOT_DEMONSTRATED)
 
     _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
 
-    assert _group_status(user, and_tree.leaf) == FAILED
+    assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
     assert _competency_status(user, tag) == PARTIAL
 
 
@@ -147,7 +147,7 @@ def test_a_group_stays_partially_attempted_once_stored_even_when_the_last_requir
     """Raise-only writes discard the failure computed on the second rollup, because it ranks below what is stored."""
     _record(user, and_tree.first, DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_1)
-    _record(user, and_tree.second, FAILED)
+    _record(user, and_tree.second, NOT_DEMONSTRATED)
 
     _roll_up(user, ASSIGNMENT_2)
 
@@ -166,7 +166,7 @@ def test_either_alternative_route_demonstrates_the_competency(user, tag, or_tree
 
 
 def test_attempting_some_routes_without_succeeding_shows_progress(user, tag, or_tree) -> None:
-    _record(user, or_tree.first, FAILED)
+    _record(user, or_tree.first, NOT_DEMONSTRATED)
 
     _roll_up(user, ASSIGNMENT_1)
 
@@ -176,24 +176,24 @@ def test_attempting_some_routes_without_succeeding_shows_progress(user, tag, or_
 
 def test_failing_every_route_shows_the_failure_on_the_root_but_not_on_the_competency(user, tag, or_tree) -> None:
     """Holds when both grades are recorded before the first rollup, as in the AND-group test above."""
-    _record(user, or_tree.first, FAILED)
-    _record(user, or_tree.second, FAILED)
+    _record(user, or_tree.first, NOT_DEMONSTRATED)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
 
     _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
 
-    assert _group_status(user, or_tree.root) == FAILED
+    assert _group_status(user, or_tree.root) == NOT_DEMONSTRATED
     assert _competency_status(user, tag) == PARTIAL
 
 
 def test_failing_every_route_one_rollup_at_a_time_leaves_the_root_partially_attempted(user, tag, or_tree) -> None:
-    """Pins the raise-only behavior for the other grading order: the stored PARTIAL is never replaced by FAILED."""
-    _record(user, or_tree.first, FAILED)
+    """Pins raise-only writes for the other grading order: a stored PARTIAL is never replaced by NOT_DEMONSTRATED."""
+    _record(user, or_tree.first, NOT_DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_1)
-    _record(user, or_tree.second, FAILED)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_2)
 
-    assert _group_status(user, or_tree.route_1) == FAILED
-    assert _group_status(user, or_tree.route_2) == FAILED
+    assert _group_status(user, or_tree.route_1) == NOT_DEMONSTRATED
+    assert _group_status(user, or_tree.route_2) == NOT_DEMONSTRATED
     assert _group_status(user, or_tree.root) == PARTIAL
     assert _competency_status(user, tag) == PARTIAL
 
@@ -448,9 +448,9 @@ def test_an_archived_requirement_no_longer_has_to_be_met(user, tag, and_tree) ->
 
 
 def test_a_requirement_failed_before_it_was_archived_no_longer_holds_the_learner_back(user, tag, and_tree) -> None:
-    _record(user, and_tree.first, FAILED)
+    _record(user, and_tree.first, NOT_DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_1)
-    assert _group_status(user, and_tree.leaf) == FAILED
+    assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
     _archive(and_tree.first)
     _record(user, and_tree.second, DEMONSTRATED)
 
@@ -482,13 +482,13 @@ def test_an_or_group_whose_only_demonstrated_route_is_archived_is_not_demonstrat
     _record(user, or_tree.first, DEMONSTRATED)
     _archive(or_tree.route_1)
     _archive(or_tree.first)
-    _record(user, or_tree.second, FAILED)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
 
     _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
 
     assert _group_status(user, or_tree.route_1) is None
-    assert _group_status(user, or_tree.route_2) == FAILED
-    assert _group_status(user, or_tree.root) == FAILED
+    assert _group_status(user, or_tree.route_2) == NOT_DEMONSTRATED
+    assert _group_status(user, or_tree.root) == NOT_DEMONSTRATED
     assert _competency_status(user, tag) == PARTIAL
 
 
@@ -503,38 +503,38 @@ def test_a_competency_whose_requirements_are_all_archived_reports_no_status(user
 
 
 def test_mastery_already_earned_through_a_requirement_later_archived_is_kept(user, tag, or_tree) -> None:
-    """The recomputed root is FAILED, below the stored DEMONSTRATED, so only a raise-only write keeps the stored row."""
+    """The recomputed root is NOT_DEMONSTRATED, below the stored DEMONSTRATED, so a raise-only write keeps the row."""
     _record(user, or_tree.first, DEMONSTRATED)
     with freeze_time("2026-02-01"):
         _roll_up(user, ASSIGNMENT_1)
     _archive(or_tree.route_1)
     _archive(or_tree.first)
-    _record(user, or_tree.second, FAILED)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
 
     with freeze_time("2026-03-01"):
         _roll_up(user, ASSIGNMENT_2)
 
-    assert _group_status(user, or_tree.route_2) == FAILED
+    assert _group_status(user, or_tree.route_2) == NOT_DEMONSTRATED
     assert _group_status(user, or_tree.root) == DEMONSTRATED
     assert _competency_status(user, tag) == DEMONSTRATED
     assert StudentCompetencyStatus.objects.get(tag=tag).modified == datetime(2026, 2, 1, tzinfo=timezone.utc)
 
 
 def test_a_recorded_unmet_group_status_is_kept_when_its_only_attempted_requirement_is_archived(user, and_tree) -> None:
-    _record(user, and_tree.first, FAILED)
+    _record(user, and_tree.first, NOT_DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_1)
     _archive(and_tree.first)
 
     _roll_up(user, ASSIGNMENT_1)
 
-    assert _group_status(user, and_tree.leaf) == FAILED
+    assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
 
 
 def test_a_previously_demonstrated_requirement_changes_nothing_until_the_rollup_runs(user, tag, and_tree) -> None:
     _record(user, and_tree.first, DEMONSTRATED)
-    _record(user, and_tree.second, FAILED)
+    _record(user, and_tree.second, NOT_DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
-    assert _group_status(user, and_tree.leaf) == FAILED
+    assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
 
     _archive(and_tree.second)
 
