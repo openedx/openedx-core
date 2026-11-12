@@ -28,7 +28,7 @@ pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.usefixtures("
 
 DEMONSTRATED = MasteryStatus.DEMONSTRATED
 PARTIAL = MasteryStatus.PARTIALLY_ATTEMPTED
-FAILED = MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
+NOT_DEMONSTRATED = MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -42,7 +42,9 @@ def _object_id(name: str) -> str:
     return f"block-v1:Org1+Python100+Fall2026+problem+{name}"
 
 
-def _earnable(tag: Tag, object_id: str, profile: CompetencyRuleProfile, *, archived: bool = False) -> SimpleNamespace:
+def _add_requirement(
+    tag: Tag, object_id: str, profile: CompetencyRuleProfile, *, archived: bool = False,
+) -> SimpleNamespace:
     """Give ``tag`` a root group with one criterion on ``object_id``, both archived when ``archived`` is set."""
     root = CompetencyCriteriaGroup.objects.create(tag=tag, archived=archived)
     object_tag = ObjectTag.objects.create(object_id=object_id, taxonomy=tag.taxonomy, tag=tag)
@@ -52,9 +54,10 @@ def _earnable(tag: Tag, object_id: str, profile: CompetencyRuleProfile, *, archi
     return SimpleNamespace(root=root, criterion=criterion, object_id=object_id)
 
 
-def _record(user, earnable: SimpleNamespace, status: MasteryStatus) -> None:
+def _record(user, requirement: SimpleNamespace, status: MasteryStatus) -> None:
+    """Store the learner's status on the requirement's criterion as the grade transaction would have."""
     StudentCompetencyCriterionStatus.objects.create(
-        user=user, criterion=earnable.criterion, status_id=status, created=NOW, modified=NOW,
+        user=user, criterion=requirement.criterion, status_id=status, created=NOW, modified=NOW,
     )
 
 
@@ -94,10 +97,10 @@ def test_demonstrating_the_only_sub_competency_raises_the_parent_and_grandparent
     grandparent = _make_tag(competency_taxonomy, "Grandparent")
     parent = _make_tag(competency_taxonomy, "Parent", grandparent)
     child = _make_tag(competency_taxonomy, "Child", parent)
-    earnable = _earnable(child, _object_id("c"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
+    requirement = _add_requirement(child, _object_id("c"), default_rule_profile)
+    _record(user, requirement, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert [_competency_status(user, tag) for tag in (child, parent, grandparent)] == [DEMONSTRATED] * 3
 
@@ -105,50 +108,50 @@ def test_demonstrating_the_only_sub_competency_raises_the_parent_and_grandparent
 def test_a_parent_whose_own_requirements_are_met_is_demonstrated_with_a_sub_competency_outstanding(
     user, family, default_rule_profile,
 ) -> None:
-    earnable = _earnable(family.children[0], _object_id("c1"), default_rule_profile)
-    _record(user, earnable, FAILED)
-    own = _earnable(family.parent, _object_id("p"), default_rule_profile)
-    _set_group_status(user, own.root, DEMONSTRATED)
+    requirement = _add_requirement(family.children[0], _object_id("c1"), default_rule_profile)
+    _record(user, requirement, NOT_DEMONSTRATED)
+    parent_requirement = _add_requirement(family.parent, _object_id("p"), default_rule_profile)
+    _set_group_status(user, parent_requirement.root, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert _competency_status(user, family.parent) == DEMONSTRATED
 
 
 def test_a_parent_is_demonstrated_when_every_sub_competency_is(user, family, default_rule_profile) -> None:
     """The parent has its own requirements, which this learner has not attempted."""
-    _earnable(family.parent, _object_id("p"), default_rule_profile)
-    earnables = [
-        _earnable(child, _object_id(f"c{index}"), default_rule_profile)
+    _add_requirement(family.parent, _object_id("p"), default_rule_profile)
+    requirements = [
+        _add_requirement(child, _object_id(f"c{index}"), default_rule_profile)
         for index, child in enumerate(family.children)
     ]
-    for earnable in earnables:
-        _record(user, earnable, DEMONSTRATED)
+    for requirement in requirements:
+        _record(user, requirement, DEMONSTRATED)
 
-    _roll_up(user, *(earnable.object_id for earnable in earnables))
+    _roll_up(user, *(requirement.object_id for requirement in requirements))
 
     assert _competency_status(user, family.parent) == DEMONSTRATED
 
 
 def test_a_parent_with_progress_from_either_source_is_partially_attempted(user, family, default_rule_profile) -> None:
     """The parent has its own requirements, which this learner has not attempted."""
-    _earnable(family.parent, _object_id("p"), default_rule_profile)
-    earnable = _earnable(family.children[0], _object_id("c1"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
-    _earnable(family.children[1], _object_id("c2"), default_rule_profile)
+    _add_requirement(family.parent, _object_id("p"), default_rule_profile)
+    requirement = _add_requirement(family.children[0], _object_id("c1"), default_rule_profile)
+    _record(user, requirement, DEMONSTRATED)
+    _add_requirement(family.children[1], _object_id("c2"), default_rule_profile)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert _competency_status(user, family.parent) == PARTIAL
 
 
 def test_a_failed_own_root_group_shows_progress_on_the_parent(user, family, default_rule_profile) -> None:
-    earnable = _earnable(family.children[0], _object_id("c1"), default_rule_profile)
-    _record(user, earnable, FAILED)
-    own = _earnable(family.parent, _object_id("p"), default_rule_profile)
-    _set_group_status(user, own.root, FAILED)
+    requirement = _add_requirement(family.children[0], _object_id("c1"), default_rule_profile)
+    _record(user, requirement, NOT_DEMONSTRATED)
+    parent_requirement = _add_requirement(family.parent, _object_id("p"), default_rule_profile)
+    _set_group_status(user, parent_requirement.root, NOT_DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert _competency_status(user, family.parent) == PARTIAL
 
@@ -156,12 +159,12 @@ def test_a_failed_own_root_group_shows_progress_on_the_parent(user, family, defa
 def test_sub_competencies_without_criteria_do_not_block_a_parent_with_its_own_requirements(
     user, family, default_rule_profile,
 ) -> None:
-    earnable = _earnable(family.children[0], _object_id("c1"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
-    own = _earnable(family.parent, _object_id("p"), default_rule_profile)
-    _set_group_status(user, own.root, DEMONSTRATED)
+    requirement = _add_requirement(family.children[0], _object_id("c1"), default_rule_profile)
+    _record(user, requirement, DEMONSTRATED)
+    parent_requirement = _add_requirement(family.parent, _object_id("p"), default_rule_profile)
+    _set_group_status(user, parent_requirement.root, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert _competency_status(user, family.parent) == DEMONSTRATED
 
@@ -170,12 +173,12 @@ def test_a_sub_competency_without_criteria_caps_a_parent_that_has_no_requirement
     user, competency_taxonomy, default_rule_profile,
 ) -> None:
     parent = _make_tag(competency_taxonomy, "Parent")
-    earnable_child = _make_tag(competency_taxonomy, "Earnable", parent)
-    _make_tag(competency_taxonomy, "Unearnable", parent)
-    earnable = _earnable(earnable_child, _object_id("c"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
+    child_with_requirement = _make_tag(competency_taxonomy, "With requirement", parent)
+    _make_tag(competency_taxonomy, "Without requirement", parent)
+    requirement = _add_requirement(child_with_requirement, _object_id("c"), default_rule_profile)
+    _record(user, requirement, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert _competency_status(user, parent) == PARTIAL
 
@@ -186,10 +189,10 @@ def test_a_sub_competency_with_criteria_only_further_down_still_participates(
     parent = _make_tag(competency_taxonomy, "Parent")
     middle = _make_tag(competency_taxonomy, "Middle", parent)
     leaf = _make_tag(competency_taxonomy, "Leaf", middle)
-    earnable = _earnable(leaf, _object_id("c"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
+    requirement = _add_requirement(leaf, _object_id("c"), default_rule_profile)
+    _record(user, requirement, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert _competency_status(user, leaf) == DEMONSTRATED
     assert _competency_status(user, middle) == DEMONSTRATED
@@ -202,20 +205,20 @@ def test_a_stored_demonstrated_parent_is_not_lowered_when_only_some_sub_competen
     StudentCompetencyStatus.objects.create(
         user=user, tag=family.parent, status_id=DEMONSTRATED, created=NOW, modified=NOW,
     )
-    earnable = _earnable(family.children[0], _object_id("c1"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
+    requirement = _add_requirement(family.children[0], _object_id("c1"), default_rule_profile)
+    _record(user, requirement, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert _competency_status(user, family.parent) == DEMONSTRATED
 
 
 def test_a_tag_at_the_taxonomy_root_ends_the_walk(user, competency_taxonomy, default_rule_profile) -> None:
     root_tag = _make_tag(competency_taxonomy, "Root")
-    earnable = _earnable(root_tag, _object_id("r"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
+    requirement = _add_requirement(root_tag, _object_id("r"), default_rule_profile)
+    _record(user, requirement, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert list(StudentCompetencyStatus.objects.values_list("tag_id", flat=True)) == [root_tag.pk]
 
@@ -224,10 +227,10 @@ def test_the_deepest_allowed_taxonomy_is_walked_to_the_top(user, competency_taxo
     tags = [_make_tag(competency_taxonomy, "Level 0")]
     for depth in range(1, 6):
         tags.append(_make_tag(competency_taxonomy, f"Level {depth}", tags[-1]))
-    earnable = _earnable(tags[-1], _object_id("deep"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
+    requirement = _add_requirement(tags[-1], _object_id("deep"), default_rule_profile)
+    _record(user, requirement, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, requirement.object_id)
 
     assert _competency_status(user, tags[0]) == DEMONSTRATED
     assert _competency_status(user, tags[1]) == DEMONSTRATED
@@ -249,11 +252,11 @@ def test_a_taxonomy_deeper_than_the_cap_logs_the_parents_left_unrecomputed(
             parent=tags[-2], depth=depth, lineage=tags[-2].lineage + tags[-1].value + "\t",
         )
         tags[-1].refresh_from_db()
-    earnable = _earnable(tags[-1], _object_id("too-deep"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
+    requirement = _add_requirement(tags[-1], _object_id("too-deep"), default_rule_profile)
+    _record(user, requirement, DEMONSTRATED)
 
     with caplog.at_level(logging.ERROR, logger=rollup.__name__):
-        _roll_up(user, earnable.object_id)
+        _roll_up(user, requirement.object_id)
 
     assert _competency_status(user, tags[1]) == DEMONSTRATED
     assert _competency_status(user, tags[0]) is None
@@ -266,17 +269,17 @@ def test_a_taxonomy_deeper_than_the_cap_logs_the_parents_left_unrecomputed(
 def test_two_graded_competencies_sharing_a_parent_recompute_that_parent_once(
     user, family, default_rule_profile,
 ) -> None:
-    earnables = [
-        _earnable(child, _object_id(f"c{index}"), default_rule_profile)
+    requirements = [
+        _add_requirement(child, _object_id(f"c{index}"), default_rule_profile)
         for index, child in enumerate(family.children[:2])
     ]
-    for earnable in earnables:
-        _record(user, earnable, DEMONSTRATED)
+    for requirement in requirements:
+        _record(user, requirement, DEMONSTRATED)
 
     with mock.patch.object(
         rollup, "combine_parent_competency_status", wraps=rollup.combine_parent_competency_status,
     ) as combine:
-        _roll_up(user, *(earnable.object_id for earnable in earnables))
+        _roll_up(user, *(requirement.object_id for requirement in requirements))
 
     assert combine.call_count == 2  # the parent once, then the grandparent once
 
@@ -290,14 +293,14 @@ def test_parents_at_the_same_level_are_rolled_up_independently(
     first = _make_tag(competency_taxonomy, "First", parent_two)
     second = _make_tag(competency_taxonomy, "Second", parent_two)
     graded = [
-        _earnable(only_child, _object_id("only"), default_rule_profile),
-        _earnable(first, _object_id("first"), default_rule_profile),
+        _add_requirement(only_child, _object_id("only"), default_rule_profile),
+        _add_requirement(first, _object_id("first"), default_rule_profile),
     ]
-    _earnable(second, _object_id("second"), default_rule_profile)
-    for earnable in graded:
-        _record(user, earnable, DEMONSTRATED)
+    _add_requirement(second, _object_id("second"), default_rule_profile)
+    for requirement in graded:
+        _record(user, requirement, DEMONSTRATED)
 
-    _roll_up(user, *(earnable.object_id for earnable in graded))
+    _roll_up(user, *(requirement.object_id for requirement in graded))
 
     assert _competency_status(user, parent_one) == DEMONSTRATED
     assert _competency_status(user, parent_two) == PARTIAL
@@ -311,13 +314,13 @@ def test_competencies_graded_at_different_depths_converge_on_the_shared_ancestor
     deep = _make_tag(competency_taxonomy, "Deep", middle)
     shallow = _make_tag(competency_taxonomy, "Shallow", top)
     graded = [
-        _earnable(deep, _object_id("deep"), default_rule_profile),
-        _earnable(shallow, _object_id("shallow"), default_rule_profile),
+        _add_requirement(deep, _object_id("deep"), default_rule_profile),
+        _add_requirement(shallow, _object_id("shallow"), default_rule_profile),
     ]
-    for earnable in graded:
-        _record(user, earnable, DEMONSTRATED)
+    for requirement in graded:
+        _record(user, requirement, DEMONSTRATED)
 
-    _roll_up(user, *(earnable.object_id for earnable in graded))
+    _roll_up(user, *(requirement.object_id for requirement in graded))
 
     assert _competency_status(user, deep) == DEMONSTRATED
     assert _competency_status(user, middle) == DEMONSTRATED
@@ -328,45 +331,49 @@ def test_competencies_graded_at_different_depths_converge_on_the_shared_ancestor
 def test_a_parent_with_its_own_requirements_is_demonstrated_when_a_sub_competency_is_fully_archived(
     user, family, default_rule_profile,
 ) -> None:
-    own = _earnable(family.parent, _object_id("p"), default_rule_profile)
-    _set_group_status(user, own.root, DEMONSTRATED)
-    _earnable(family.children[0], _object_id("c1"), default_rule_profile, archived=True)
-    earnable = _earnable(family.children[1], _object_id("c2"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
+    """The parent is demonstrated through its own requirement, whatever state its sub-competencies are in."""
+    archived_child, graded_child, _child_without_requirements = family.children
+    parent_requirement = _add_requirement(family.parent, _object_id("p"), default_rule_profile)
+    _set_group_status(user, parent_requirement.root, DEMONSTRATED)
+    _add_requirement(archived_child, _object_id("c1"), default_rule_profile, archived=True)
+    graded_requirement = _add_requirement(graded_child, _object_id("c2"), default_rule_profile)
+    _record(user, graded_requirement, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, graded_requirement.object_id)
 
+    assert _competency_status(user, graded_child) == DEMONSTRATED
     assert _competency_status(user, family.parent) == DEMONSTRATED
-    assert _competency_status(user, family.children[1]) == DEMONSTRATED
 
 
 def test_a_parent_with_no_requirements_of_its_own_stays_short_when_a_sub_competency_is_fully_archived(
     user, competency_taxonomy, default_rule_profile,
 ) -> None:
+    """The archived sub-competency can never be demonstrated, so the parent cannot have every sub-competency."""
     parent = _make_tag(competency_taxonomy, "Parent")
     archived_child = _make_tag(competency_taxonomy, "Archived", parent)
-    live_child = _make_tag(competency_taxonomy, "Live", parent)
-    _earnable(archived_child, _object_id("a"), default_rule_profile, archived=True)
-    earnable = _earnable(live_child, _object_id("l"), default_rule_profile)
-    _record(user, earnable, DEMONSTRATED)
+    graded_child = _make_tag(competency_taxonomy, "Graded", parent)
+    _add_requirement(archived_child, _object_id("a"), default_rule_profile, archived=True)
+    graded_requirement = _add_requirement(graded_child, _object_id("g"), default_rule_profile)
+    _record(user, graded_requirement, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, graded_requirement.object_id)
 
-    assert _competency_status(user, live_child) == DEMONSTRATED
+    assert _competency_status(user, graded_child) == DEMONSTRATED
     assert _competency_status(user, parent) == PARTIAL
 
 
 def test_an_archived_root_group_still_starts_the_parent_competency_walk(
     user, competency_taxonomy, default_rule_profile,
 ) -> None:
+    """A rollup for an archived requirement writes nothing for its own competency but still recomputes the parent."""
     parent = _make_tag(competency_taxonomy, "Parent")
     archived_child = _make_tag(competency_taxonomy, "Archived", parent)
-    live_child = _make_tag(competency_taxonomy, "Live", parent)
-    earnable = _earnable(archived_child, _object_id("a"), default_rule_profile, archived=True)
-    _set_competency_status(user, live_child, DEMONSTRATED)
-    _record(user, earnable, DEMONSTRATED)
+    demonstrated_child = _make_tag(competency_taxonomy, "Demonstrated earlier", parent)
+    _set_competency_status(user, demonstrated_child, DEMONSTRATED)
+    archived_requirement = _add_requirement(archived_child, _object_id("a"), default_rule_profile, archived=True)
+    _record(user, archived_requirement, DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, archived_requirement.object_id)
 
     assert _competency_status(user, archived_child) is None
     assert _competency_status(user, parent) == PARTIAL
@@ -375,12 +382,29 @@ def test_an_archived_root_group_still_starts_the_parent_competency_walk(
 def test_a_parents_own_archived_root_still_counts_through_its_stored_status(
     user, family, default_rule_profile,
 ) -> None:
-    own = _earnable(family.parent, _object_id("p"), default_rule_profile, archived=True)
-    _set_group_status(user, own.root, DEMONSTRATED)
-    earnable = _earnable(family.children[0], _object_id("c1"), default_rule_profile)
-    _record(user, earnable, FAILED)
+    """The parent demonstrated its own requirement before that requirement was archived, and keeps the result."""
+    graded_child = family.children[0]
+    parent_requirement = _add_requirement(family.parent, _object_id("p"), default_rule_profile, archived=True)
+    _set_group_status(user, parent_requirement.root, DEMONSTRATED)
+    graded_requirement = _add_requirement(graded_child, _object_id("c1"), default_rule_profile)
+    _record(user, graded_requirement, NOT_DEMONSTRATED)
 
-    _roll_up(user, earnable.object_id)
+    _roll_up(user, graded_requirement.object_id)
 
-    assert _competency_status(user, family.children[0]) == PARTIAL
+    assert _competency_status(user, graded_child) == PARTIAL
     assert _competency_status(user, family.parent) == DEMONSTRATED
+
+
+def test_a_parent_whose_only_sub_competency_has_no_status_gets_no_status(
+    user, competency_taxonomy, default_rule_profile,
+) -> None:
+    """The parent has no requirement of its own and no sub-competency with a status, so there is nothing to write."""
+    parent = _make_tag(competency_taxonomy, "Parent")
+    archived_child = _make_tag(competency_taxonomy, "Archived", parent)
+    archived_requirement = _add_requirement(archived_child, _object_id("a"), default_rule_profile, archived=True)
+    _record(user, archived_requirement, DEMONSTRATED)
+
+    _roll_up(user, archived_requirement.object_id)
+
+    assert _competency_status(user, archived_child) is None
+    assert _competency_status(user, parent) is None
