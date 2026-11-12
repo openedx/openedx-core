@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+from django.contrib.auth import get_user_model
 
 from openedx_learning.api import roll_up_competency_statuses
 from openedx_learning.applets.cbe import rollup
@@ -52,6 +53,19 @@ def _add_requirement(
         group=root, object_tag=object_tag, rule_profile=profile, archived=archived,
     )
     return SimpleNamespace(root=root, criterion=criterion, object_id=object_id)
+
+
+def _add_nested_requirement(
+    tag: Tag, object_id: str, profile: CompetencyRuleProfile, *, levels: int,
+) -> SimpleNamespace:
+    """Give ``tag`` a root group and one criterion on ``object_id`` that sits ``levels`` groups below the root."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    group = root
+    for _ in range(levels):
+        group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=group)
+    object_tag = ObjectTag.objects.create(object_id=object_id, taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=profile)
+    return SimpleNamespace(root=root, group=group, criterion=criterion, object_id=object_id)
 
 
 def _record(user, requirement: SimpleNamespace, status: MasteryStatus) -> None:
@@ -408,3 +422,79 @@ def test_a_parent_whose_only_sub_competency_has_no_status_gets_no_status(
 
     assert _competency_status(user, archived_child) is None
     assert _competency_status(user, parent) is None
+
+
+def test_root_groups_reached_at_different_depths_each_start_their_own_parent_walk(
+    user, competency_taxonomy, default_rule_profile,
+) -> None:
+    """The shallow root is reached on the first level of the group walk and the deep root two levels later."""
+    shallow_parent = _make_tag(competency_taxonomy, "Shallow parent")
+    shallow = _make_tag(competency_taxonomy, "Shallow", shallow_parent)
+    deep_parent = _make_tag(competency_taxonomy, "Deep parent")
+    deep = _make_tag(competency_taxonomy, "Deep", deep_parent)
+    graded = [
+        _add_requirement(shallow, _object_id("shallow"), default_rule_profile),
+        _add_nested_requirement(deep, _object_id("deep"), default_rule_profile, levels=2),
+    ]
+    for requirement in graded:
+        _record(user, requirement, DEMONSTRATED)
+
+    _roll_up(user, *(requirement.object_id for requirement in graded))
+
+    assert _competency_status(user, shallow_parent) == DEMONSTRATED
+    assert _competency_status(user, deep_parent) == DEMONSTRATED
+
+
+def test_another_learners_statuses_do_not_count_toward_the_rolled_up_learner(
+    user, competency_taxonomy, default_rule_profile,
+) -> None:
+    """The other learner holds a status at every level that the rollup reads: criterion, root group, competency."""
+    other_learner = get_user_model().objects.create(username="other_learner")
+    parent = _make_tag(competency_taxonomy, "Parent")
+    graded_child = _make_tag(competency_taxonomy, "Graded", parent)
+    other_child = _make_tag(competency_taxonomy, "Other", parent)
+    parent_requirement = _add_requirement(parent, _object_id("p"), default_rule_profile)
+    graded_requirement = _add_requirement(graded_child, _object_id("graded"), default_rule_profile)
+    other_requirement = _add_requirement(other_child, _object_id("other"), default_rule_profile)
+    _record(user, graded_requirement, DEMONSTRATED)
+    _record(other_learner, other_requirement, DEMONSTRATED)
+    _set_group_status(other_learner, parent_requirement.root, DEMONSTRATED)
+    _set_competency_status(other_learner, other_child, DEMONSTRATED)
+
+    _roll_up(user, graded_requirement.object_id, other_requirement.object_id)
+
+    assert _competency_status(user, graded_child) == DEMONSTRATED
+    assert _competency_status(user, other_child) is None
+    assert _competency_status(user, parent) == PARTIAL
+    assert _competency_status(other_learner, parent) is None
+
+
+def test_a_repeated_rollup_of_nested_groups_under_a_parent_competency_runs_a_fixed_number_of_queries(
+    user, competency_taxonomy, default_rule_profile, django_assert_num_queries,
+) -> None:
+    """The first rollup creates every status row, so the repeated one only reads and compares."""
+    parent = _make_tag(competency_taxonomy, "Parent")
+    child = _make_tag(competency_taxonomy, "Child", parent)
+    requirement = _add_nested_requirement(child, _object_id("c"), default_rule_profile, levels=1)
+    _record(user, requirement, DEMONSTRATED)
+    _roll_up(user, requirement.object_id)
+
+    with django_assert_num_queries(22):
+        _roll_up(user, requirement.object_id)
+
+
+def test_a_nested_group_in_a_parents_own_tree_does_not_count_as_the_parents_own_result(
+    user, competency_taxonomy, default_rule_profile,
+) -> None:
+    """Only a root group's status is the parent's own result, and this learner has none on the parent's root."""
+    parent = _make_tag(competency_taxonomy, "Parent")
+    child = _make_tag(competency_taxonomy, "Child", parent)
+    parent_requirement = _add_nested_requirement(parent, _object_id("p"), default_rule_profile, levels=1)
+    _set_group_status(user, parent_requirement.group, DEMONSTRATED)
+    child_requirement = _add_requirement(child, _object_id("c"), default_rule_profile)
+    _record(user, child_requirement, NOT_DEMONSTRATED)
+
+    _roll_up(user, child_requirement.object_id)
+
+    assert _competency_status(user, child) == PARTIAL
+    assert _competency_status(user, parent) == PARTIAL
