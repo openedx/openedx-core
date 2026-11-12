@@ -479,7 +479,7 @@ def test_a_repeated_rollup_of_nested_groups_under_a_parent_competency_runs_a_fix
     _record(user, requirement, DEMONSTRATED)
     _roll_up(user, requirement.object_id)
 
-    with django_assert_num_queries(22):
+    with django_assert_num_queries(23):
         _roll_up(user, requirement.object_id)
 
 

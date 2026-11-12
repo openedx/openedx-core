@@ -573,6 +573,23 @@ def test_an_archived_root_raises_its_competency_from_the_stored_root_status(user
     assert _competency_status(user, tag) == DEMONSTRATED
 
 
+def test_a_root_raises_its_competency_from_the_stored_root_status_after_the_earning_route_is_archived(
+    user, tag, or_tree,
+) -> None:
+    """A rollup that stopped between the root write and the competency write is repaired from the stored root status."""
+    _record(user, or_tree.first, DEMONSTRATED)
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=or_tree.root, status_id=DEMONSTRATED, created=NOW, modified=NOW,
+    )
+    _archive(or_tree.route_1)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
+
+    _roll_up(user, ASSIGNMENT_2)
+
+    assert _group_status(user, or_tree.root) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
+
+
 def test_the_walk_continues_past_an_archived_group_to_its_parent(user, tag, default_rule_profile) -> None:
     root = _make_group(tag)
     archived_leaf = _make_group(tag, parent=root, logic_operator=LogicOperator.AND, archived=True)
