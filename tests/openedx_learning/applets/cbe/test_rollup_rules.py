@@ -10,7 +10,7 @@ from openedx_learning.models import LogicOperator, MasteryStatus
 
 DEMONSTRATED = MasteryStatus.DEMONSTRATED
 PARTIAL = MasteryStatus.PARTIALLY_ATTEMPTED
-FAILED = MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
+NOT_DEMONSTRATED = MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
 
 AND = LogicOperator.AND
 OR = LogicOperator.OR
@@ -22,18 +22,18 @@ OR = LogicOperator.OR
         (AND, [DEMONSTRATED, DEMONSTRATED], DEMONSTRATED),
         (AND, [DEMONSTRATED, None], PARTIAL),
         (AND, [None, None], None),
-        (AND, [DEMONSTRATED, FAILED], FAILED),
-        (AND, [None, FAILED], FAILED),
+        (AND, [DEMONSTRATED, NOT_DEMONSTRATED], NOT_DEMONSTRATED),
+        (AND, [None, NOT_DEMONSTRATED], NOT_DEMONSTRATED),
         (AND, [PARTIAL, DEMONSTRATED], PARTIAL),
-        (AND, [FAILED, FAILED], FAILED),
+        (AND, [NOT_DEMONSTRATED, NOT_DEMONSTRATED], NOT_DEMONSTRATED),
         (OR, [DEMONSTRATED, None], DEMONSTRATED),
-        (OR, [FAILED, DEMONSTRATED], DEMONSTRATED),
-        (OR, [FAILED, FAILED], FAILED),
-        (OR, [FAILED, None], PARTIAL),
-        (OR, [PARTIAL, FAILED], PARTIAL),
+        (OR, [NOT_DEMONSTRATED, DEMONSTRATED], DEMONSTRATED),
+        (OR, [NOT_DEMONSTRATED, NOT_DEMONSTRATED], NOT_DEMONSTRATED),
+        (OR, [NOT_DEMONSTRATED, None], PARTIAL),
+        (OR, [PARTIAL, NOT_DEMONSTRATED], PARTIAL),
         (OR, [None, None], None),
-        (None, [FAILED, DEMONSTRATED], DEMONSTRATED),
-        (None, [FAILED], FAILED),
+        (None, [NOT_DEMONSTRATED, DEMONSTRATED], DEMONSTRATED),
+        (None, [NOT_DEMONSTRATED], NOT_DEMONSTRATED),
         (AND, [], None),
         (OR, [], None),
     ],
@@ -45,7 +45,12 @@ def test_combine_children(operator, children, expected) -> None:
 
 @pytest.mark.parametrize("operator", [AND, OR, None])
 @pytest.mark.parametrize(
-    "children", [[DEMONSTRATED, FAILED, None], [None, FAILED, PARTIAL], [DEMONSTRATED, DEMONSTRATED, PARTIAL]],
+    "children",
+    [
+        [DEMONSTRATED, NOT_DEMONSTRATED, None],
+        [None, NOT_DEMONSTRATED, PARTIAL],
+        [DEMONSTRATED, DEMONSTRATED, PARTIAL],
+    ],
 )
 def test_combine_children_ignores_child_order(operator, children) -> None:
     """The result depends only on the set of child values, never on the order they are read in."""

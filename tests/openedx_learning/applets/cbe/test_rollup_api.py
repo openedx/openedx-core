@@ -32,24 +32,33 @@ pytestmark = [pytest.mark.django_db(transaction=True), pytest.mark.usefixtures("
 
 DEMONSTRATED = MasteryStatus.DEMONSTRATED
 PARTIAL = MasteryStatus.PARTIALLY_ATTEMPTED
-FAILED = MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
+NOT_DEMONSTRATED = MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 ASSIGNMENT_1 = "block-v1:Org1+Python100+Fall2026+problem+a1"
 ASSIGNMENT_2 = "block-v1:Org1+Python100+Fall2026+problem+a2"
 
 
-def _make_group(tag: Tag, *, parent=None, logic_operator=None) -> CompetencyCriteriaGroup:
+def _make_group(tag: Tag, *, parent=None, logic_operator=None, archived: bool = False) -> CompetencyCriteriaGroup:
     """Create a criteria group; a null operator is how real root and course-level groups are stored."""
-    return CompetencyCriteriaGroup.objects.create(tag=tag, parent=parent, logic_operator=logic_operator)
+    return CompetencyCriteriaGroup.objects.create(
+        tag=tag, parent=parent, logic_operator=logic_operator, archived=archived,
+    )
 
 
 def _make_criterion(
-    group: CompetencyCriteriaGroup, object_id: str, profile: CompetencyRuleProfile,
+    group: CompetencyCriteriaGroup, object_id: str, profile: CompetencyRuleProfile, *, archived: bool = False,
 ) -> CompetencyCriterion:
     """Create a criterion on ``group`` for ``object_id``, tagging the object with the group's competency."""
     object_tag = ObjectTag.objects.create(object_id=object_id, taxonomy=group.tag.taxonomy, tag=group.tag)
-    return CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=profile)
+    return CompetencyCriterion.objects.create(
+        group=group, object_tag=object_tag, rule_profile=profile, archived=archived,
+    )
+
+
+def _archive(row: CompetencyCriteriaGroup | CompetencyCriterion) -> None:
+    row.archived = True
+    row.save(update_fields=["archived"])
 
 
 def _record(user, criterion: CompetencyCriterion, status: MasteryStatus) -> None:
@@ -124,11 +133,11 @@ def test_completing_one_of_several_requirements_shows_progress(user, tag, and_tr
 def test_failing_one_of_two_attempted_requirements_shows_the_failure_on_the_group(user, tag, and_tree) -> None:
     """Holds when both grades are recorded before the first rollup; see the next test for the other order."""
     _record(user, and_tree.first, DEMONSTRATED)
-    _record(user, and_tree.second, FAILED)
+    _record(user, and_tree.second, NOT_DEMONSTRATED)
 
     _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
 
-    assert _group_status(user, and_tree.leaf) == FAILED
+    assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
     assert _competency_status(user, tag) == PARTIAL
 
 
@@ -138,7 +147,7 @@ def test_a_group_stays_partially_attempted_once_stored_even_when_the_last_requir
     """Raise-only writes discard the failure computed on the second rollup, because it ranks below what is stored."""
     _record(user, and_tree.first, DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_1)
-    _record(user, and_tree.second, FAILED)
+    _record(user, and_tree.second, NOT_DEMONSTRATED)
 
     _roll_up(user, ASSIGNMENT_2)
 
@@ -157,7 +166,7 @@ def test_either_alternative_route_demonstrates_the_competency(user, tag, or_tree
 
 
 def test_attempting_some_routes_without_succeeding_shows_progress(user, tag, or_tree) -> None:
-    _record(user, or_tree.first, FAILED)
+    _record(user, or_tree.first, NOT_DEMONSTRATED)
 
     _roll_up(user, ASSIGNMENT_1)
 
@@ -167,24 +176,24 @@ def test_attempting_some_routes_without_succeeding_shows_progress(user, tag, or_
 
 def test_failing_every_route_shows_the_failure_on_the_root_but_not_on_the_competency(user, tag, or_tree) -> None:
     """Holds when both grades are recorded before the first rollup, as in the AND-group test above."""
-    _record(user, or_tree.first, FAILED)
-    _record(user, or_tree.second, FAILED)
+    _record(user, or_tree.first, NOT_DEMONSTRATED)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
 
     _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
 
-    assert _group_status(user, or_tree.root) == FAILED
+    assert _group_status(user, or_tree.root) == NOT_DEMONSTRATED
     assert _competency_status(user, tag) == PARTIAL
 
 
 def test_failing_every_route_one_rollup_at_a_time_leaves_the_root_partially_attempted(user, tag, or_tree) -> None:
-    """Pins the raise-only behavior for the other grading order: the stored PARTIAL is never replaced by FAILED."""
-    _record(user, or_tree.first, FAILED)
+    """Pins raise-only writes for the other grading order: a stored PARTIAL is never replaced by NOT_DEMONSTRATED."""
+    _record(user, or_tree.first, NOT_DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_1)
-    _record(user, or_tree.second, FAILED)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_2)
 
-    assert _group_status(user, or_tree.route_1) == FAILED
-    assert _group_status(user, or_tree.route_2) == FAILED
+    assert _group_status(user, or_tree.route_1) == NOT_DEMONSTRATED
+    assert _group_status(user, or_tree.route_2) == NOT_DEMONSTRATED
     assert _group_status(user, or_tree.root) == PARTIAL
     assert _competency_status(user, tag) == PARTIAL
 
@@ -425,3 +434,195 @@ def test_a_call_inside_a_transaction_raises(user) -> None:
     """Each level must commit before the next is read, so the walk refuses to run inside a transaction."""
     with pytest.raises(TransactionManagementError), transaction.atomic():
         _roll_up(user, ASSIGNMENT_1)
+
+
+def test_an_archived_requirement_no_longer_has_to_be_met(user, tag, and_tree) -> None:
+    _archive(and_tree.first)
+    _record(user, and_tree.second, DEMONSTRATED)
+
+    _roll_up(user, ASSIGNMENT_2)
+
+    assert _group_status(user, and_tree.leaf) == DEMONSTRATED
+    assert _group_status(user, and_tree.root) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
+
+
+def test_a_requirement_failed_before_it_was_archived_no_longer_holds_the_learner_back(user, tag, and_tree) -> None:
+    _record(user, and_tree.first, NOT_DEMONSTRATED)
+    _roll_up(user, ASSIGNMENT_1)
+    assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
+    _archive(and_tree.first)
+    _record(user, and_tree.second, DEMONSTRATED)
+
+    _roll_up(user, ASSIGNMENT_2)
+
+    assert _group_status(user, and_tree.leaf) == DEMONSTRATED
+    assert _group_status(user, and_tree.root) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
+
+
+def test_an_archived_branch_no_longer_has_to_be_completed(user, tag, default_rule_profile) -> None:
+    root = _make_group(tag, logic_operator=LogicOperator.AND)
+    archived_leaf = _make_group(tag, parent=root, logic_operator=LogicOperator.AND, archived=True)
+    live_leaf = _make_group(tag, parent=root, logic_operator=LogicOperator.AND)
+    in_archived = _make_criterion(archived_leaf, ASSIGNMENT_1, default_rule_profile)
+    in_live = _make_criterion(live_leaf, ASSIGNMENT_2, default_rule_profile)
+    _record(user, in_archived, DEMONSTRATED)
+    _record(user, in_live, DEMONSTRATED)
+
+    _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
+
+    assert _group_status(user, archived_leaf) is None
+    assert _group_status(user, live_leaf) == DEMONSTRATED
+    assert _group_status(user, root) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
+
+
+def test_an_or_group_whose_only_demonstrated_route_is_archived_is_not_demonstrated(user, tag, or_tree) -> None:
+    _record(user, or_tree.first, DEMONSTRATED)
+    _archive(or_tree.route_1)
+    _archive(or_tree.first)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
+
+    _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
+
+    assert _group_status(user, or_tree.route_1) is None
+    assert _group_status(user, or_tree.route_2) == NOT_DEMONSTRATED
+    assert _group_status(user, or_tree.root) == NOT_DEMONSTRATED
+    assert _competency_status(user, tag) == PARTIAL
+
+
+def test_a_competency_whose_requirements_are_all_archived_reports_no_status(user, and_tree) -> None:
+    _archive(and_tree.first)
+    _archive(and_tree.second)
+
+    _roll_up(user, ASSIGNMENT_1)
+
+    assert not StudentCompetencyCriteriaGroupStatus.objects.filter(user=user).exists()
+    assert not StudentCompetencyStatus.objects.filter(user=user).exists()
+
+
+def test_mastery_already_earned_through_a_requirement_later_archived_is_kept(user, tag, or_tree) -> None:
+    """The recomputed root is NOT_DEMONSTRATED, below the stored DEMONSTRATED, so a raise-only write keeps the row."""
+    _record(user, or_tree.first, DEMONSTRATED)
+    with freeze_time("2026-02-01"):
+        _roll_up(user, ASSIGNMENT_1)
+    _archive(or_tree.route_1)
+    _archive(or_tree.first)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
+
+    with freeze_time("2026-03-01"):
+        _roll_up(user, ASSIGNMENT_2)
+
+    assert _group_status(user, or_tree.route_2) == NOT_DEMONSTRATED
+    assert _group_status(user, or_tree.root) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
+    assert StudentCompetencyStatus.objects.get(tag=tag).modified == datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+
+def test_a_recorded_unmet_group_status_is_kept_when_its_only_attempted_requirement_is_archived(user, and_tree) -> None:
+    _record(user, and_tree.first, NOT_DEMONSTRATED)
+    _roll_up(user, ASSIGNMENT_1)
+    _archive(and_tree.first)
+
+    _roll_up(user, ASSIGNMENT_1)
+
+    assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
+
+
+def test_a_previously_demonstrated_requirement_changes_nothing_until_the_rollup_runs(user, tag, and_tree) -> None:
+    _record(user, and_tree.first, DEMONSTRATED)
+    _record(user, and_tree.second, NOT_DEMONSTRATED)
+    _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
+    assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
+
+    _archive(and_tree.second)
+
+    _roll_up(user, ASSIGNMENT_2)
+    assert _group_status(user, and_tree.leaf) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
+
+
+def test_an_archived_root_group_writes_neither_its_own_nor_the_competency_status(
+    user, tag, default_rule_profile,
+) -> None:
+    root = _make_group(tag, archived=True)
+    leaf = _make_group(tag, parent=root, logic_operator=LogicOperator.AND)
+    criterion = _make_criterion(leaf, ASSIGNMENT_1, default_rule_profile)
+    _record(user, criterion, DEMONSTRATED)
+
+    _roll_up(user, ASSIGNMENT_1)
+
+    assert _group_status(user, leaf) == DEMONSTRATED
+    assert _group_status(user, root) is None
+    assert _competency_status(user, tag) is None
+
+
+def test_an_archived_root_raises_its_competency_from_the_stored_root_status(user, tag, and_tree) -> None:
+    """A rollup that stopped between the root write and the competency write is repaired after the root is archived."""
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=and_tree.root, status_id=DEMONSTRATED, created=NOW, modified=NOW,
+    )
+    _archive(and_tree.first)
+    _archive(and_tree.second)
+    _archive(and_tree.root)
+
+    _roll_up(user, ASSIGNMENT_1)
+
+    assert _group_status(user, and_tree.root) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
+
+
+def test_a_root_raises_its_competency_from_the_stored_root_status_after_the_earning_route_is_archived(
+    user, tag, or_tree,
+) -> None:
+    """A rollup that stopped between the root write and the competency write is repaired from the stored root status."""
+    _record(user, or_tree.first, DEMONSTRATED)
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=or_tree.root, status_id=DEMONSTRATED, created=NOW, modified=NOW,
+    )
+    _archive(or_tree.route_1)
+    _record(user, or_tree.second, NOT_DEMONSTRATED)
+
+    _roll_up(user, ASSIGNMENT_2)
+
+    assert _group_status(user, or_tree.root) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
+
+
+def test_the_walk_continues_past_an_archived_group_to_its_parent(user, tag, default_rule_profile) -> None:
+    root = _make_group(tag)
+    archived_leaf = _make_group(tag, parent=root, logic_operator=LogicOperator.AND, archived=True)
+    live_leaf = _make_group(tag, parent=root, logic_operator=LogicOperator.AND)
+    in_archived = _make_criterion(archived_leaf, ASSIGNMENT_1, default_rule_profile)
+    _make_criterion(live_leaf, ASSIGNMENT_2, default_rule_profile)
+    _record(user, in_archived, DEMONSTRATED)
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=live_leaf, status_id=DEMONSTRATED, created=NOW, modified=NOW,
+    )
+
+    _roll_up(user, ASSIGNMENT_1)
+
+    assert _group_status(user, archived_leaf) is None
+    assert _group_status(user, root) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
+
+
+def test_an_archived_intermediate_group_cuts_its_live_subtree_off_from_the_root(
+    user, tag, default_rule_profile,
+) -> None:
+    """
+    The archived middle group is dropped from the root's children, so the live leaf's result does not reach the root.
+    """
+    root = _make_group(tag)
+    middle = _make_group(tag, parent=root, logic_operator=LogicOperator.AND, archived=True)
+    leaf = _make_group(tag, parent=middle, logic_operator=LogicOperator.AND)
+    criterion = _make_criterion(leaf, ASSIGNMENT_1, default_rule_profile)
+    _record(user, criterion, DEMONSTRATED)
+
+    _roll_up(user, ASSIGNMENT_1)
+
+    assert _group_status(user, leaf) == DEMONSTRATED
+    assert _group_status(user, middle) is None
+    assert _group_status(user, root) is None
+    assert _competency_status(user, tag) is None
