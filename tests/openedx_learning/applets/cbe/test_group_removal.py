@@ -1,4 +1,4 @@
-"""Tests for delete_or_archive_competency_criteria_group(), which reuses _cascade_from_group() unchanged."""
+"""Tests for delete_or_archive_competency_criteria_group(), which reuses _cascade_remove_from_group() unchanged."""
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
@@ -271,32 +271,6 @@ def test_shared_object_tag_survives_when_a_criterion_outside_the_subtree_still_r
     assert CompetencyCriterion.objects.filter(id=sibling_criterion.id).exists()
 
 
-def test_hard_delete_keeps_an_object_tag_still_referenced_outside_the_subtree(
-    user, competency_taxonomy: CompetencyTaxonomy, tag: Tag, course_run: CourseRun,
-    default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """
-    One object carries two competency tags of the same taxonomy. The tag only the deleted subtree
-    references is removed, and the tag a criterion outside the subtree references stays, with that criterion.
-    """
-    root = CompetencyCriteriaGroup.objects.create(tag=tag)
-    course_level = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
-    target = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
-    sibling = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
-    tag_a = Tag.objects.create(taxonomy=competency_taxonomy, value="Tag A")
-    tag_b = Tag.objects.create(taxonomy=competency_taxonomy, value="Tag B")
-    object_tag_a = _make_object_tag(competency_taxonomy, tag_a, "obj-two-tags")
-    object_tag_b = _make_object_tag(competency_taxonomy, tag_b, "obj-two-tags")
-    _make_criterion(target, object_tag_a, default_rule_profile)
-    sibling_criterion = _make_criterion(sibling, object_tag_b, default_rule_profile)
-
-    delete_or_archive_competency_criteria_group(target.id, user)
-
-    assert not ObjectTag.objects.filter(id=object_tag_a.id).exists()
-    assert ObjectTag.objects.filter(id=object_tag_b.id).exists()
-    assert CompetencyCriterion.objects.filter(id=sibling_criterion.id).exists()
-
-
 def test_untag_with_the_competency_taxonomy_disabled_removes_only_the_orphaned_object_tag(
     user, competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, object_tag: ObjectTag,
     default_rule_profile: CompetencyRuleProfile,
@@ -373,33 +347,6 @@ def test_hard_delete_removes_an_object_tag_shared_by_two_criteria_in_the_subtree
     assert not ObjectTag.objects.filter(id=object_tag.id).exists()
 
 
-def test_learner_status_committed_after_the_progress_check_archives_instead_of_deleting(
-    user, *, tag: Tag, course_run: CourseRun, object_tag: ObjectTag,
-    default_rule_profile: CompetencyRuleProfile, now: datetime,
-) -> None:
-    """
-    A status row that lands after the progress check makes the hard delete fail on the PROTECT
-    foreign key; the call archives the subtree instead of raising, and keeps every ObjectTag.
-    """
-    root = CompetencyCriteriaGroup.objects.create(tag=tag)
-    target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
-    criterion = _make_criterion(target, object_tag, default_rule_profile)
-    StudentCompetencyCriterionStatus.objects.create(
-        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
-    )
-
-    with _progress_check_misses_the_status_once():
-        result = delete_or_archive_competency_criteria_group(target.id, user)
-
-    assert result.archived is True
-    assert result.cascaded_criteria_count == 1
-    target.refresh_from_db()
-    criterion.refresh_from_db()
-    assert target.archived is True
-    assert criterion.archived is True
-    assert ObjectTag.objects.filter(id=object_tag.id).exists()
-
-
 def test_group_status_committed_after_the_progress_check_archives_instead_of_deleting(
     user, *, tag: Tag, course_run: CourseRun, now: datetime,
 ) -> None:
@@ -423,8 +370,9 @@ def test_status_inserted_right_after_the_progress_check_archives_instead_of_dele
     default_rule_profile: CompetencyRuleProfile, now: datetime,
 ) -> None:
     """
-    A status row written between the progress check and the delete is found by the fallback's
-    re-check, so the subtree is archived rather than the error being raised.
+    A status row written between the progress check and the delete makes the delete fail on the PROTECT
+    foreign key. The fallback's re-check finds the row, so the subtree is archived rather than the error
+    being raised, with the counts reported and every ObjectTag kept.
     """
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
     target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
@@ -446,6 +394,7 @@ def test_status_inserted_right_after_the_progress_check_archives_instead_of_dele
         result = delete_or_archive_competency_criteria_group(target.id, user)
 
     assert result.archived is True
+    assert result.cascaded_criteria_count == 1
     target.refresh_from_db()
     criterion.refresh_from_db()
     assert target.archived is True
@@ -476,6 +425,51 @@ def test_status_on_an_ancestor_group_outside_the_subtree_raises_instead_of_archi
     course_level.refresh_from_db()
     assert target.archived is False
     assert course_level.archived is False
+
+
+def test_ancestor_cascade_failing_after_the_subtree_delete_rolls_it_back_and_archives_instead(
+    user, *, tag: Tag, course_run: CourseRun, object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    The ancestor cascade raises IntegrityError after the target subtree and its orphaned ObjectTag are
+    already deleted, and the second progress check then finds a status on the subtree. The savepoint
+    around the delete rolls those deletions back, so the subtree is archived and the ObjectTag is kept.
+    Without the savepoint the deletions would stand and the re-read of the target would find nothing.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    course_level = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    target = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
+    criterion = _make_criterion(target, object_tag, default_rule_profile)
+    # The ancestor's own status makes its delete fail on the PROTECT foreign key; hiding it from the
+    # cascade's check lets the cascade attempt that delete after the subtree's rows are gone.
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=course_level, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    calls = 0
+
+    def status_arrives_before_the_second_check(group_ids: set[int], criterion_ids: list[int]) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            StudentCompetencyCriterionStatus.objects.create(
+                user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+            )
+        return subtree_has_learner_progress(group_ids, criterion_ids)
+
+    with (
+        patch.object(cbe_api, "_group_has_learner_progress", return_value=False),
+        patch.object(cbe_api, "_subtree_has_learner_progress", side_effect=status_arrives_before_the_second_check),
+    ):
+        result = delete_or_archive_competency_criteria_group(target.id, user)
+
+    assert result.archived is True
+    assert calls == 2
+    target.refresh_from_db()
+    criterion.refresh_from_db()
+    assert target.archived is True
+    assert criterion.archived is True
+    assert ObjectTag.objects.filter(id=object_tag.id).exists()
 
 
 def test_integrity_error_unrelated_to_learner_progress_is_raised_instead_of_archiving(
@@ -545,18 +539,20 @@ def test_object_tag_is_untouched_on_archive(
     user, *, tag: Tag, course_run: CourseRun, object_tag: ObjectTag,
     default_rule_profile: CompetencyRuleProfile, now: datetime,
 ) -> None:
-    """Archiving a subtree never calls tag_object(): the object_tag row is left exactly as it was."""
+    """Archiving a subtree leaves the criterion's ObjectTag row exactly as it was."""
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
     target = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
     criterion = _make_criterion(target, object_tag, default_rule_profile)
     StudentCompetencyCriterionStatus.objects.create(
         user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
+    before = (object_tag.object_id, object_tag.tag_id)
 
     result = delete_or_archive_competency_criteria_group(target.id, user)
 
     assert result.archived is True
-    assert ObjectTag.objects.filter(id=object_tag.id).exists()
+    object_tag.refresh_from_db()
+    assert (object_tag.object_id, object_tag.tag_id) == before
 
 
 # =================================================================================================
@@ -569,7 +565,7 @@ def test_ancestor_cascade_collapses_the_chain_on_hard_delete(
 ) -> None:
     """
     Hard-deleting a subtree that was its course-level ancestor's only child collapses that
-    ancestor and the root above it too, via _cascade_from_group().
+    ancestor and the root above it too, via _cascade_remove_from_group().
     """
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
     course_level = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
@@ -602,8 +598,6 @@ def test_ancestor_cascade_archives_the_chain_when_the_target_carries_status(
     root.refresh_from_db()
     assert course_level.archived is True
     assert root.archived is True
-    assert CompetencyCriteriaGroup.objects.filter(id=course_level.id).exists()
-    assert CompetencyCriteriaGroup.objects.filter(id=root.id).exists()
 
 
 def test_cascade_stops_at_an_ancestor_with_a_surviving_sibling_group(
@@ -631,8 +625,6 @@ def test_cascade_stops_at_an_ancestor_with_a_surviving_sibling_group(
     assert course_level.archived is False
     assert root.archived is False
     assert sibling.archived is False
-    assert CompetencyCriteriaGroup.objects.filter(id=course_level.id).exists()
-    assert CompetencyCriteriaGroup.objects.filter(id=sibling.id).exists()
     assert CompetencyCriterion.objects.filter(id=sibling_criterion.id).exists()
 
 
@@ -666,6 +658,42 @@ def test_archive_cascade_stops_at_an_ancestor_with_a_surviving_sibling_group(
     assert sibling.archived is False
 
 
+def test_archiving_one_group_leaves_a_sibling_group_with_its_own_status_untouched(
+    user, *, competency_taxonomy: CompetencyTaxonomy, tag: Tag, course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    Groups A and B sit under one course-level group. A holds one criterion with learner status and one
+    without, and B holds one criterion with status. Deleting A archives A and both its criteria, and
+    leaves B, its criterion, the course-level group, the root, and all three ObjectTags untouched.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    course_level = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    group_a = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
+    group_b = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
+    object_tags = [_make_object_tag(competency_taxonomy, tag, f"obj-{name}") for name in ("a1", "a2", "b1")]
+    a_with_status = _make_criterion(group_a, object_tags[0], default_rule_profile)
+    a_without_status = _make_criterion(group_a, object_tags[1], default_rule_profile)
+    b_criterion = _make_criterion(group_b, object_tags[2], default_rule_profile)
+    for graded in (a_with_status, b_criterion):
+        StudentCompetencyCriterionStatus.objects.create(
+            user=user, criterion=graded, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+        )
+
+    result = delete_or_archive_competency_criteria_group(group_a.id, user)
+
+    assert result.archived is True
+    assert result.cascaded_group_count == 0
+    assert result.cascaded_criteria_count == 2
+    for archived_node in (group_a, a_with_status, a_without_status):
+        archived_node.refresh_from_db()
+        assert archived_node.archived is True
+    for untouched_node in (group_b, b_criterion, course_level, root):
+        untouched_node.refresh_from_db()
+        assert untouched_node.archived is False
+    assert ObjectTag.objects.filter(id__in=[object_tag.id for object_tag in object_tags]).count() == 3
+
+
 # =================================================================================================
 # Root-group rejection, permission-course resolution, and not-found
 # =================================================================================================
@@ -691,9 +719,6 @@ def test_root_group_rejection_raises_before_any_write(
     assert root.archived is False
     assert child.archived is False
     assert criterion.archived is False
-    assert CompetencyCriteriaGroup.objects.filter(id=root.id).exists()
-    assert CompetencyCriteriaGroup.objects.filter(id=child.id).exists()
-    assert CompetencyCriterion.objects.filter(id=criterion.id).exists()
 
 
 def test_permission_course_rejects_a_root_group(tag: Tag) -> None:

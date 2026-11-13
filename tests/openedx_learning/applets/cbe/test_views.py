@@ -2737,20 +2737,6 @@ def test_group_tag_id_mismatch_404s(
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_group_root_target_is_400(user_client: APIClient, tag: Tag, course_run: CourseRun) -> None:
-    """A root group_id is rejected with a 400, not attempted as a deletable subtree."""
-    leaf = _create_leaf_group(tag, course_run)
-    course_level = leaf.parent
-    assert course_level is not None
-    root = course_level.parent
-    assert root is not None
-
-    response = user_client.delete(group_delete_url(tag.id, root.id))
-
-    assert response.status_code == status.HTTP_400_BAD_REQUEST
-    assert "group_id" in response.data
-
-
 def test_group_delete_no_permission_is_403(
     user_client: APIClient, tag: Tag, organization: Organization, object_tag: ObjectTag,
     default_rule_profile: CompetencyRuleProfile,
@@ -2770,6 +2756,54 @@ def test_group_delete_no_permission_is_403(
     assert CompetencyCriteriaGroup.objects.filter(id__in=[leaf.id, course_level.id], archived=False).count() == 2
     assert CompetencyCriterion.objects.filter(id=criterion.id, archived=False).exists()
     assert ObjectTag.objects.filter(id=object_tag.id).exists()
+
+
+def test_group_delete_without_taxonomy_access_is_403_and_changes_nothing(
+    user_client: APIClient, leaf: CompetencyCriteriaGroup, batch: tuple[CompetencyCriterion, CompetencyCriterion],
+) -> None:
+    """
+    A caller who may tag the course but lacks ``oel_tagging.change_objecttag_taxonomy`` for the
+    competency's taxonomy gets a 403, and the subtree is untouched. This check is the only one that can
+    refuse here, because CompetencyReadPermission does not run on DELETE.
+    """
+    course_level = leaf.parent
+    assert course_level is not None
+    perm = "oel_tagging.change_objecttag_taxonomy"
+    original = rules.permissions.permissions[perm]
+    rules.set_perm(perm, rules.always_deny)
+    try:
+        response = user_client.delete(group_delete_url(leaf.tag_id, leaf.id))
+    finally:
+        rules.set_perm(perm, original)
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert CompetencyCriteriaGroup.objects.filter(id__in=[leaf.id, course_level.id], archived=False).count() == 2
+    assert CompetencyCriterion.objects.filter(id__in=[c.id for c in batch], archived=False).count() == 2
+    assert ObjectTag.objects.filter(id__in=[c.object_tag_id for c in batch]).count() == 2
+
+
+def test_archiving_a_group_with_a_criterion_whose_stored_payload_went_invalid_is_400_and_changes_nothing(
+    user_client: APIClient, user, leaf: CompetencyCriteriaGroup,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion], now: datetime,
+) -> None:
+    """
+    The archive path saves each criterion, which re-validates its rule payload. A payload that stopped
+    being valid after it was stored, here written past validation with update(), makes the DELETE a 400,
+    and nothing in the subtree is archived, including the criterion that holds the learner status.
+    """
+    course_level = leaf.parent
+    assert course_level is not None
+    CompetencyCriterion.objects.filter(pk=batch[1].pk).update(rule_payload_override={"op": "gt", "value": 75})
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=batch[0], status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    response = user_client.delete(group_delete_url(leaf.tag_id, leaf.id))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert list(response.json()) == ["__all__"]
+    assert not CompetencyCriteriaGroup.objects.filter(id__in=[leaf.id, course_level.id], archived=True).exists()
+    assert not CompetencyCriterion.objects.filter(id__in=[c.id for c in batch], archived=True).exists()
 
 
 def test_group_delete_of_a_group_gone_by_the_time_of_the_call_is_404(
@@ -2870,7 +2904,10 @@ def test_group_delete_checks_permission_against_the_parents_course_for_a_leaf_gr
 def test_group_root_target_is_400_before_any_permission_check_or_write(
     user_client: APIClient, tag: Tag, course_run: CourseRun, checked_object_ids: list[str],
 ) -> None:
-    """A root group_id is rejected before the permission predicate runs, and nothing under it changes."""
+    """
+    A root group_id is rejected with a 400 that says root groups cannot be targeted, before the
+    permission predicate runs, and nothing under it changes.
+    """
     leaf = _create_leaf_group(tag, course_run)
     course_level = leaf.parent
     assert course_level is not None
@@ -2880,6 +2917,9 @@ def test_group_root_target_is_400_before_any_permission_check_or_write(
     response = user_client.delete(group_delete_url(tag.id, root.id))
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert [str(message) for message in response.data["group_id"]] == [
+        "group_id must not reference a root CompetencyCriteriaGroup."
+    ]
     assert not checked_object_ids
     assert set(
         CompetencyCriteriaGroup.objects.filter(archived=False).values_list("id", flat=True)
