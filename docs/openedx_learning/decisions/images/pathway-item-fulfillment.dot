@@ -5,9 +5,9 @@ digraph pathway_item_fulfillment {
     edge [fontname="Helvetica", fontsize=10];
 
     item [label="Pathway Item"];
-    runA [label="Course Run A1\n(default: enroll here)"];
-    runB [label="Course Run A2\n(older run, still counts)"];
-    runC [label="Course Run B1\n(different catalog course)"];
+    runA [label="1. Course Run A1\n(top priority: enroll here)"];
+    runB [label="2. Course Run A2\n(older run, still counts)"];
+    runC [label="3. Course Run B1\n(different catalog course)"];
     future [label="future fulfillment types:\nsection completion,\ncompetency, admin override", style="rounded,dashed"];
 
     item -> runA [label="pass any one"];
