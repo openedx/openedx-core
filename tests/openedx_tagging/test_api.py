@@ -663,6 +663,70 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
             assert exc.exception
             assert "Cannot add more than 100 tags to" in str(exc.exception)
 
+    def test_add_tag_to_object(self) -> None:
+        """Adds the tag as a new ObjectTag and leaves the object's other tags alone."""
+        self.taxonomy.allow_multiple = True
+        self.taxonomy.save()
+        existing = ObjectTag.objects.create(object_id="biology101", taxonomy=self.taxonomy, tag=self.archaea)
+
+        object_tag = tagging_api.add_tag_to_object("biology101", self.bacteria)
+
+        assert object_tag.pk != existing.pk
+        assert object_tag.tag_id == self.bacteria.id
+        assert object_tag.taxonomy_id == self.taxonomy.id
+        assert object_tag.object_id == "biology101"
+        assert sorted(ObjectTag.objects.filter(object_id="biology101").values_list("tag_id", flat=True)) == sorted(
+            [self.archaea.id, self.bacteria.id]
+        )
+
+    def test_add_tag_to_object_reuses_an_existing_object_tag_for_the_tag(self) -> None:
+        existing = ObjectTag.objects.create(object_id="biology101", taxonomy=self.taxonomy, tag=self.archaea)
+
+        object_tag = tagging_api.add_tag_to_object("biology101", self.archaea)
+
+        assert object_tag.pk == existing.pk
+        assert ObjectTag.objects.filter(object_id="biology101").count() == 1
+
+    def test_add_tag_to_object_requires_a_taxonomy(self) -> None:
+        tag = Tag(taxonomy=None, value="Orphan")
+
+        with pytest.raises(ValueError) as excinfo:
+            tagging_api.add_tag_to_object("biology101", tag)
+
+        assert str(excinfo.value) == "Tag (Orphan) does not belong to a taxonomy."
+        assert not ObjectTag.objects.filter(object_id="biology101").exists()
+
+    def test_add_tag_to_object_no_multiple(self) -> None:
+        """A single-valued taxonomy rejects a second tag, with the same message tag_object() gives."""
+        assert not self.taxonomy.allow_multiple
+        ObjectTag.objects.create(object_id="biology101", taxonomy=self.taxonomy, tag=self.archaea)
+
+        with pytest.raises(ValueError) as add_excinfo:
+            tagging_api.add_tag_to_object("biology101", self.bacteria)
+        with pytest.raises(ValueError) as tag_object_excinfo:
+            tagging_api.tag_object("biology101", self.taxonomy, [self.archaea.value, self.bacteria.value])
+
+        assert "only allows one tag per object" in str(add_excinfo.value)
+        assert str(add_excinfo.value) == str(tag_object_excinfo.value)
+        assert list(ObjectTag.objects.filter(object_id="biology101").values_list("tag_id", flat=True)) == [
+            self.archaea.id
+        ]
+
+    def test_add_tag_to_object_limit(self) -> None:
+        """An object at the tag limit rejects another tag, with the same message tag_object() gives."""
+        self.taxonomy.allow_multiple = True
+        self.taxonomy.save()
+        self.create_100_taxonomies()
+
+        with pytest.raises(ValueError) as add_excinfo:
+            tagging_api.add_tag_to_object("limit_tag_count", self.archaea)
+        with pytest.raises(ValueError) as tag_object_excinfo:
+            tagging_api.tag_object("limit_tag_count", self.taxonomy, [self.archaea.value])
+
+        assert "Cannot add more than 100 tags to (limit_tag_count)" in str(add_excinfo.value)
+        assert str(add_excinfo.value) == str(tag_object_excinfo.value)
+        assert not ObjectTag.objects.filter(object_id="limit_tag_count", taxonomy=self.taxonomy).exists()
+
     def test_get_object_tags_deleted_disabled(self) -> None:
         """
         Test that get_object_tags doesn't return tags from disabled taxonomies
