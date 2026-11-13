@@ -26,15 +26,17 @@ from ...api import (
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
+    get_blocked_courses,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
     resolve_competency_tag,
     update_competency_criteria_group,
 )
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile
-from ..paginators import CompetencyRuleProfilePagination
+from ..paginators import CompetencyBlockedCoursesPagination, CompetencyRuleProfilePagination
 from .permissions import CompetencyReadPermission, CompetencyRuleProfilePermissions
 from .serializers import (
+    BlockedCourseSerializer,
     CompetencyCriteriaGroupSerializer,
     CompetencyCriteriaGroupUpdateSerializer,
     CompetencyCriteriaQueryParamsSerializer,
@@ -192,7 +194,8 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
     Omitting the parameter returns every reachable group. Supplying it returns the groups above
     any course plus the groups of the named runs, ordered with the groups above any course first
     and then by the order requested; keys that match no run are ignored, and an empty value
-    returns only the groups above any course. The parameter may be supplied once.
+    returns only the groups above any course. The parameter may be supplied once. A key's branch
+    and version are ignored, and a version-only or library key is a 400.
 
     ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is the number
     under every reachable group regardless of ``course_keys``, so a client scoped down to zero
@@ -273,3 +276,41 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
         except CompetencyCriteriaGroupArchivedError as exc:
             raise CompetencyCriteriaConflict(str(exc)) from exc
         return Response(CompetencyCriteriaGroupSerializer(group).data, status=status.HTTP_200_OK)
+
+
+class CompetencyBlockedCoursesView(generics.GenericAPIView):
+    """
+    GET-only. List the courses where a competency can't get a new criterion, paginated.
+
+    Along any ancestor-descendant line of the taxonomy, a course may hold live criteria for one
+    competency only. So once an ancestor or descendant of this competency has a live criterion in a
+    course, this competency can't get one in it.
+
+    ``GET api/cbe/v1/competencies/<tag_id>/blocked-courses/`` returns those courses sorted by
+    course key. ``course_keys`` (comma-separated, supplied once, at most 100) narrows it; a blank
+    value returns an empty page. A key's branch and version are ignored, and each row carries the
+    plain key. The result is an authoring hint: the create-criterion endpoint still enforces the
+    rule.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this response shape may change
+    without a deprecation cycle.
+    """
+
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated, CompetencyReadPermission]
+    pagination_class = CompetencyBlockedCoursesPagination
+
+    def get(self, request, tag_id):
+        """Return one page of the competency's blocked courses."""
+        try:
+            tag = resolve_competency_tag(tag_id)
+        except Tag.DoesNotExist as exc:
+            raise NotFound(str(exc)) from exc
+        self.check_object_permissions(request, tag)
+        if len(request.query_params.getlist("course_keys")) > 1:
+            raise DRFValidationError({"course_keys": _("Supply course_keys once, as a comma-separated list.")})
+        query_params = CompetencyCriteriaQueryParamsSerializer(data=request.query_params.dict())
+        query_params.is_valid(raise_exception=True)
+        rows = get_blocked_courses(tag, course_keys=query_params.validated_data.get("course_keys"))
+        page = self.paginate_queryset(rows)
+        return self.get_paginated_response(BlockedCourseSerializer(page, many=True).data)

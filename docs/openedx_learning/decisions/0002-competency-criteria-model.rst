@@ -155,6 +155,14 @@ Decision
    - Points to one ``oel_tagging_objecttag`` association.
    - Uses one ``CompetencyRuleProfile`` by default, with optional per-criterion overrides.
 
+   No ancestor or descendant of a given competency tag may hold live criteria in the same course
+   as the given competency tag. CBE takes as given that a learner who demonstrates every
+   sub-competency has demonstrated the parent competency. If a course could hold authored
+   criteria at more than one level of the same competency hierarchy, it would be undefined
+   whether that given or the authored criteria decide the parent's status, and which takes
+   precedence. There is also no use case for it: nobody authors criteria for a competency and
+   its ancestors in the same course, because doing so only adds complexity and confusion.
+
    This new database table will have the following columns:
 
    1. ``id``: unique primary key
@@ -490,3 +498,8 @@ Changelog
   supersedes the ordered, short-circuited evaluation the earlier text described. Decision 6's update flow now continues past the root group to the
   competency's own status row and up through parent competencies, and states what a
   competency with no criteria tree of its own receives.
+
+2026-11-06:
+
+* Decision 4 states that no ancestor or descendant of a competency tag may hold live criteria
+  in the same course as that tag, and why.

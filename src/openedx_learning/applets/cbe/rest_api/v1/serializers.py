@@ -6,6 +6,7 @@ from __future__ import annotations
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey, UsageKey
+from opaque_keys.edx.locator import CourseLocator
 from rest_framework import serializers
 
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile, LogicOperator
@@ -177,17 +178,18 @@ MAX_COURSE_KEYS = 100
 
 
 class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
-    """Query params for the criteria-tree read endpoint."""
+    """Query params shared by the criteria-tree and blocked-courses read endpoints."""
 
     course_keys = serializers.CharField(required=False, allow_blank=True)
 
     def validate_course_keys(self, value: str) -> list[CourseKey]:
         """
-        Parse a comma-separated course_keys value into a deduplicated list of CourseKey.
+        Parse a comma-separated course_keys value into a deduplicated list of plain course keys.
 
-        Stray separators (trailing, doubled, or all-commas) are ignored, not rejected. Raises
-        a validation error if more than MAX_COURSE_KEYS entries remain after splitting, checked
-        before dedup so repeating a key can't dodge the cap, or if any entry isn't a valid key.
+        Branch and version are stripped before dedup, and stray separators (trailing, doubled, or
+        all-commas) are ignored. Raises a validation error if more than MAX_COURSE_KEYS entries
+        remain after splitting (counted before dedup, so repeats can't dodge the cap) or if an
+        entry isn't a course key, library keys included.
         """
         entries = [entry for entry in (entry.strip() for entry in value.split(",")) if entry]
         if len(entries) > MAX_COURSE_KEYS:
@@ -197,11 +199,19 @@ class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
         parsed = []
         for entry in entries:
             try:
-                parsed.append(CourseKey.from_string(entry))
+                key = CourseKey.from_string(entry)
+                if not isinstance(key, CourseLocator):
+                    raise InvalidKeyError(type(key), entry)
+                # A course key may carry a branch (draft or published copy) and a version (one saved
+                # snapshot). The database field stores only the plain key, so we drop both here to
+                # match what it holds. A version-only key has no org, so it can't be turned into a
+                # plain key and is rejected.
+                key = key.for_branch(None)
             except InvalidKeyError as exc:
                 raise serializers.ValidationError(
                     _("'%(entry)s' is not a valid course key.") % {"entry": entry}
                 ) from exc
+            parsed.append(key)
         return list(dict.fromkeys(parsed))
 
     def create(self, validated_data):
@@ -235,3 +245,24 @@ class CompetencyCriterionReadSerializer(serializers.ModelSerializer):
             "id", "group_id", "object_tag_id", "object_id",
             "rule_profile_id", "rule_type_override", "rule_payload_override",
         ]
+
+
+class BlockedCourseSerializer(serializers.Serializer):
+    """
+    Read-only representation of a BlockedCourse, for the blocked-courses endpoint.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle.
+    """
+
+    course_key = serializers.CharField(read_only=True)
+    conflicting_tag_id = serializers.IntegerField(read_only=True)
+    conflicting_tag_value = serializers.CharField(read_only=True)
+
+    def create(self, validated_data):
+        """Not supported: this serializer is read-only."""
+        raise NotImplementedError
+
+    def update(self, instance, validated_data):
+        """Not supported: this serializer is read-only."""
+        raise NotImplementedError
