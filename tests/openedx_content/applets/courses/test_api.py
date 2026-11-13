@@ -4,6 +4,8 @@ Tests of the Courses API (CourseContent)
 
 from __future__ import annotations
 
+from unittest import mock
+
 import pytest
 from django.db import IntegrityError
 from django.db.models import ProtectedError
@@ -72,6 +74,52 @@ def test_create_course_content_no_course_run() -> None:
     """A CourseRun must exist"""
     with pytest.raises(CourseRun.DoesNotExist):
         api.create_course_content(COURSE_KEY)
+    assert LearningPackage.objects.count() == 0
+
+
+def test_get_or_create_creates(course_run: CourseRun) -> None:
+    """get_or_create creates a CourseContent and Learning Package if missing."""
+    course_content, created = api.get_or_create_course_content(COURSE_KEY)
+    assert created
+    assert course_content.course_run == course_run
+    assert course_content.learning_package.title == "Course Content 101"
+    assert LearningPackage.objects.count() == 1
+
+
+def test_get_or_create_gets(course_run: CourseRun) -> None:
+    """get_or_create returns the existing CourseContent without creating anything."""
+    existing = api.create_course_content(course_run)
+    for key_or_run in (COURSE_KEY, course_run):
+        course_content, created = api.get_or_create_course_content(key_or_run)
+        assert not created
+        assert course_content == existing
+        assert course_content.learning_package == existing.learning_package
+    assert LearningPackage.objects.count() == 1
+
+
+def test_get_or_create_race(course_run: CourseRun) -> None:
+    """
+    If another caller creates the CourseContent between our "get" and our
+    "create", we return theirs and roll back the Learning Package we created.
+    """
+    # The "other caller" has already created the CourseContent, but our initial "get" doesn't see it:
+    existing = api.create_course_content(course_run)
+    real_get = api.get_course_content
+    with mock.patch(
+        "openedx_content.applets.courses.api.get_course_content",
+        side_effect=[CourseContent.DoesNotExist, real_get(course_run)],
+    ):
+        course_content, created = api.get_or_create_course_content(course_run)
+    assert not created
+    assert course_content == existing
+    # The Learning Package that our "create" attempt made was rolled back:
+    assert list(LearningPackage.objects.all()) == [existing.learning_package]
+
+
+def test_get_or_create_no_course_run() -> None:
+    """A CourseRun must exist"""
+    with pytest.raises(CourseRun.DoesNotExist):
+        api.get_or_create_course_content(COURSE_KEY)
     assert LearningPackage.objects.count() == 0
 
 

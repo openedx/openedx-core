@@ -10,6 +10,7 @@ from __future__ import annotations
 import secrets
 from datetime import datetime
 
+from django.db import IntegrityError
 from django.db.models import QuerySet
 from django.db.transaction import atomic
 from opaque_keys.edx.keys import CourseKey
@@ -32,6 +33,7 @@ __all__ = [
     "get_course_content",
     "get_course_runs_for_learning_package",
     "get_learning_package_for_course_run",
+    "get_or_create_course_content",
 ]
 
 
@@ -86,6 +88,41 @@ def create_course_content(
         elif not isinstance(learning_package, LearningPackage):
             learning_package = publishing_api.get_learning_package(learning_package)
         return CourseContent.objects.create(course_run=course_run, learning_package=learning_package)
+
+
+def get_or_create_course_content(
+    course_run: CourseRun | CourseKey,
+    /,
+    *,
+    created: datetime | None = None,
+) -> tuple[CourseContent, bool]:
+    """
+    Get the ``CourseContent`` for a course run, creating it (along with a new
+    Learning Package) if the course run doesn't have one yet.
+
+    Returns a ``(course_content, created)`` tuple, like Django's
+    ``get_or_create()``. This is safe to call concurrently: if another caller
+    creates the ``CourseContent`` first, the Learning Package created by this
+    call is rolled back and the other caller's ``CourseContent`` is returned.
+
+    ⚠️ Only call this from code that is deliberately setting up a course run to
+    store its content in ``openedx_content``. Never call it from code that is
+    just reading content, or merely looking up a course run's content could
+    create an empty Learning Package for it. Use ``get_course_content()`` or
+    ``get_learning_package_for_course_run()`` to read.
+
+    Raises ``CourseRun.DoesNotExist`` if no such course run exists.
+    """
+    try:
+        return get_course_content(course_run), False
+    except CourseContent.DoesNotExist:
+        pass
+    try:
+        # create_course_content() uses atomic(), so if this fails, its new Learning Package is rolled back too.
+        return create_course_content(course_run, created=created), True
+    except IntegrityError:
+        # Another caller created this course run's CourseContent concurrently.
+        return get_course_content(course_run), False
 
 
 def get_course_content(course_run: CourseRun | CourseKey, /) -> CourseContent:
