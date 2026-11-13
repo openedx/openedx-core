@@ -58,6 +58,10 @@ layers=
     # The "backup_restore" applet handles the new export and import mechanism.
     openedx_content.applets.backup_restore
 
+    # The "courses" applet maps course runs to the Learning Packages that hold
+    # their content. It sits above the content applets so that it may use any of them.
+    openedx_content.applets.courses
+
     # The "components" applet is responsible for storing versioned Components,
     # which in Open edX Studio terminology maps to things like individual
     # Problems, Videos, and blocks of HTML text. This is also the type we would
