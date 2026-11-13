@@ -12,6 +12,7 @@ from typing import Any, BinaryIO
 
 from django.utils.translation import gettext as _
 
+from ..data import TagData
 from ..models import Taxonomy
 from .exceptions import (
     EmptyCSVField,
@@ -209,17 +210,24 @@ class Parser:
         The tags are ordered by hierarchy, first, parents and then children.
         `get_filtered_tags` is in charge of returning this in a hierarchical
         way.
+
+        A tag whose parent is not among the loaded tags (e.g. an archived parent) is skipped,
+        along with its descendants, so that every exported `parent_id` refers to an exported tag.
         """
         tags = taxonomy.get_filtered_tags().all()
         result = []
+        exported: dict[str, TagData] = {}  # Parents always precede their children in `tags`.
         for tag in tags:
             result_tag = {
                 "id": tag["external_id"] or tag["_id"],
                 "value": tag["value"],
             }
             if tag["parent_value"]:
-                parent_tag = next(t for t in tags if t["value"] == tag["parent_value"])
+                parent_tag = exported.get(tag["parent_value"])
+                if parent_tag is None:
+                    continue
                 result_tag["parent_id"] = parent_tag["external_id"] or parent_tag["_id"]
+            exported[tag["value"]] = tag
             result.append(result_tag)
         return result
 
