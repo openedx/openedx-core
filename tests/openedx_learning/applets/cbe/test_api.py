@@ -29,7 +29,7 @@ from openedx_learning.api import (
     get_blocked_courses,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
-    get_courses_with_relative_criteria,
+    get_courses_with_live_criteria,
     is_competency_taxonomy,
     resolve_supplied_leaf_group,
     select_competency_taxonomies,
@@ -1731,17 +1731,17 @@ def test_get_competency_criteria_tree_scoped_keeps_every_group_above_any_course(
     assert {g.id for g in empty.groups} == {root.id, mid.id}
 
 
-def test_get_courses_with_relative_criteria_single_match(
+def test_get_courses_with_live_criteria_single_match(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A single tag with a live criterion in a course is returned, mapped to that tag."""
     relative = make_tag(competency_taxonomy, "Relative Skill")
     make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
 
-    assert get_courses_with_relative_criteria([relative.id]) == {course_run: relative}
+    assert get_courses_with_live_criteria([relative.id]) == {course_run: relative}
 
 
-def test_get_courses_with_relative_criteria_ties_break_on_the_lowest_tag_id(
+def test_get_courses_with_live_criteria_ties_break_on_the_lowest_tag_id(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
@@ -1754,27 +1754,27 @@ def test_get_courses_with_relative_criteria_ties_break_on_the_lowest_tag_id(
     make_leaf_criterion(second, course_run, default_rule_profile, "p2")
     make_leaf_criterion(first, course_run, default_rule_profile, "p1")
 
-    result = get_courses_with_relative_criteria([second.id, first.id])
+    result = get_courses_with_live_criteria([second.id, first.id])
 
     assert result == {course_run: first}
 
 
-def test_get_courses_with_relative_criteria_empty_input_yields_an_empty_result() -> None:
+def test_get_courses_with_live_criteria_empty_input_yields_an_empty_result() -> None:
     """An empty tag_ids collection yields an empty result, not an error."""
-    assert not get_courses_with_relative_criteria([])
+    assert not get_courses_with_live_criteria([])
 
 
-def test_get_courses_with_relative_criteria_excludes_a_group_with_no_live_criterion(
+def test_get_courses_with_live_criteria_excludes_a_group_with_no_live_criterion(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun,
 ) -> None:
     """A CompetencyCriteriaGroup for a relative tag with no attached criterion is not a conflict."""
     relative = make_tag(competency_taxonomy, "Empty Relative")
     _create_leaf_group(relative, course_run)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_ignores_an_archived_criterion(
+def test_get_courses_with_live_criteria_ignores_an_archived_criterion(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """An archived criterion is gone for authoring, so it blocks nothing."""
@@ -1782,10 +1782,10 @@ def test_get_courses_with_relative_criteria_ignores_an_archived_criterion(
     criterion = make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
     CompetencyCriterion.objects.filter(pk=criterion.pk).update(archived=True)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archived_leaf_group(
+def test_get_courses_with_live_criteria_ignores_a_criterion_under_an_archived_leaf_group(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A live criterion under an archived leaf group blocks nothing."""
@@ -1793,10 +1793,10 @@ def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archive
     criterion = make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
     CompetencyCriteriaGroup.objects.filter(pk=criterion.group_id).update(archived=True)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archived_course_level_group(
+def test_get_courses_with_live_criteria_ignores_a_criterion_under_an_archived_course_level_group(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A live criterion under an archived course-level group blocks nothing."""
@@ -1806,10 +1806,10 @@ def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archive
     assert course_level_id is not None
     CompetencyCriteriaGroup.objects.filter(pk=course_level_id).update(archived=True)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archived_root_group(
+def test_get_courses_with_live_criteria_ignores_a_criterion_under_an_archived_root_group(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A live criterion under an archived root group blocks nothing."""
@@ -1821,10 +1821,10 @@ def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archive
     assert root_id is not None
     CompetencyCriteriaGroup.objects.filter(pk=root_id).update(archived=True)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_counts_a_course_with_one_live_and_one_archived_criterion(
+def test_get_courses_with_live_criteria_counts_a_course_with_one_live_and_one_archived_criterion(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """Archiving one of a tag's two criteria in a course leaves the course blocked by the other."""
@@ -1833,7 +1833,7 @@ def test_get_courses_with_relative_criteria_counts_a_course_with_one_live_and_on
     make_leaf_criterion(relative, course_run, default_rule_profile, "p2")
     CompetencyCriterion.objects.filter(pk=archived.pk).update(archived=True)
 
-    assert get_courses_with_relative_criteria([relative.id]) == {course_run: relative}
+    assert get_courses_with_live_criteria([relative.id]) == {course_run: relative}
 
 
 def test_validate_containment_rejects_an_ancestor_conflict(
@@ -1893,7 +1893,7 @@ def test_validate_containment_allows_a_tag_with_no_relatives(tag: Tag, course_ru
     cbe_api._validate_containment(group, course_run)  # pylint: disable=protected-access  # Must not raise.
 
 
-def test_get_courses_with_relative_criteria_narrows_to_the_given_course(
+def test_get_courses_with_live_criteria_narrows_to_the_given_course(
     competency_taxonomy: CompetencyTaxonomy,
     course_run: CourseRun,
     organization: Organization,
@@ -1905,10 +1905,10 @@ def test_get_courses_with_relative_criteria_narrows_to_the_given_course(
     make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
     make_leaf_criterion(relative, other_course_run, default_rule_profile, "p1")
 
-    assert get_courses_with_relative_criteria([relative.id], course=course_run) == {course_run: relative}
+    assert get_courses_with_live_criteria([relative.id], course=course_run) == {course_run: relative}
 
 
-def test_get_courses_with_relative_criteria_narrows_to_the_given_course_keys(
+def test_get_courses_with_live_criteria_narrows_to_the_given_course_keys(
     competency_taxonomy: CompetencyTaxonomy,
     course_run: CourseRun,
     organization: Organization,
@@ -1921,14 +1921,14 @@ def test_get_courses_with_relative_criteria_narrows_to_the_given_course_keys(
     for course in (course_run, course_y, course_z):
         make_leaf_criterion(relative, course, default_rule_profile, "p1")
 
-    result = get_courses_with_relative_criteria(
+    result = get_courses_with_live_criteria(
         [relative.id], course_keys=[course_key(course_run), course_key(course_y)],
     )
 
     assert result == {course_run: relative, course_y: relative}
 
 
-def test_get_courses_with_relative_criteria_ignores_a_criterion_outside_a_leaf(
+def test_get_courses_with_live_criteria_ignores_a_criterion_outside_a_leaf(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A criterion on a group nested below a leaf, e.g. made through the admin, is skipped rather than crashing."""
@@ -1940,7 +1940,7 @@ def test_get_courses_with_relative_criteria_ignores_a_criterion_outside_a_leaf(
     )
     CompetencyCriterion.objects.create(group=nested, object_tag=object_tag, rule_profile=default_rule_profile)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
 def test_create_competency_criterion_uses_the_callers_course_run(

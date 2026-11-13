@@ -51,7 +51,7 @@ __all__ = [
     "get_blocked_courses",
     "get_competency_criteria_tree",
     "get_competency_rule_profiles",
-    "get_courses_with_relative_criteria",
+    "get_courses_with_live_criteria",
     "is_competency_taxonomy",
     "record_graded_object_statuses",
     "resolve_competency_tag",
@@ -338,11 +338,14 @@ def resolve_supplied_leaf_group(group_id: int, tag: Tag, course_run: CourseRun) 
     return group
 
 
-def get_courses_with_relative_criteria(
+def get_courses_with_live_criteria(
     tag_ids: Iterable[int], course: CourseRun | None = None, *, course_keys: Iterable[CourseKey] | None = None,
 ) -> dict[CourseRun, Tag]:
     """
     Return every course where one of ``tag_ids`` has a live CompetencyCriterion.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
+    behavior may change this function's shape without a deprecation cycle.
 
     Maps each conflicting CourseRun to the lowest-id tag (of ``tag_ids``) with a criterion there,
     narrowed by ``course`` and by ``course_keys``, each when given. Archived criteria and criteria
@@ -409,7 +412,7 @@ def get_blocked_courses(tag: Tag, course_keys: Iterable[CourseKey] | None = None
     ancestor_and_descendant_ids = _get_ancestor_and_descendant_tag_ids(tag)
     if not ancestor_and_descendant_ids:
         return []
-    conflicts = get_courses_with_relative_criteria(ancestor_and_descendant_ids, course_keys=course_keys)
+    conflicts = get_courses_with_live_criteria(ancestor_and_descendant_ids, course_keys=course_keys)
     rows = []
     for course_run, conflicting_tag in conflicts.items():
         # Typed optional, but save() always sets it.
@@ -433,7 +436,7 @@ def _validate_containment(group: CompetencyCriteriaGroup, course: CourseRun) -> 
     ancestor_and_descendant_ids = _get_ancestor_and_descendant_tag_ids(tag)
     if not ancestor_and_descendant_ids:
         return
-    conflicting_tag = get_courses_with_relative_criteria(ancestor_and_descendant_ids, course=course).get(course)
+    conflicting_tag = get_courses_with_live_criteria(ancestor_and_descendant_ids, course=course).get(course)
     if conflicting_tag is not None:
         raise ValidationError({
             "tag_id": _(
