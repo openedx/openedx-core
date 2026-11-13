@@ -93,10 +93,8 @@ def make_component(lp: LearningPackage, component_code: str, dependencies: list[
         component_code=component_code,
         title=component_code,
         created=now,
+        dependencies=dependencies,
     )
-    # TODO: where should dependencies between Component and Asset get created?
-    if dependencies:
-        publishing_api.set_version_dependencies(v.pk, dependencies=dependencies)
     return c, v
 
 
@@ -776,8 +774,7 @@ def test_broken_references2(lp: LearningPackage, black: Asset, grey: Asset):
     # Create two components that reference static assets:
     c1, _c1v1 = make_component(lp, "component1", dependencies=[black.id])  # Initially references 'black.png'
     c2, _c2v1 = make_component(lp, "component2", dependencies=[black.id, grey.id])  # References 'black.png', 'grey.png'
-    c2v2 = components_api.create_next_component_version(c2.id, media_to_replace={}, created=later)
-    publishing_api.set_version_dependencies(c2v2.pk, dependencies=[grey.id])
+    components_api.create_next_component_version(c2.id, media_to_replace={}, created=later, dependencies=[grey.id])
     publishing_api.publish_from_drafts(lp.id, publishing_api.get_all_drafts(lp.id).filter(entity=c1.publishable_entity))
     publishing_api.soft_delete_draft(c1.id)
 
