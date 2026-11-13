@@ -290,9 +290,10 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
 
     def delete(self, request, *args, **kwargs):
         """
-        Resolve the group scoped to both path segments, then delegate to the public API, which checks permission.
+        Resolve the group by the `group_id` and `tag_id` in the URL, then delegate to the public API.
 
-        The lookup keeps archived groups, so a repeat DELETE on an archived subtree still returns 200.
+        The public API checks permission. The lookup keeps archived groups, so a repeat DELETE on an
+        archived subtree still returns 200.
         """
         group = get_object_or_404(
             CompetencyCriteriaGroup, pk=self.kwargs["group_id"], tag_id=self.kwargs["tag_id"],
@@ -305,9 +306,8 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
         except IntegrityError as exc:
-            # ProtectedError is a subclass. The API archives a race on the target subtree's own progress itself, so
-            # this is a conflict it could not attribute to that subtree, such as a status that reached an ancestor
-            # group. A retry re-checks and then deletes or archives accordingly.
+            # ProtectedError is a subclass. The API already archives when the target subtree itself gained a
+            # status, so this is a conflict outside it, such as a status on an ancestor. A retry re-checks.
             raise CompetencyCriteriaConflict(
                 _("The delete conflicted with a concurrent change. Retry the DELETE.")
             ) from exc

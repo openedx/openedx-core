@@ -12,8 +12,9 @@ from django.db import IntegrityError
 from rules.permissions import permissions as rule_permissions
 
 from openedx_catalog.models import CourseRun
-from openedx_learning.api import delete_or_archive_competency_criteria_group, resolve_competency_criteria_group_course
+from openedx_learning.api import delete_or_archive_competency_criteria_group
 from openedx_learning.applets.cbe import api as cbe_api
+from openedx_learning.applets.cbe.api import _resolve_competency_criteria_group_course
 from openedx_learning.applets.cbe.api import _subtree_has_learner_progress as subtree_has_learner_progress
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
@@ -700,7 +701,7 @@ def test_permission_course_rejects_a_root_group(tag: Tag) -> None:
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
 
     with pytest.raises(ValidationError) as exc_info:
-        resolve_competency_criteria_group_course(root)
+        _resolve_competency_criteria_group_course(root)
 
     assert "group_id" in exc_info.value.message_dict
 
@@ -710,7 +711,7 @@ def test_permission_course_is_the_targets_own_course_for_a_course_level_group(ta
     root = CompetencyCriteriaGroup.objects.create(tag=tag)
     course_level = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
 
-    assert resolve_competency_criteria_group_course(course_level) == course_run
+    assert _resolve_competency_criteria_group_course(course_level) == course_run
 
 
 def test_permission_course_is_the_parents_course_for_a_non_course_level_target(tag: Tag, course_run: CourseRun) -> None:
@@ -719,7 +720,7 @@ def test_permission_course_is_the_parents_course_for_a_non_course_level_target(t
     course_level = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
     leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
 
-    assert resolve_competency_criteria_group_course(leaf) == course_run
+    assert _resolve_competency_criteria_group_course(leaf) == course_run
 
 
 @pytest.mark.parametrize("depth", [2, 3])
@@ -732,7 +733,7 @@ def test_permission_course_is_the_nearest_course_level_ancestors_course_at_any_d
     for _ in range(depth):
         group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=group)
 
-    assert resolve_competency_criteria_group_course(group) == course_run
+    assert _resolve_competency_criteria_group_course(group) == course_run
 
 
 def test_permission_course_rejects_a_group_with_no_course_level_group_in_its_lineage(tag: Tag) -> None:
@@ -742,7 +743,7 @@ def test_permission_course_rejects_a_group_with_no_course_level_group_in_its_lin
     target = CompetencyCriteriaGroup.objects.create(tag=tag, parent=middle)
 
     with pytest.raises(ValidationError) as exc_info:
-        resolve_competency_criteria_group_course(target)
+        _resolve_competency_criteria_group_course(target)
 
     assert "group_id" in exc_info.value.message_dict
 

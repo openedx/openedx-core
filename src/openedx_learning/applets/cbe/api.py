@@ -60,7 +60,6 @@ __all__ = [
     "get_courses_with_live_criteria",
     "is_competency_taxonomy",
     "record_graded_object_statuses",
-    "resolve_competency_criteria_group_course",
     "resolve_competency_tag",
     "resolve_supplied_leaf_group",
     "roll_up_competency_statuses",
@@ -1174,17 +1173,12 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
         return CriterionDeletionResult(id=criterion_id, archived=False)
 
 
-def resolve_competency_criteria_group_course(group: CompetencyCriteriaGroup) -> CourseRun:
+def _resolve_competency_criteria_group_course(group: CompetencyCriteriaGroup) -> CourseRun:
     """
     Return the CourseRun that scopes the subtree rooted at ``group``.
 
-    UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
-    and archive behavior may change this function's shape without a deprecation cycle.
-
     That is the course of the nearest group with one, starting at ``group`` itself and walking
-    up through its ancestors, so a group may sit at any depth below its course-level group. Costs
-    one query per ancestor walked. A caller checks ``oel_tagging.can_tag_object`` against this
-    course before removing the subtree.
+    up through its ancestors, so a group may sit at any depth below its course-level group.
 
     Raises ValidationError (keyed "group_id") if ``group`` is a root CompetencyCriteriaGroup,
     whose subtree can span several courses, or if no group in its lineage has a course.
@@ -1245,18 +1239,19 @@ def _subtree_has_learner_progress(group_ids: set[int], criterion_ids: list[int])
     )
 
 
-def _delete_orphaned_object_tags(candidate_ids: set[int]) -> None:
+def _delete_orphaned_object_tags(candidate_objecttag_ids: set[int]) -> None:
     """
-    Delete each ObjectTag in ``candidate_ids`` that no CompetencyCriterion references, and nothing else.
+    Delete each ObjectTag in ``candidate_objecttag_ids`` that no CompetencyCriterion references, and nothing else.
 
-    ``candidate_ids`` are the ObjectTag ids of the criteria in a deleted group subtree. Must run
-    after those criteria are deleted, inside the transaction that holds the competency's Tag lock.
-    No other ObjectTag on the object, in any taxonomy, is read or written.
+    Must run after the criteria that used these ObjectTags are deleted, inside the transaction that
+    holds the competency's Tag lock. No other ObjectTag on the object, in any taxonomy, is read or written.
     """
     still_referenced = set(
-        CompetencyCriterion.objects.filter(object_tag_id__in=candidate_ids).values_list("object_tag_id", flat=True)
+        CompetencyCriterion.objects.filter(
+            object_tag_id__in=candidate_objecttag_ids,
+        ).values_list("object_tag_id", flat=True)
     )
-    ObjectTag.objects.filter(pk__in=candidate_ids - still_referenced).delete()
+    ObjectTag.objects.filter(pk__in=candidate_objecttag_ids - still_referenced).delete()
 
 
 def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -> GroupDeletionResult:
@@ -1266,9 +1261,8 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
     UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
     and archive behavior may change this function's shape without a deprecation cycle.
 
-    ``user`` must hold ``oel_tagging.can_tag_object`` for the course
-    :func:`resolve_competency_criteria_group_course` returns for the target group; otherwise
-    Django's ``PermissionDenied`` is raised before anything is locked or changed.
+    ``user`` must hold ``oel_tagging.can_tag_object`` for the course of the nearest group with one,
+    starting at the target. The check runs before anything is locked or changed.
 
     The subtree is the target group plus every descendant group and leaf CompetencyCriterion.
     Hard-deleted if no learner status exists anywhere in it; archived in place, all-or-nothing,
@@ -1278,9 +1272,9 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
     On a hard delete, only the ObjectTags of the subtree's criteria that no other criterion
     references are removed; no other tag on the object is touched.
 
-    The whole operation runs in one transaction that locks only the competency's Tag, the same lock
-    a create or a criterion delete for that competency takes first, so those wait until this call
-    commits.
+    The first read and the permission check run before the lock. The rest runs in one transaction that
+    takes only one explicit lock, on the competency's Tag row, the same lock a create or a criterion
+    delete for that competency takes first, so those wait until this call commits.
 
     A learner status written concurrently, after this call's progress check, makes the call
     archive the subtree instead of deleting it, provided a second progress check finds a status on
@@ -1288,14 +1282,27 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
     reached an ancestor group during the cascade, and the original ``IntegrityError`` is re-raised
     with nothing changed. A caller may retry: the retry re-checks, then deletes or archives.
 
-    Raises CompetencyCriteriaGroup.DoesNotExist if no such group exists (including one deleted
-    concurrently), Tag.DoesNotExist if its competency tag was deleted concurrently, PermissionDenied
-    if ``user`` may not tag the course's object, ValidationError (keyed "group_id") if `group_id`
-    names a root CompetencyCriteriaGroup or a group with no course-level group in its lineage, and
-    ``IntegrityError`` when the delete races with a write outside the target subtree.
+    The archive path saves each criterion through ``CompetencyCriterion.save()``, which re-validates
+    the stored rule payload. One criterion with an invalid stored payload therefore fails the whole
+    call with ``ValidationError`` and nothing changes.
+
+    When a hard delete commits first, a learner's grade write for any criterion in the subtree fails
+    inside the learner's grade transaction, as it does for a single criterion (see
+    :func:`delete_or_archive_competency_criterion`).
+
+    A repeat call on an archived group whose own subtree has no learner status hard-deletes it and
+    returns ``archived=False``. This happens to a child group that was archived only because a
+    sibling under the same parent had learner status.
+
+    Raises ``CompetencyCriteriaGroup.DoesNotExist`` if the group is gone (including a concurrent
+    delete), ``Tag.DoesNotExist`` if its competency tag was deleted concurrently, ``PermissionDenied``
+    if ``user`` fails the check, ``ValidationError`` (keyed "group_id") for a root group or a group
+    with no course-level group in its lineage, ``ValidationError`` for an invalid stored rule payload
+    on the archive path, and ``IntegrityError`` when the delete races with a write outside the target
+    subtree.
     """
     group = CompetencyCriteriaGroup.objects.select_related("tag__taxonomy").get(pk=group_id)
-    course = resolve_competency_criteria_group_course(group)
+    course = _resolve_competency_criteria_group_course(group)
     # A group's tag is always a competency tag, so its taxonomy is always set.
     assert group.tag.taxonomy is not None
     perm_obj = ObjectTagPermissionItem(taxonomy=group.tag.taxonomy, object_id=str(course.course_key))
@@ -1305,16 +1312,20 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
         raise PermissionDenied()
     tag_id = group.tag_id
     with transaction.atomic():
-        # The same lock associate_competency_criterion() takes first. Without it, a create could add a criterion
-        # to this subtree after it is read, or reuse an ObjectTag this call deletes as orphaned. The foreign keys
-        # would only turn either into an IntegrityError on one side, not order the two.
+        # A lock rather than a constraint, because Django cascades deletes in Python and the database can't
+        # catch the two races that follow. A create that commits a new criterion or leaf group into this
+        # subtree between the subtree read below and the row-collecting SELECT inside ``target_group.delete()``
+        # would have those rows deleted silently, since ``CompetencyCriterion.group`` cascades, after the create
+        # call already returned success. A create that reuses an ObjectTag this call deletes as orphaned, and
+        # commits between the "still referenced" check and the ObjectTag delete, would have its criterion
+        # cascaded away. Same lock associate_competency_criterion() takes first.
         Tag.objects.select_for_update().get(pk=tag_id)
         # Read under the Tag lock: a concurrent delete may have won, and DoesNotExist propagates.
         target_group = CompetencyCriteriaGroup.objects.get(pk=group_id)
         subtree_ids, criteria = _competency_criteria_subtree(target_group)
         criterion_ids = [criterion.pk for criterion in criteria]
-        archived = _subtree_has_learner_progress(subtree_ids, criterion_ids)
-        if not archived:
+        should_archive = _subtree_has_learner_progress(subtree_ids, criterion_ids)
+        if not should_archive:
             try:
                 # Savepoint: a learner status committed after the progress check above makes the delete
                 # fail on its PROTECT foreign key, and only this block must roll back.
@@ -1331,14 +1342,15 @@ def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -
                 # re-query is needed because the status may have landed after the pre-check above.
                 if not _subtree_has_learner_progress(subtree_ids, criterion_ids):
                     raise
-                archived = True
-                # The rolled-back block may have cleared the pk of in-memory instances it had already deleted.
+                should_archive = True
+                # target_group.delete() sets the instance's pk to None even though the savepoint rolled the row
+                # back, so re-read it.
                 target_group = CompetencyCriteriaGroup.objects.get(pk=group_id)
-        if archived:
+        if should_archive:
             _archive_competency_criteria_subtree(target_group, subtree_ids, criteria, user)
         return GroupDeletionResult(
             id=group_id,
-            archived=archived,
+            archived=should_archive,
             cascaded_group_count=len(subtree_ids) - 1,
             cascaded_criteria_count=len(criteria),
         )

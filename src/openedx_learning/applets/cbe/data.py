@@ -56,8 +56,9 @@ class GroupDeletionResult:
     """
     The outcome of removing a CompetencyCriteriaGroup subtree: hard-deleted or archived, with counts.
 
-    The counts cover the target subtree only: ``cascaded_group_count`` is the number of descendant
-    groups beneath the target and ``cascaded_criteria_count`` the number of criteria in the subtree.
+    The counts cover the target subtree only: ``cascaded_group_count`` counts the target's descendant
+    groups, not the target itself and not the ancestors the removal cascaded to, and
+    ``cascaded_criteria_count`` is the number of criteria in the subtree.
 
     UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
     deprecation cycle.
