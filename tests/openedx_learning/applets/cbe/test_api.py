@@ -341,6 +341,59 @@ def test_course_level_group_unique_constraint_rejects_a_second_group_for_the_sam
         CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
 
 
+def test_create_leaf_group_reactivates_an_archived_root_and_adds_a_course_level_group_for_a_new_course(
+    tag: Tag, course_run: CourseRun, organization: Organization
+) -> None:
+    """
+    An archived root, left behind once its only course-level group (course X) was archived, is reactivated.
+
+    A call for course Y reuses that same root, adds a Y course-level group and a leaf under it,
+    and leaves the archived X course-level group alone.
+    """
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, archived=True)
+    archived_course_level = CompetencyCriteriaGroup.objects.create(
+        tag=tag, course=course_run, parent=root, archived=True,
+    )
+    # `.history` is a runtime descriptor mypy cannot type, so query the historical model directly.
+    historical_group = apps.get_model("openedx_learning", "HistoricalCompetencyCriteriaGroup")
+
+    leaf = _create_leaf_group(tag, other_course_run)
+
+    root.refresh_from_db()
+    archived_course_level.refresh_from_db()
+    assert root.archived is False
+    assert historical_group.objects.filter(id=root.pk).latest("history_date", "history_id").archived is False
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, parent__isnull=True).count() == 1
+    assert leaf.parent is not None
+    assert leaf.parent.course_id == other_course_run.id
+    assert leaf.parent.parent_id == root.id
+    assert archived_course_level.archived is True
+
+
+def test_create_leaf_group_adds_a_course_level_group_beside_an_archived_one(
+    tag: Tag, course_run: CourseRun, organization: Organization
+) -> None:
+    """With an active root, an archived course-level group for course X does not block course Y."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    archived_course_level = _create_leaf_group(tag, course_run).parent
+    assert archived_course_level is not None
+    root = archived_course_level.parent
+    assert root is not None
+    archived_course_level.archived = True
+    archived_course_level.save()
+
+    leaf = _create_leaf_group(tag, other_course_run)
+
+    assert leaf.parent is not None
+    assert leaf.parent.course_id == other_course_run.id
+    assert leaf.parent.parent_id == root.id
+    root.refresh_from_db()
+    assert root.archived is False
+    archived_course_level.refresh_from_db()
+    assert archived_course_level.archived is True
+
+
 # ==============================================================================================
 # resolve_supplied_leaf_group
 # ==============================================================================================
@@ -395,6 +448,51 @@ def test_resolve_supplied_leaf_group_rejects_a_group_for_a_different_course(
     leaf = _create_leaf_group(tag, other_course_run)
     with pytest.raises(ValidationError, match="group_id"):
         resolve_supplied_leaf_group(leaf.id, tag, course_run)
+
+
+def test_resolve_supplied_leaf_group_rejects_an_archived_leaf(tag: Tag, course_run: CourseRun) -> None:
+    """The leaf's course-level group and root are active; the leaf's own archived flag is what rejects it."""
+    leaf = _create_leaf_group(tag, course_run)
+    leaf.archived = True
+    leaf.save()
+
+    with pytest.raises(ValidationError) as exc_info:
+        resolve_supplied_leaf_group(leaf.id, tag, course_run)
+
+    assert "archived" in str(exc_info.value.message_dict["group_id"])
+
+
+def test_resolve_supplied_leaf_group_rejects_an_active_leaf_under_an_archived_course_level_group(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    An active leaf under an archived course-level group is rejected, keyed ``group_id``.
+
+    Only rows written outside the API produce this state. The check mirrors
+    ``get_courses_with_relative_criteria()``, which also treats such a leaf as archived.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    assert leaf.parent is not None
+    leaf.parent.archived = True
+    leaf.parent.save()
+
+    with pytest.raises(ValidationError) as exc_info:
+        resolve_supplied_leaf_group(leaf.id, tag, course_run)
+
+    assert "archived" in str(exc_info.value.message_dict["group_id"])
+
+
+def test_resolve_supplied_leaf_group_still_resolves_an_active_leaf_beside_an_archived_one(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """Both leaves share one active course-level group."""
+    archived_leaf = _create_leaf_group(tag, course_run)
+    archived_leaf.archived = True
+    archived_leaf.save()
+    active_leaf = _create_leaf_group(tag, course_run)
+
+    assert archived_leaf.parent_id == active_leaf.parent_id
+    assert resolve_supplied_leaf_group(active_leaf.id, tag, course_run) == active_leaf
 
 
 # ==============================================================================================
@@ -529,6 +627,147 @@ def test_associate_competency_criterion_rolls_back_newly_created_groups_when_cri
         associate_competency_criterion(tag_id=tag.id, object_id=object_id)
 
     assert not CompetencyCriteriaGroup.objects.filter(tag=tag).exists()
+
+
+def test_associate_competency_criterion_rolls_back_root_reactivation_when_the_course_level_group_is_archived(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    Rejecting the archived course-level group leaves the archived root archived and creates no group or criterion.
+
+    Scenario 3 of #717. Together with the whole-branch test below, this guards the ``transaction.atomic()``
+    wrapper: without it the root reactivation commits even though the request is rejected.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, archived=True)
+    CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root, archived=True)
+    group_count = CompetencyCriteriaGroup.objects.count()
+    criterion_count = CompetencyCriterion.objects.count()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
+
+    assert "archived" in str(exc_info.value.message_dict["object_id"])
+    root.refresh_from_db()
+    assert root.archived is True
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+    assert CompetencyCriterion.objects.count() == criterion_count
+
+
+def test_associate_competency_criterion_archived_criterion_blocks_re_association_while_a_sibling_keeps_the_group_alive(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    An archived criterion for the content blocks a derive-path re-add even while the course-level group is active.
+
+    The setup mirrors the archive cascade: the first criterion and its own leaf are archived, but the
+    course-level group stays active because the sibling's leaf is still live. With no ``group_id``, the archived
+    criterion blocks anywhere under the competency, and the error says the association was archived.
+    """
+    first = associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
+    associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p2"))
+    first.archived = True
+    first.save()
+    first.group.archived = True
+    first.group.save()
+    group_count = CompetencyCriteriaGroup.objects.count()
+    criterion_count = CompetencyCriterion.objects.count()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
+
+    assert "previously associated" in str(exc_info.value.message_dict["object_id"])
+    assert "archived" in str(exc_info.value.message_dict["object_id"])
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+    assert CompetencyCriterion.objects.count() == criterion_count
+
+
+def test_associate_competency_criterion_active_match_keeps_the_plain_duplicate_message_beside_an_archived_one(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    When an active and an archived criterion both match the content, the plain duplicate message applies.
+
+    The archived-state message is reserved for the case where every matching criterion is archived.
+    """
+    object_id = usage_key(course_run, "p1")
+    archived = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    active = associate_competency_criterion(
+        tag_id=tag.id, object_id=object_id, group_id=_create_leaf_group(tag, course_run).id,
+    )
+    archived.archived = True
+    archived.save()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    with pytest.raises(ValidationError) as group_exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=active.group_id)
+
+    assert "previously" not in str(exc_info.value.message_dict["object_id"])
+    assert "previously" not in str(group_exc_info.value.message_dict["group_id"])
+
+
+def test_associate_competency_criterion_archived_criterion_blocks_re_add_before_the_branch_state_is_consulted(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    An archived criterion blocks the re-add before the archived branch is checked.
+
+    Scenario 3 of #717 with the archive cascade's full result: the criterion, its leaf, the course-level
+    group, and the root are all archived. The duplicate check runs first and refuses the request with the
+    archived-duplicate message keyed ``object_id``, not the archived-course-level-group message, and the root
+    is not reactivated.
+    """
+    object_id = usage_key(course_run, "p1")
+    first = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    leaf = first.group
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    for instance in (first, leaf, course_level, root):
+        instance.archived = True
+        instance.save()
+    criterion_count = CompetencyCriterion.objects.count()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+
+    assert "previously associated" in str(exc_info.value.message_dict["object_id"])
+    root.refresh_from_db()
+    assert root.archived is True
+    assert CompetencyCriterion.objects.count() == criterion_count
+
+
+def test_associate_competency_criterion_rolls_back_root_reactivation_when_the_dominance_check_rejects(
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A request rejected by the hierarchy-dominance check after the root was reactivated rolls back everything.
+
+    ``create_competency_criterion()`` runs the check after ``_create_leaf_group()``, so by then the archived
+    root is active again and the course-level group and leaf exist. The rejection must leave the root archived
+    and create no group or criterion for the competency.
+    """
+    parent = make_tag(competency_taxonomy, "Ancestor Skill")
+    child = make_tag(competency_taxonomy, "Descendant Skill", parent=parent)
+    make_leaf_criterion(parent, course_run, default_rule_profile, "p1")
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=child, parent=None, archived=True)
+    CompetencyCriteriaGroup.objects.create(tag=child, course=other_course_run, parent=root, archived=True)
+    group_count = CompetencyCriteriaGroup.objects.count()
+    criterion_count = CompetencyCriterion.objects.count()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=child.id, object_id=usage_key(course_run, "p2"))
+
+    assert "tag_id" in exc_info.value.message_dict
+    root.refresh_from_db()
+    assert root.archived is True
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+    assert CompetencyCriterion.objects.count() == criterion_count
 
 
 # ==============================================================================================
