@@ -22,6 +22,7 @@ from .applets.backup_restore.api import *
 from .applets.collections.api import *
 from .applets.components.api import *
 from .applets.containers.api import *
+from .applets.courses.api import *
 from .applets.media.api import *
 from .applets.publishing.api import *
 from .applets.sections.api import *
