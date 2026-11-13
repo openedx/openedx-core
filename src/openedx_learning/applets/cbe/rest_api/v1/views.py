@@ -195,8 +195,7 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
     any course plus the groups of the named runs, ordered with the groups above any course first
     and then by the order requested; keys that match no run are ignored, and an empty value
     returns only the groups above any course. The parameter may be supplied once. A key's branch
-    and version are ignored, so a branch- or version-qualified key scopes to its plain course, and
-    a version-only key is a 400.
+    and version are ignored, and a version-only or library key is a 400.
 
     ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is the number
     under every reachable group regardless of ``course_keys``, so a client scoped down to zero
@@ -281,22 +280,17 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
 
 class CompetencyBlockedCoursesView(generics.GenericAPIView):
     """
-    GET-only. List the courses where an ancestor or descendant of a competency already has a live
-    criterion, paginated.
+    GET-only. List the courses where a competency can't get a new criterion, paginated.
 
     Along any ancestor-descendant line of the taxonomy, a course may hold live criteria for one
     competency only. So once an ancestor or descendant of this competency has a live criterion in a
     course, this competency can't get one in it.
 
     ``GET api/cbe/v1/competencies/<tag_id>/blocked-courses/`` returns those courses sorted by
-    course key. ``course_keys`` (comma-separated, supplied once) narrows it; a blank value returns
-    an empty page. A key's branch and version are ignored, so a branch- or version-qualified key
-    matches its plain course and each row carries the plain key; a version-only key is a 400. The
-    result is an authoring hint: the create-criterion endpoint still enforces the rule.
-
-    An unauthenticated caller gets 401. A caller who can't view the competency's taxonomy gets 403.
-    A ``tag_id`` that isn't a competency tag, or a ``page`` out of range, is a 404. A ``course_keys``
-    that is malformed, given more than once, or names more than 100 keys is a 400.
+    course key. ``course_keys`` (comma-separated, supplied once, at most 100) narrows it; a blank
+    value returns an empty page. A key's branch and version are ignored, and each row carries the
+    plain key. The result is an authoring hint: the create-criterion endpoint still enforces the
+    rule.
 
     UNSTABLE: the criteria-authoring family is incomplete, so this response shape may change
     without a deprecation cycle.

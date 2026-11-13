@@ -16,7 +16,6 @@ from django.db.transaction import TransactionManagementError
 from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey, UsageKey
-from opaque_keys.edx.locator import CourseLocator
 
 from openedx_catalog.api import get_course_run, get_course_run_ids
 from openedx_catalog.models_api import CourseRun
@@ -204,7 +203,6 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
       ``[]`` returns only the groups above any course.
     - A key that matches no course run is dropped, and a repeated key counts once, at its
       first position. A list in which no key resolves returns only the groups above any course.
-    - A key's branch and version are ignored, and a version-only key raises ``InvalidKeyError``.
 
     Groups come back with the groups above any course first, then the named courses in the order
     requested, and within each of those by ``(parent_id, ordering, id)`` with root-level rows first.
@@ -214,9 +212,6 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
     under every reachable group before ``course_keys`` is applied, so a caller scoped down to
     zero criteria can still tell the competency is not empty.
     """
-    if course_keys is not None:
-        # The dict lookup below compares keys exactly, while the database already ignores branch and version.
-        course_keys = [key.for_branch(None) if isinstance(key, CourseLocator) else key for key in course_keys]
     groups = list(
         CompetencyCriteriaGroup.objects.filter(tag=tag, archived=False)
         .select_related("course")
@@ -347,7 +342,7 @@ def get_courses_with_relative_criteria(
     tag_ids: Iterable[int], course: CourseRun | None = None, *, course_keys: Iterable[CourseKey] | None = None,
 ) -> dict[CourseRun, Tag]:
     """
-    Return every course already blocked for one of ``tag_ids`` by an existing CompetencyCriterion.
+    Return every course where one of ``tag_ids`` has a live CompetencyCriterion.
 
     Maps each conflicting CourseRun to the lowest-id tag (of ``tag_ids``) with a criterion there,
     narrowed by ``course`` and by ``course_keys``, each when given. Archived criteria and criteria
@@ -388,7 +383,7 @@ class BlockedCourse:
     conflicting_tag_value: str
 
 
-def _get_relative_tag_ids(tag: Tag) -> set[int]:
+def _get_ancestor_and_descendant_tag_ids(tag: Tag) -> set[int]:
     """
     Return the ids of every taxonomy ancestor and descendant of ``tag``.
 
@@ -407,21 +402,17 @@ def get_blocked_courses(tag: Tag, course_keys: Iterable[CourseKey] | None = None
     UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
     behavior may change this function's shape without a deprecation cycle.
 
-    Narrowed to ``course_keys`` when given. A key's branch and version are ignored, and a
-    version-only key raises ``InvalidKeyError``. Results are sorted by course key. When several relatives claim
-    one course, the lowest-id relative is named. Criteria on ``tag`` itself never block a course.
-    Requested keys that match no blocked course are dropped.
+    Narrowed to ``course_keys`` when given. Results are sorted by course key. When several ancestors
+    or descendants have a criterion in one course, the one with the lowest id is named. Criteria on
+    ``tag`` itself never block a course. Requested keys that match no blocked course are dropped.
     """
-    if course_keys is not None:
-        # The database filter would drop branch and version anyway; normalizing here fails a version-only key up front.
-        course_keys = [key.for_branch(None) if isinstance(key, CourseLocator) else key for key in course_keys]
-    relative_ids = _get_relative_tag_ids(tag)
-    if not relative_ids:
+    ancestor_and_descendant_ids = _get_ancestor_and_descendant_tag_ids(tag)
+    if not ancestor_and_descendant_ids:
         return []
-    conflicts = get_courses_with_relative_criteria(relative_ids, course_keys=course_keys)
+    conflicts = get_courses_with_relative_criteria(ancestor_and_descendant_ids, course_keys=course_keys)
     rows = []
     for course_run, conflicting_tag in conflicts.items():
-        # CourseRun.save() always derives course_key, so a saved row has one.
+        # Typed optional, but save() always sets it.
         assert course_run.course_key is not None, f"CourseRun {course_run.id} has no course_key"
         rows.append(BlockedCourse(
             course_key=course_run.course_key,
@@ -439,10 +430,10 @@ def _validate_containment(group: CompetencyCriteriaGroup, course: CourseRun) -> 
     CompetencyCriterion in ``course``.
     """
     tag = group.tag
-    relative_ids = _get_relative_tag_ids(tag)
-    if not relative_ids:
+    ancestor_and_descendant_ids = _get_ancestor_and_descendant_tag_ids(tag)
+    if not ancestor_and_descendant_ids:
         return
-    conflicting_tag = get_courses_with_relative_criteria(relative_ids, course=course).get(course)
+    conflicting_tag = get_courses_with_relative_criteria(ancestor_and_descendant_ids, course=course).get(course)
     if conflicting_tag is not None:
         raise ValidationError({
             "tag_id": _(

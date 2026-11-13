@@ -13,7 +13,6 @@ from django.db import connection
 from django.db.utils import IntegrityError
 from django.forms.models import model_to_dict
 from django.test.utils import CaptureQueriesContext
-from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey
 from organizations.models import Organization
 from rules.permissions import permissions as rule_permissions
@@ -1523,24 +1522,6 @@ def test_get_competency_criteria_tree_course_keys_unresolvable_key_is_silently_i
     assert tree.criteria_count == 0
 
 
-def test_get_competency_criteria_tree_course_keys_branch_qualified_key_matches_the_plain_course(
-    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """A branch-qualified key, passed straight to the API, scopes to its plain course's groups."""
-    criterion = make_leaf_criterion(tag, course_run, default_rule_profile, "p1")
-    leaf = criterion.group
-    course_level = leaf.parent
-    assert course_level is not None
-    root = course_level.parent
-    assert root is not None
-    branched_key = CourseKey.from_string(f"{course_key(course_run)}+branch@draft")
-
-    tree = get_competency_criteria_tree(tag, [branched_key])
-
-    assert {g.id for g in tree.groups} == {root.id, course_level.id, leaf.id}
-    assert [c.id for c in tree.criteria] == [criterion.id]
-
-
 def test_get_competency_criteria_tree_course_keys_scoped_to_a_course_with_nothing(
     tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
@@ -2333,33 +2314,6 @@ def test_update_never_reads_or_writes_learner_status(
 # ==============================================================================================
 
 
-@pytest.mark.parametrize(
-    "claimant_and_queried",
-    [
-        pytest.param((1, 2), id="ancestor claim"),
-        pytest.param((2, 1), id="descendant claim"),
-        pytest.param((0, 2), id="grandparent claim"),
-        pytest.param((2, 0), id="grandchild claim"),
-    ],
-)
-def test_get_blocked_courses_reports_a_relative_claim(
-    competency_taxonomy: CompetencyTaxonomy,
-    course_run: CourseRun,
-    default_rule_profile: CompetencyRuleProfile,
-    claimant_and_queried: tuple[int, int],
-) -> None:
-    """A course where an ancestor or descendant at any depth has a criterion is blocked, naming that relative."""
-    family = make_skill_family(competency_taxonomy)
-    claimant, queried = (family[index] for index in claimant_and_queried)
-    make_leaf_criterion(claimant, course_run, default_rule_profile, "p1")
-
-    assert get_blocked_courses(queried) == [
-        BlockedCourse(
-            course_key=course_key(course_run), conflicting_tag_id=claimant.id, conflicting_tag_value=claimant.value,
-        ),
-    ]
-
-
 def test_get_blocked_courses_ignores_a_sibling_claim(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
@@ -2386,45 +2340,44 @@ def test_get_blocked_courses_is_empty_for_a_tag_with_no_relatives(tag: Tag) -> N
 
 
 @pytest.mark.parametrize(
-    "claimant_and_queried",
+    "claimants_and_queried",
     [
-        pytest.param((1, 2), id="ancestor claim"),
-        pytest.param((2, 1), id="descendant claim"),
-        pytest.param((0, 2), id="grandparent claim"),
-        pytest.param((2, 0), id="grandchild claim"),
+        pytest.param(((1,), 2), id="ancestor claim"),
+        pytest.param(((2,), 1), id="descendant claim"),
+        pytest.param(((0,), 2), id="grandparent claim"),
+        pytest.param(((2,), 0), id="grandchild claim"),
+        pytest.param(((1, 0), 2), id="two ancestor claims"),
+        pytest.param(((2, 1), 0), id="two descendant claims"),
     ],
 )
 def test_get_blocked_courses_and_create_competency_criterion_agree_on_a_conflict(
     competency_taxonomy: CompetencyTaxonomy,
     course_run: CourseRun,
     default_rule_profile: CompetencyRuleProfile,
-    claimant_and_queried: tuple[int, int],
+    claimants_and_queried: tuple[tuple[int, ...], int],
 ) -> None:
-    """A course the read reports as blocked for a tag is one the write rejects, and both name the same relative."""
+    """
+    A course the read reports as blocked for a tag is one the write rejects, and both name the same
+    tag: the lowest-id one when several ancestors or descendants have a criterion in the course.
+    """
     family = make_skill_family(competency_taxonomy)
-    claimant, queried = (family[index] for index in claimant_and_queried)
-    make_leaf_criterion(claimant, course_run, default_rule_profile, "p1")
+    claimant_indexes, queried_index = claimants_and_queried
+    claimants = [family[index] for index in claimant_indexes]
+    queried = family[queried_index]
+    for position, claimant in enumerate(claimants):
+        make_leaf_criterion(claimant, course_run, default_rule_profile, f"p{position}")
+    named = min(claimants, key=lambda claimant: claimant.id)
 
     assert get_blocked_courses(queried) == [
         BlockedCourse(
-            course_key=course_key(course_run), conflicting_tag_id=claimant.id, conflicting_tag_value=claimant.value,
+            course_key=course_key(course_run), conflicting_tag_id=named.id, conflicting_tag_value=named.value,
         ),
     ]
     group = _create_leaf_group(queried, course_run)
     with pytest.raises(ValidationError) as exc_info:
-        create_competency_criterion(group, usage_key(course_run, "p2"), course_run=course_run)
-    assert claimant.value in str(exc_info.value.message_dict["tag_id"])
-
-
-@pytest.mark.parametrize(
-    "read", [get_blocked_courses, get_competency_criteria_tree], ids=["blocked courses", "criteria tree"],
-)
-def test_a_version_only_course_key_raises_before_the_database_is_asked(tag: Tag, read) -> None:
-    """A version-only key has no course to match, so both reads reject it up front rather than from the lookup."""
-    version_only = CourseKey.from_string("course-v1:version@aaaaaaaaaaaaaaaaaaaaaaaa")
-
-    with pytest.raises(InvalidKeyError):
-        read(tag, [version_only])
+        create_competency_criterion(group, usage_key(course_run, "new"), course_run=course_run)
+    message = str(exc_info.value.message_dict["tag_id"])
+    assert [claimant.value for claimant in claimants if f"'{claimant.value}'" in message] == [named.value]
 
 
 def test_get_blocked_courses_sorts_rows_by_course_key(

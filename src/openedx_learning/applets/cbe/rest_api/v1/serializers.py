@@ -184,13 +184,12 @@ class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
 
     def validate_course_keys(self, value: str) -> list[CourseKey]:
         """
-        Parse a comma-separated course_keys value into a deduplicated list of CourseKey.
+        Parse a comma-separated course_keys value into a deduplicated list of plain course keys.
 
-        Each key is stripped of any branch or version before dedup. Stray separators (trailing,
-        doubled, or all-commas) are ignored, not rejected. Raises a validation error if more than
-        MAX_COURSE_KEYS entries remain after splitting, checked before dedup so repeating a key
-        can't dodge the cap, or if any entry isn't a course key. A library key parses as a
-        CourseKey but can never name a course run, so it is rejected too.
+        Branch and version are stripped before dedup, and stray separators (trailing, doubled, or
+        all-commas) are ignored. Raises a validation error if more than MAX_COURSE_KEYS entries
+        remain after splitting (counted before dedup, so repeats can't dodge the cap) or if an
+        entry isn't a course key, library keys included.
         """
         entries = [entry for entry in (entry.strip() for entry in value.split(",")) if entry]
         if len(entries) > MAX_COURSE_KEYS:
@@ -203,7 +202,10 @@ class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
                 key = CourseKey.from_string(entry)
                 if not isinstance(key, CourseLocator):
                     raise InvalidKeyError(type(key), entry)
-                # Match the stored plain course key: drop branch and version; this also rejects a version-only key.
+                # A course key may carry a branch (draft or published copy) and a version (one saved
+                # snapshot). The database field stores only the plain key, so we drop both here to
+                # match what it holds. A version-only key has no org, so it can't be turned into a
+                # plain key and is rejected.
                 key = key.for_branch(None)
             except InvalidKeyError as exc:
                 raise serializers.ValidationError(
