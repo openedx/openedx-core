@@ -4,6 +4,7 @@ Views for the CBE REST API, v1.
 from __future__ import annotations
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError
 from django.db.models import QuerySet
 from django.shortcuts import get_object_or_404
 from django.utils.translation import gettext_lazy as _
@@ -26,6 +27,7 @@ from ...api import (
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
+    delete_or_archive_competency_criterion,
     get_blocked_courses,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
@@ -167,7 +169,7 @@ class CompetencyCriterionBulkUpdateView(generics.GenericAPIView):
                 rule_payload_override=data.get("rule_payload_override"),
                 user=request.user,
             )
-        except (CompetencyCriteriaGroup.DoesNotExist, CompetencyCriterion.DoesNotExist) as exc:
+        except (CompetencyCriteriaGroup.DoesNotExist, CompetencyCriterion.DoesNotExist, Tag.DoesNotExist) as exc:
             raise NotFound(str(exc)) from exc
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
@@ -269,13 +271,48 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
             group = update_competency_criteria_group(
                 group.id, logic_operator=serializer.validated_data["logic_operator"], user=request.user,
             )
-        except CompetencyCriteriaGroup.DoesNotExist as exc:
+        except (CompetencyCriteriaGroup.DoesNotExist, Tag.DoesNotExist) as exc:
             raise NotFound(str(exc)) from exc
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
         except CompetencyCriteriaGroupArchivedError as exc:
             raise CompetencyCriteriaConflict(str(exc)) from exc
         return Response(CompetencyCriteriaGroupSerializer(group).data, status=status.HTTP_200_OK)
+
+
+class CompetencyCriterionDeleteView(generics.GenericAPIView):
+    """
+    DELETE-only. Remove a CompetencyCriterion: hard-delete, or archive if learner status exists.
+
+    Does not call self.check_object_permissions(): the public API function checks
+    oel_tagging.can_tag_object itself and raises Django's PermissionDenied, which becomes a 403.
+    """
+
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, *args, **kwargs):
+        """
+        Resolve the criterion by the `criterion_id` and `tag_id` in the URL, then delegate to the public API.
+
+        Archived rows still resolve, so a repeat DELETE on one returns 200.
+        """
+        criterion = get_object_or_404(
+            CompetencyCriterion, pk=self.kwargs["criterion_id"], group__tag_id=self.kwargs["tag_id"],
+        )
+        try:
+            result = delete_or_archive_competency_criterion(criterion.id, request.user)
+        except (CompetencyCriterion.DoesNotExist, Tag.DoesNotExist) as exc:
+            # The criterion, or its competency tag, was removed between the lookup above and the API call.
+            raise NotFound() from exc
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
+        except IntegrityError as exc:
+            # ProtectedError is a subclass. A learner's grade write won the race, and a retry archives the criterion.
+            raise CompetencyCriteriaConflict(
+                _("A learner's progress was recorded against this criterion during the delete. Retry the DELETE.")
+            ) from exc
+        return Response({"id": result.id, "archived": result.archived}, status=status.HTTP_200_OK)
 
 
 class CompetencyBlockedCoursesView(generics.GenericAPIView):

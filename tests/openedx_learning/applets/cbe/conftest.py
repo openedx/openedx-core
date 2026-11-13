@@ -1,4 +1,5 @@
 """Shared fixtures for the CBE test modules: schema, deletion, tree-integration, status, and REST tests."""
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 import pytest
@@ -126,3 +127,35 @@ def _staff_client(staff_user) -> APIClient:
     client = APIClient()
     client.force_authenticate(user=staff_user)
     return client
+
+
+@pytest.fixture(name="run_when_tag_lock_is_taken")
+def _run_when_tag_lock_is_taken(monkeypatch: pytest.MonkeyPatch) -> Callable[[Callable[[], None]], None]:
+    """
+    Return a function that makes the API run a callable as it takes the Tag row lock.
+
+    The callable runs once, before the API reads the Tag. It stands in for a transaction that commits
+    while the API waits for the lock, so a read the API makes after taking the lock sees the change and
+    a read it made earlier doesn't.
+    """
+
+    def _install(side_effect: Callable[[], None]) -> None:
+        original_select_for_update = Tag.objects.select_for_update
+        fired: list[bool] = []
+
+        def _select_for_update(*args, **kwargs):
+            queryset = original_select_for_update(*args, **kwargs)
+            original_get = queryset.get
+
+            def _get(*get_args, **get_kwargs):
+                if not fired:
+                    fired.append(True)
+                    side_effect()
+                return original_get(*get_args, **get_kwargs)
+
+            queryset.get = _get
+            return queryset
+
+        monkeypatch.setattr(Tag.objects, "select_for_update", _select_for_update)
+
+    return _install
