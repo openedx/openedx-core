@@ -288,9 +288,9 @@ def test_create_asset_and_version(lp: LearningPackage, user1: User) -> None:
     assert not asset.allow_scripts  # Default must be False
     assert asset.versioning.published is None  # Not published by default
     assert asset.versioning.draft
-    assert asset.versioning.draft.pk is asset_v1.pk
+    assert asset.versioning.draft.pk == asset_v1.pk
     assert asset.versioning.latest
-    assert asset.versioning.latest.pk is asset_v1.pk
+    assert asset.versioning.latest.pk == asset_v1.pk
 
     assert asset_v1.asset.id == asset.id
     assert_type(asset_v1.asset, Asset)
@@ -582,7 +582,7 @@ def test_undelete_assets(lp: LearningPackage, black: Asset, grey_png: Media, use
         lp, path=black.path, media=grey_png, created=later, created_by=user2.id
     )
     assert len(new_black.versioning.versions.all()) == 2
-    assert new_black.versioning.draft.pk is v2.pk
+    assert new_black.versioning.draft.pk == v2.pk
     assert v2.version_num == 2
     assert v2.media.id == grey_png.id
     # Should the 'created' and 'created_by' be reset when un-deleting, or preserved? We'll say preserved.
