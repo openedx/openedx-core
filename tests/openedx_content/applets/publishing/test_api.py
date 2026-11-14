@@ -2578,6 +2578,25 @@ class CrossEntityValidationTestCase(TransactionTestCase):
                 dependencies=[entity_in_lp2.id],
             )
 
+    def test_set_version_dependencies_rejects_cross_package_dependencies(self) -> None:
+        """
+        set_version_dependencies() should also reject dependencies that are
+        from a different LearningPackage, so it can't be used to bypass the
+        check in create_publishable_entity_version().
+        """
+        entity_in_lp1 = self._create_entity_with_deps("set_deps_entity_in_lp1")
+        entity_in_lp2 = publishing_api.create_publishable_entity(
+            self.learning_package_2.id,
+            "set_deps_dep_in_lp2",
+            created=self.now,
+            created_by=None,
+        )
+        version = entity_in_lp1.versions.get()
+
+        with pytest.raises(ValidationError, match="Dependencies must be from the same learning package"):
+            publishing_api.set_version_dependencies(version.id, [entity_in_lp2.id])
+        assert not version.dependencies.exists()
+
     def _create_entity_with_deps(self, ref: str, dependencies: list | None = None) -> PublishableEntity:
         """Create an entity with a v1 draft that has ``dependencies``."""
         entity = publishing_api.create_publishable_entity(

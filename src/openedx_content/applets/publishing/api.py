@@ -238,14 +238,6 @@ def create_publishable_entity_version(
             created_by_id=created_by,
         )
         if dependencies:
-            # Validate that dependencies are from the same learning package:
-            if (
-                PublishableEntity.objects.filter(id__in=dependencies)
-                .exclude(learning_package_id=version.entity.learning_package_id)
-                .exists()
-            ):
-                raise ValidationError("Dependencies must be from the same learning package")
-            # Store dependencies:
             _set_version_dependencies(version.id, entity_id, dependencies)
 
         set_draft_version(
@@ -311,6 +303,8 @@ def set_version_dependencies(
     3. Do not create circular dependencies. A ValidationError is raised if the
        new dependencies would create a cycle through the current draft or
        published versions of the referenced entities.
+    4. Dependencies must be in the same LearningPackage as the version's
+       entity. A ValidationError is raised otherwise.
     """
     entity_id = PublishableEntityVersion.objects.values_list("entity_id", flat=True).get(pk=version_id)
     _set_version_dependencies(version_id, entity_id, dependencies)
@@ -326,6 +320,18 @@ def _set_version_dependencies(
     know the version's entity_id and can save a query.
     """
     dependency_set = set(dependencies)  # dependencies have no ordering
+
+    # Dependencies must be from the same learning package. Side-effect
+    # propagation follows dependencies, so a cross-package dependency would
+    # write log records into the wrong package's logs.
+    entity_lp_id = PublishableEntity.objects.filter(id=entity_id).values("learning_package_id")
+    if (
+        PublishableEntity.objects.filter(id__in=dependency_set)
+        .exclude(learning_package_id=Subquery(entity_lp_id))
+        .exists()
+    ):
+        raise ValidationError("Dependencies must be from the same learning package")
+
     _validate_no_dependency_cycles(entity_id, dependency_set)
     PublishableEntityVersionDependency.objects.bulk_create(
         [
