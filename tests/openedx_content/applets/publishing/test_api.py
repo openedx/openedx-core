@@ -22,6 +22,7 @@ from openedx_content.applets.publishing.models import (
     DraftSideEffect,
     LearningPackage,
     PublishableEntity,
+    PublishableEntityVersionDependency,
     PublishLog,
     PublishLogRecord,
 )
@@ -2672,6 +2673,31 @@ class CrossEntityValidationTestCase(TransactionTestCase):
         # B no longer depends on D (never published), so D may depend on B.
         self._create_next_version(b, [])
         self._create_next_version(d, [b.id])
+
+    def test_publish_dependency_crawl_stops_at_cycle(self) -> None:
+        """
+        The publish dependency crawl must end if a cycle exists anyway.
+
+        The cycle check can't catch everything (e.g. two concurrent edits that
+        each close half of a cycle), so the crawl has to cope with one. The
+        entities beyond the cycle still have to be found.
+        """
+        d = self._create_entity_with_deps("crawl_d")
+        c = self._create_entity_with_deps("crawl_c", [d.id])
+        b = self._create_entity_with_deps("crawl_b", [c.id])
+        a = self._create_entity_with_deps("crawl_a", [b.id])
+        # Close the A -> B -> C -> A cycle directly, bypassing the cycle check
+        # the way two racing transactions could.
+        PublishableEntityVersionDependency.objects.create(
+            referring_version=c.versions.get(),
+            referenced_entity=a,
+        )
+
+        layers = publishing_api._get_dependencies_with_unpublished_changes(  # pylint: disable=protected-access
+            Draft.objects.filter(entity_id=a.id)
+        )
+        crawled_entity_ids = {draft.entity_id for layer in layers for draft in layer}
+        assert crawled_entity_ids == {a.id, b.id, c.id, d.id}
 
     def test_publish_functions_rejected_inside_bulk_draft_changes_for(self) -> None:
         """

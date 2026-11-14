@@ -505,11 +505,23 @@ def _get_dependencies_with_unpublished_changes(
         entity__affects__in=draft_qset.values_list("version_id", flat=True)
     ).distinct()
 
+    # Dependencies aren't supposed to form cycles, but we can't completely
+    # prevent it. Two concurrent edits can each pass the cycle check in
+    # _set_version_dependencies(), and a draft can be reset to an old version
+    # with different dependencies. So we skip entities we've already crawled.
+    # Otherwise a cycle would make each layer's query nest the previous one
+    # forever, until the database rejects the query as too deeply nested.
+    crawled_entity_ids: set[int] = set()
     while dependency_drafts:
         all_dependency_drafts.append(dependency_drafts)
-        dependency_drafts = Draft.objects.filter(
-            entity__affects__in=dependency_drafts.all().values_list("version_id", flat=True)
-        ).distinct()
+        crawled_entity_ids.update(draft.entity_id for draft in dependency_drafts)
+        dependency_drafts = (
+            Draft.objects.filter(
+                entity__affects__in=dependency_drafts.all().values_list("version_id", flat=True)
+            )
+            .exclude(entity_id__in=list(crawled_entity_ids))
+            .distinct()
+        )
 
     unpublished_dependency_drafts = [
         dependency_drafts_qset.all().with_unpublished_changes()
