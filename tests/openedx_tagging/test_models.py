@@ -613,6 +613,13 @@ class TestObjectTag(TestTagTaxonomyMixin, TestCase):
             == "<ObjectTagTestSubclass> object:id:1: Life on Earth=Bacteria"
         )
 
+    def test_copying_a_tag_via_casting_copies_field_values(self) -> None:
+        self.object_tag.archived = True
+        self.object_tag.deletion_locked = True
+        copy_tag = ObjectTagTestSubclass.cast(self.object_tag)
+        assert copy_tag.archived is True
+        assert copy_tag.deletion_locked is True
+
     def test_object_tag_export_id(self):
         # ObjectTag's export_id defaults to its taxonomy's export_id
         assert self.object_tag.export_id == self.taxonomy.export_id
