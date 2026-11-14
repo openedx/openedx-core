@@ -6,7 +6,7 @@
 Status
 ------
 
-Proposed.
+Accepted, but not implemented.
 
 Context
 -------
@@ -90,7 +90,7 @@ But, when an XBlock Component with references to shared assets is pasted/copied 
 Each referenced Asset is handled as follows:
 
 1. If the destination Learning Package already has an Asset that is a downstream copy of the same upstream Asset (because an author manually imported/copied it to the destination earlier), that existing copy is reused.
-2. Otherwise, if the shared Asset is ``private`` or ``allow_scripts`` is True, an error occurs (private assets should not be implicitly copied, and component-local assets cannot be private nor allow scripts).
+2. Otherwise, if the shared Asset is ``staff`` or ``allow_scripts`` is True, an error occurs (staff-only assets should not be implicitly copied, and component-local assets cannot be staff-only nor allow scripts).
 3. Otherwise, the shared Asset gets converted to a component-local asset. (Note: this treats both ``locked`` and ``public`` assets the same, converting them to component-local and changing their permissions to match the destination component.)
 
 For example: In a library is a shared asset (an image, ``example.jpg``) and an HTML Component which references that image (``<html>...<img src="/static/example.jpg">...</html>``). When the HTML Component is copied from the library into a course (creating an upstream link), the ``example.jpg`` asset will be converted to a component-local asset attached to the HTML Component in the course, as ``/static/example.jpg``. Importantly, if the image asset (``example.jpg``) in the library is later edited and the change is published, the system must indicate that there is a newer version of the HTML Component available to sync to the course (even if the HTML component is unchanged, just because it has a dependency on the shared image asset). This will require updating the library-to-course sync code to account for ``dependencies_hash_digest`` and not just compare the ``version_num`` of each component.
