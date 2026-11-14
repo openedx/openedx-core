@@ -17,10 +17,12 @@ APIs.
 #     `DraftChangeLogEventData` vs `DraftChangeLogRecord` is clearer if the former is `signals.DraftChangeLogEventData`)
 from . import signals
 # The rest of the public API (other than models):
+from .applets.assets.api import *
 from .applets.backup_restore.api import *
 from .applets.collections.api import *
 from .applets.components.api import *
 from .applets.containers.api import *
+from .applets.courses.api import *
 from .applets.media.api import *
 from .applets.publishing.api import *
 from .applets.sections.api import *
