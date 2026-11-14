@@ -5,10 +5,11 @@ import logging
 from datetime import datetime, timezone
 
 import pytest
+from django.db.models.signals import post_save
 
 from openedx_learning.applets.cbe import statuses
 from openedx_learning.applets.cbe.statuses import raise_status
-from openedx_learning.models import MasteryStatus, StudentCompetencyStatus
+from openedx_learning.models import MasteryStatus, StudentCompetencyCriteriaGroupStatus, StudentCompetencyStatus
 
 pytestmark = pytest.mark.django_db
 
@@ -93,3 +94,68 @@ def test_an_unchanged_status_is_not_logged(user, tag, caplog: pytest.LogCaptureF
         _write(user, tag, MasteryStatus.DEMONSTRATED, SECOND)
 
     assert not caplog.records
+
+
+@pytest.fixture(name="saves")
+def fixture_saves():
+    """Record every post_save sent for StudentCompetencyStatus as (created, status_id, modified)."""
+    received = []
+
+    def receiver(sender, instance, created, **kwargs):  # pylint: disable=unused-argument
+        received.append((created, instance.status_id, instance.modified))
+
+    post_save.connect(receiver, sender=StudentCompetencyStatus, weak=False)
+    yield received
+    post_save.disconnect(receiver, sender=StudentCompetencyStatus)
+
+
+def test_creating_a_row_sends_post_save(user, tag, saves) -> None:
+    """A created row sends post_save with created=True."""
+    _write(user, tag, MasteryStatus.PARTIALLY_ATTEMPTED, FIRST)
+
+    assert saves == [(True, MasteryStatus.PARTIALLY_ATTEMPTED, FIRST)]
+
+
+def test_raising_a_status_sends_post_save(user, tag, saves) -> None:
+    """A raise is a bulk UPDATE, so raise_status sends post_save itself, with the raised values."""
+    _write(user, tag, MasteryStatus.PARTIALLY_ATTEMPTED, FIRST)
+
+    _write(user, tag, MasteryStatus.DEMONSTRATED, SECOND)
+
+    assert saves[1:] == [(False, MasteryStatus.DEMONSTRATED, SECOND)]
+
+
+def test_an_unchanged_status_sends_no_post_save(user, tag, saves) -> None:
+    """A write that leaves the stored status as it was sends nothing."""
+    _write(user, tag, MasteryStatus.DEMONSTRATED, FIRST)
+
+    _write(user, tag, MasteryStatus.PARTIALLY_ATTEMPTED, SECOND)
+    _write(user, tag, MasteryStatus.DEMONSTRATED, SECOND)
+
+    assert len(saves) == 1
+
+
+def test_raising_a_group_status_sends_post_save(user, group) -> None:
+    """Group status raises are bulk UPDATEs too, so they send post_save like competency status raises."""
+    received = []
+
+    def receiver(sender, instance, created, **kwargs):  # pylint: disable=unused-argument
+        received.append((created, instance.status_id, instance.modified))
+
+    post_save.connect(receiver, sender=StudentCompetencyCriteriaGroupStatus, weak=False)
+    try:
+        lookup = {"user_id": user.id, "group_id": group.id}
+        raise_status(
+            StudentCompetencyCriteriaGroupStatus.objects, lookup=lookup,
+            status=MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED, now=FIRST,
+        )
+        raise_status(
+            StudentCompetencyCriteriaGroupStatus.objects, lookup=lookup, status=MasteryStatus.DEMONSTRATED, now=SECOND,
+        )
+    finally:
+        post_save.disconnect(receiver, sender=StudentCompetencyCriteriaGroupStatus)
+
+    assert received == [
+        (True, MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED, FIRST),
+        (False, MasteryStatus.DEMONSTRATED, SECOND),
+    ]
