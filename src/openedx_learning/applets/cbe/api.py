@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Any, Iterable, Sequence, cast
 
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
-from django.db import connection, transaction
+from django.db import IntegrityError, connection, transaction
 from django.db.models import F, Q, QuerySet
 from django.db.transaction import TransactionManagementError
 from django.utils.translation import gettext_lazy as _
@@ -19,11 +19,12 @@ from opaque_keys.edx.keys import CourseKey, UsageKey
 
 from openedx_catalog.api import get_course_run, get_course_run_ids
 from openedx_catalog.models_api import CourseRun
-from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags, get_object_tags, tag_object
+from openedx_tagging import api as tagging_api
+from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 from openedx_tagging.rules import ObjectTagPermissionItem, UserType
 
-from .data import CriterionDeletionResult, GradedObjectScore
+from .data import CriterionDeletionResult, GradedObjectScore, GroupDeletionResult
 from .models import (
     CompetencyCourseRun,
     CompetencyCriteriaGroup,
@@ -46,10 +47,12 @@ __all__ = [
     "CompetencyCriterionArchivedError",
     "CriterionDeletionResult",
     "GradedObjectScore",
+    "GroupDeletionResult",
     "associate_competency_criterion",
     "bulk_update_competency_criteria",
     "create_competency_criterion",
     "create_competency_taxonomy",
+    "delete_or_archive_competency_criteria_group",
     "delete_or_archive_competency_criterion",
     "get_blocked_courses",
     "get_competency_criteria_tree",
@@ -483,10 +486,12 @@ def create_competency_criterion(
     UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
     and archive behavior may change this function's shape without a deprecation cycle.
 
-    ``tag_object()`` replaces an object's full tag list for a taxonomy rather than appending, so
-    this reads the object's existing tags first and unions in the new one, rather than silently
-    dropping a sibling competency's tag under the same taxonomy. Raises ValidationError (keyed
-    "object_id") when the taxonomy refuses the tag, e.g. it allows only one tag per object.
+    Adds only this competency's ObjectTag to the object through ``tagging_api.add_tag_to_object()``,
+    reusing it if it already exists. Other tags on the object, including other competencies' tags in
+    the same taxonomy, are never changed, so a concurrent create or delete for another competency
+    cannot be undone by this one.
+    Raises ValidationError (keyed "object_id") when the taxonomy allows one tag per object and the
+    object already has a tag in it, or when the object is at the tag limit.
 
     When no rule fields are supplied, resolves to the live profile scoped to the tag's taxonomy,
     else the live system default, rather than persisting null: ADR-0002 Decision 4 always
@@ -506,16 +511,14 @@ def create_competency_criterion(
     tag = group.tag
     # tag.taxonomy_id is nullable at the model level; already guaranteed set by the caller.
     assert tag.taxonomy_id is not None
+    assert tag.taxonomy is not None
     _validate_containment(group, course_run)
 
-    existing_values = [existing_tag.value for existing_tag in get_object_tags(object_id, taxonomy_id=tag.taxonomy_id)]
-    if tag.value not in existing_values:
-        existing_values.append(tag.value)
     try:
-        tag_object(object_id, tag.taxonomy, existing_values)
+        object_tag = tagging_api.add_tag_to_object(object_id, tag)
     except ValueError as exc:
+        # The tagging API reports its tag-count rules as ValueError; this API reports them keyed to the field.
         raise ValidationError({"object_id": str(exc)}) from exc
-    object_tag = ObjectTag.objects.get(object_id=object_id, taxonomy_id=tag.taxonomy_id, tag_id=tag.id)
 
     if rule_profile_id is None and rule_type_override is None and rule_payload_override is None:
         profile = _get_applicable_rule_profile(tag.taxonomy_id)
@@ -1056,18 +1059,28 @@ def _cascade_remove_from_group(group: CompetencyCriteriaGroup, user: UserType) -
         _cascade_remove_from_group(parent, user)
 
 
+def _write_criterion_archived(criterion: CompetencyCriterion, user: UserType) -> bool:
+    """
+    Archive ``criterion`` in place, recording ``user`` in its history, without cascading to its group.
+
+    Returns False and writes nothing if ``criterion`` is already archived, so a repeat call adds no history row.
+    """
+    if criterion.archived:
+        return False
+    criterion.archived = True
+    _set_history_user(criterion, user)
+    criterion.save(update_fields=["archived"])
+    return True
+
+
 def _archive_criterion(criterion: CompetencyCriterion, user: UserType) -> None:
     """
     Archive ``criterion`` in place and cascade the archive to any ancestor left with no live children.
 
     Does nothing if ``criterion`` is already archived, so a repeat call writes no history.
     """
-    if criterion.archived:
-        return
-    criterion.archived = True
-    _set_history_user(criterion, user)
-    criterion.save(update_fields=["archived"])
-    _cascade_remove_from_group(criterion.group, user)
+    if _write_criterion_archived(criterion, user):
+        _cascade_remove_from_group(criterion.group, user)
 
 
 def _criterion_has_learner_progress(criterion_id: int) -> bool:
@@ -1158,3 +1171,186 @@ def delete_or_archive_competency_criterion(criterion_id: int, user: UserType) ->
             ObjectTag.objects.filter(pk=object_tag.id).delete()
         _cascade_remove_from_group(group, user)
         return CriterionDeletionResult(id=criterion_id, archived=False)
+
+
+def _resolve_competency_criteria_group_course(group: CompetencyCriteriaGroup) -> CourseRun:
+    """
+    Return the CourseRun that scopes the subtree rooted at ``group``.
+
+    That is the course of the nearest group with one, starting at ``group`` itself and walking
+    up through its ancestors, so a group may sit at any depth below its course-level group.
+
+    Raises ValidationError (keyed "group_id") if ``group`` is a root CompetencyCriteriaGroup,
+    whose subtree can span several courses, or if no group in its lineage has a course.
+    """
+    if group.parent_id is None:
+        raise ValidationError({"group_id": _("group_id must not reference a root CompetencyCriteriaGroup.")})
+
+    node: CompetencyCriteriaGroup | None = group
+    while node is not None:
+        if node.course is not None:
+            return node.course
+        node = node.parent
+    raise ValidationError(
+        {"group_id": _("group_id must reference a group under a course-level CompetencyCriteriaGroup.")}
+    )
+
+
+def _competency_criteria_subtree(target: CompetencyCriteriaGroup) -> tuple[set[int], list[CompetencyCriterion]]:
+    """
+    Return the ids of ``target`` and its descendant groups (found level by level), and the subtree's criteria.
+
+    Must run inside a transaction that already holds the competency's Tag lock, so no tree change
+    for that competency can land between this read and the delete or archive that follows it.
+    """
+    subtree_ids = {target.pk}
+    level_ids = [target.pk]
+    while level_ids:
+        level_ids = list(
+            CompetencyCriteriaGroup.objects.filter(parent_id__in=level_ids).values_list("pk", flat=True)
+        )
+        subtree_ids.update(level_ids)
+    criteria = list(CompetencyCriterion.objects.filter(group_id__in=subtree_ids).order_by("pk"))
+    return subtree_ids, criteria
+
+
+def _archive_competency_criteria_subtree(
+    target_group: CompetencyCriteriaGroup,
+    all_group_ids: set[int],
+    criteria: list[CompetencyCriterion],
+    user: UserType,
+) -> None:
+    """Archive every group and criterion in the subtree, then cascade the archive above the target."""
+    # The criteria are written without #674's per-criterion cascade: every group in the subtree is archived
+    # here, and the one upward walk below covers the target's ancestors. Never touches any ObjectTag.
+    for group in CompetencyCriteriaGroup.objects.filter(id__in=all_group_ids, archived=False):
+        _archive_group(group, user)
+    for criterion in criteria:
+        _write_criterion_archived(criterion, user)
+    if target_group.parent is not None:
+        _cascade_remove_from_group(target_group.parent, user)
+
+
+def _subtree_has_learner_progress(group_ids: set[int], criterion_ids: list[int]) -> bool:
+    """Return whether a learner status row references any group in ``group_ids`` or any of ``criterion_ids``."""
+    return (
+        StudentCompetencyCriteriaGroupStatus.objects.filter(group_id__in=group_ids).exists()
+        or StudentCompetencyCriterionStatus.objects.filter(criterion_id__in=criterion_ids).exists()
+    )
+
+
+def _delete_orphaned_object_tags(candidate_objecttag_ids: set[int]) -> None:
+    """
+    Delete each ObjectTag in ``candidate_objecttag_ids`` that no CompetencyCriterion references, and nothing else.
+
+    Must run after the criteria that used these ObjectTags are deleted, inside the transaction that
+    holds the competency's Tag lock. No other ObjectTag on the object, in any taxonomy, is read or written.
+    """
+    still_referenced = set(
+        CompetencyCriterion.objects.filter(
+            object_tag_id__in=candidate_objecttag_ids,
+        ).values_list("object_tag_id", flat=True)
+    )
+    ObjectTag.objects.filter(pk__in=candidate_objecttag_ids - still_referenced).delete()
+
+
+def delete_or_archive_competency_criteria_group(group_id: int, user: UserType) -> GroupDeletionResult:
+    """
+    Hard-delete the CompetencyCriteriaGroup subtree rooted at `group_id`, or archive it whole.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its validation and group update
+    and archive behavior may change this function's shape without a deprecation cycle.
+
+    ``user`` must hold ``oel_tagging.can_tag_object`` for the course of the nearest group with one,
+    starting at the target. The check runs before anything is locked or changed.
+
+    The subtree is the target group plus every descendant group and leaf CompetencyCriterion.
+    Hard-deleted if no learner status exists anywhere in it; archived in place, all-or-nothing,
+    if any does. Either way, each ancestor left with no live children is then hard-deleted or
+    archived, as for a criterion delete (ADR-0002 Decision 2).
+
+    On a hard delete, only the ObjectTags of the subtree's criteria that no other criterion
+    references are removed; no other tag on the object is touched.
+
+    The first read and the permission check run before the lock. The rest runs in one transaction that
+    takes only one explicit lock, on the competency's Tag row, the same lock a create or a criterion
+    delete for that competency takes first, so those wait until this call commits.
+
+    A learner status written concurrently, after this call's progress check, makes the call
+    archive the subtree instead of deleting it, provided a second progress check finds a status on
+    the subtree. If it finds none, the failure came from outside the subtree, such as a status that
+    reached an ancestor group during the cascade, and the original ``IntegrityError`` is re-raised
+    with nothing changed. A caller may retry: the retry re-checks, then deletes or archives.
+
+    The archive path saves each criterion through ``CompetencyCriterion.save()``, which re-validates
+    the stored rule payload. One criterion with an invalid stored payload therefore fails the whole
+    call with ``ValidationError`` and nothing changes.
+
+    When a hard delete commits first, a learner's grade write for any criterion in the subtree fails
+    inside the learner's grade transaction, as it does for a single criterion (see
+    :func:`delete_or_archive_competency_criterion`).
+
+    A repeat call on an archived group whose own subtree has no learner status hard-deletes it and
+    returns ``archived=False``. This happens to a child group that was archived only because a
+    sibling under the same parent had learner status.
+
+    Raises ``CompetencyCriteriaGroup.DoesNotExist`` if the group is gone (including a concurrent
+    delete), ``Tag.DoesNotExist`` if its competency tag was deleted concurrently, ``PermissionDenied``
+    if ``user`` fails the check, ``ValidationError`` (keyed "group_id") for a root group or a group
+    with no course-level group in its lineage, ``ValidationError`` for an invalid stored rule payload
+    on the archive path, and ``IntegrityError`` when the delete races with a write outside the target
+    subtree.
+    """
+    group = CompetencyCriteriaGroup.objects.select_related("tag__taxonomy").get(pk=group_id)
+    course = _resolve_competency_criteria_group_course(group)
+    # A group's tag is always a competency tag, so its taxonomy is always set.
+    assert group.tag.taxonomy is not None
+    perm_obj = ObjectTagPermissionItem(taxonomy=group.tag.taxonomy, object_id=str(course.course_key))
+    # The rules-based permission takes an ObjectTagPermissionItem, but django-stubs types the
+    # has_perm object argument as a Model.
+    if not user.has_perm("oel_tagging.can_tag_object", cast(Any, perm_obj)):
+        raise PermissionDenied()
+    tag_id = group.tag_id
+    with transaction.atomic():
+        # A lock rather than a constraint, because Django cascades deletes in Python and the database can't
+        # catch the two races that follow. A create that commits a new criterion or leaf group into this
+        # subtree between the subtree read below and the row-collecting SELECT inside ``target_group.delete()``
+        # would have those rows deleted silently, since ``CompetencyCriterion.group`` cascades, after the create
+        # call already returned success. A create that reuses an ObjectTag this call deletes as orphaned, and
+        # commits between the "still referenced" check and the ObjectTag delete, would have its criterion
+        # cascaded away. Same lock associate_competency_criterion() takes first.
+        Tag.objects.select_for_update().get(pk=tag_id)
+        # Read under the Tag lock: a concurrent delete may have won, and DoesNotExist propagates.
+        target_group = CompetencyCriteriaGroup.objects.get(pk=group_id)
+        subtree_ids, criteria = _competency_criteria_subtree(target_group)
+        criterion_ids = [criterion.pk for criterion in criteria]
+        should_archive = _subtree_has_learner_progress(subtree_ids, criterion_ids)
+        if not should_archive:
+            try:
+                # Savepoint: a learner status committed after the progress check above makes the delete
+                # fail on its PROTECT foreign key, and only this block must roll back.
+                with transaction.atomic():
+                    parent_group = target_group.parent
+                    _set_history_user(target_group, user)
+                    target_group.delete()
+                    _delete_orphaned_object_tags({criterion.object_tag_id for criterion in criteria})
+                    if parent_group is not None:
+                        _cascade_remove_from_group(parent_group, user)
+            except IntegrityError:
+                # Archive only if the failure traces to the subtree's own progress. A status on an ancestor
+                # group, or any other integrity failure, would not be fixed by archiving the subtree. The
+                # re-query is needed because the status may have landed after the pre-check above.
+                if not _subtree_has_learner_progress(subtree_ids, criterion_ids):
+                    raise
+                should_archive = True
+                # target_group.delete() sets the instance's pk to None even though the savepoint rolled the row
+                # back, so re-read it.
+                target_group = CompetencyCriteriaGroup.objects.get(pk=group_id)
+        if should_archive:
+            _archive_competency_criteria_subtree(target_group, subtree_ids, criteria, user)
+        return GroupDeletionResult(
+            id=group_id,
+            archived=should_archive,
+            cascaded_group_count=len(subtree_ids) - 1,
+            cascaded_criteria_count=len(criteria),
+        )
