@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from functools import partial
-from typing import ContextManager, Optional, cast
+from typing import ContextManager, NamedTuple, Optional
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
@@ -1182,88 +1182,245 @@ def _create_side_effects_for_change_log(change_log: DraftChangeLog | PublishLog)
     Note: The interface between ``DraftChangeLog`` and ``PublishLog`` is similar
     enough that this function has been made to work with both.
     """
+    branch_rel: str
+    log_rel: str
+    log_record_rel: str
     branch_cls: type[Draft] | type[Published]
     change_record_cls: type[DraftChangeLogRecord] | type[PublishLogRecord]
     side_effect_cls: type[DraftSideEffect] | type[PublishSideEffect]
     if isinstance(change_log, DraftChangeLog):
+        branch_rel = "draft"
+        log_rel = "draft_change_log"
+        log_record_rel = "draft_log_record"
         branch_cls = Draft
         change_record_cls = DraftChangeLogRecord
         side_effect_cls = DraftSideEffect
-        log_record_rel = "draft_log_record_id"
     elif isinstance(change_log, PublishLog):
+        branch_rel = "published"
+        log_rel = "publish_log"
+        log_record_rel = "publish_log_record"
         branch_cls = Published
         change_record_cls = PublishLogRecord
         side_effect_cls = PublishSideEffect
-        log_record_rel = "publish_log_record_id"
     else:
         raise TypeError(
             f"expected DraftChangeLog or PublishLog, not {type(change_log)}"
         )
 
-    # processed_entity_ids holds the entity IDs that we've already calculated
-    # side-effects for. This is to save us from recalculating side-effects for
-    # the same dependency relationships over and over again. So if we're calling
-    # this function in a loop for all the Components in a Unit, we won't be
-    # recalculating the Unit's side-effect on its Subsection, and its
-    # Subsection's side-effect on its Section each time through the loop.
-    # It also guards against infinite parent-child relationship loops, though
-    # those aren't *supposed* to happen anyhow.
-    processed_entity_ids: set[int] = set()
-    for original_change in change_log.records.order_by("pk"):
-        affected_by_original_change = branch_cls.objects.filter(
-            version__dependencies=original_change.entity
-        )
-        changes_and_affected = [
-            (original_change, current) for current in affected_by_original_change
-        ]
+    # These are the change records that exist at the start, i.e. the entities
+    # that were directly changed. The side-effect records that we create below
+    # are not themselves treated as original changes.
+    original_changes: list[_ChangeRecord] = list(change_log.records.order_by("pk"))
 
+    # Fetch the entire graph of entities that are (transitively) affected by
+    # the original changes, one query per layer of dependencies. Everything
+    # after this is computed in memory and then written back in a handful of
+    # bulk queries. The previous implementation did several queries for every
+    # edge in this graph, which was very expensive for large publishes.
+    dependents = _get_dependents_of(
+        branch_rel, log_record_rel, [record.entity_id for record in original_changes]
+    )
+    new_records, side_effects, branch_rows_to_repoint = _plan_side_effects(
+        change_log, log_rel, change_record_cls, original_changes, dependents
+    )
+
+    # Now write everything back in bulk.
+    if new_records:
+        _bulk_create(change_record_cls, new_records)
+        # Not all databases (e.g. MySQL) return primary keys from a bulk
+        # insert, so look up the IDs we just created in one query. There is
+        # exactly one record per entity in a change log.
+        new_record_ids_by_entity_id: dict[int, int] = dict(
+            change_record_cls.objects
+                             .filter(**{log_rel: change_log}, entity_id__in=[r.entity_id for r in new_records])
+                             .values_list("entity_id", "id")
+        )
+        for record in new_records:
+            record.id = new_record_ids_by_entity_id[record.entity_id]
+
+    if side_effects:
+        _bulk_create(
+            side_effect_cls,
+            [side_effect_cls(cause_id=cause.id, effect_id=effect.id) for cause, effect in side_effects],
+        )
+
+    if branch_rows_to_repoint:
         # These are the Published or Draft objects where we need to repoint the
         # log_record (publish_log_record or draft_change_log_record) to point to
         # the side-effect changes, e.g. the DraftChangeLogRecord that says,
         # "This Unit's version stayed the same, but its dependency hash changed
-        # because a child Component's draft version was changed." We gather them
-        # all up in a list so we can do a bulk_update on them.
-        branch_objs_to_update_with_side_effects: list[Draft | Published] = []
+        # because a child Component's draft version was changed."
+        _bulk_update(
+            branch_cls,
+            [
+                branch_cls(entity_id=entity_id, **{f"{log_record_rel}_id": record.id})
+                for entity_id, record in branch_rows_to_repoint.items()
+            ],
+            [log_record_rel],
+        )
 
+    update_dependencies_hash_digests_for_log(change_log)
+
+
+_ChangeRecord = DraftChangeLogRecord | PublishLogRecord
+
+
+class _Dependent(NamedTuple):
+    """
+    A Draft or Published row whose current version depends on some entity.
+    """
+    entity_id: PublishableEntity.ID
+    version_id: int
+    log_record_id: int | None
+
+
+def _get_dependents_of(
+    branch_rel: str,
+    log_record_rel: str,
+    entity_ids: list[PublishableEntity.ID],
+) -> dict[PublishableEntity.ID, list[_Dependent]]:
+    """
+    Find everything that (transitively) depends on the given entities.
+
+    Returns a mapping of entity ID -> the Draft (``branch_rel="draft"``) or
+    Published (``branch_rel="published"``) rows whose current version lists that
+    entity as a dependency, ordered by entity ID. The mapping covers every
+    entity reachable from ``entity_ids`` by following dependencies upwards, so
+    the result can be used to walk the whole affected graph without any
+    further queries. It takes one query per layer of dependencies.
+    """
+    dependents: dict[PublishableEntity.ID, list[_Dependent]] = {}
+    frontier = list(entity_ids)
+    seen_entity_ids = set(frontier)
+    while frontier:
+        edges = (
+            PublishableEntityVersionDependency.objects
+            .filter(referenced_entity_id__in=frontier)
+            # Only versions that are the *current* draft/published version count.
+            .filter(**{f"referring_version__{branch_rel}__isnull": False})
+            .order_by(f"referring_version__{branch_rel}__entity_id")
+            .values_list(
+                "referenced_entity_id",
+                f"referring_version__{branch_rel}__entity_id",
+                "referring_version_id",
+                f"referring_version__{branch_rel}__{log_record_rel}_id",
+            )
+        )
+        next_frontier: list[PublishableEntity.ID] = []
+        for referenced_entity_id, entity_id, version_id, log_record_id in edges:
+            dependents.setdefault(referenced_entity_id, []).append(
+                _Dependent(entity_id=entity_id, version_id=version_id, log_record_id=log_record_id)
+            )
+            if entity_id not in seen_entity_ids:
+                seen_entity_ids.add(entity_id)
+                next_frontier.append(entity_id)
+        frontier = next_frontier
+
+    return dependents
+
+
+def _plan_side_effects(
+    change_log: DraftChangeLog | PublishLog,
+    log_rel: str,
+    change_record_cls: type[DraftChangeLogRecord] | type[PublishLogRecord],
+    original_changes: list[_ChangeRecord],
+    dependents: dict[PublishableEntity.ID, list[_Dependent]],
+) -> tuple[
+    list[_ChangeRecord],
+    list[tuple[_ChangeRecord, _ChangeRecord]],
+    dict[PublishableEntity.ID, _ChangeRecord],
+]:
+    """
+    Work out the side-effects of ``original_changes`` without touching the DB.
+
+    Returns a tuple of:
+
+    1. The new (unsaved) side-effect change records to create, in order.
+    2. The (cause, effect) pairs of records to create side-effects for, in
+       order. These may reference records from (1) that haven't been saved yet.
+    3. A mapping of entity ID -> the record that the entity's Draft/Published
+       row should be repointed to.
+
+    See ``_create_side_effects_for_change_log`` for details of what side-effects
+    mean. The traversal order here is significant: it determines the order in
+    which the side-effect records are created (and therefore their IDs), which
+    is the order that records show up in the ENTITIES_*_CHANGED events.
+    """
+    records_by_entity_id: dict[PublishableEntity.ID, _ChangeRecord] = {
+        record.entity_id: record for record in original_changes
+    }
+
+    # What each affected Draft/Published row's log record currently points at.
+    # Values start out as the IDs we read from the database, and get replaced
+    # by (possibly not-yet-saved) record objects as we repoint them.
+    branch_pointers: dict[PublishableEntity.ID, int | None | _ChangeRecord] = {}
+    for dependents_of_entity in dependents.values():
+        for dependent in dependents_of_entity:
+            branch_pointers.setdefault(dependent.entity_id, dependent.log_record_id)
+
+    def _points_at(entity_id: PublishableEntity.ID, record: _ChangeRecord) -> bool:
+        current = branch_pointers[entity_id]
+        return current is record or (record.pk is not None and current == record.pk)
+
+    new_records: list[_ChangeRecord] = []
+    side_effects: list[tuple[_ChangeRecord, _ChangeRecord]] = []
+    side_effect_keys: set[tuple[PublishableEntity.ID, PublishableEntity.ID]] = set()
+    branch_rows_to_repoint: dict[PublishableEntity.ID, _ChangeRecord] = {}
+
+    # propagated_entity_ids holds the entity IDs whose dependents we've already
+    # queued up. Each entity's side-effects on *its* dependents only need to be
+    # calculated once, no matter how many different changes end up affecting
+    # it. So if we're processing all the Components in a Unit, we won't be
+    # recalculating the Unit's side-effect on its Subsection, and its
+    # Subsection's side-effect on its Section each time through the loop. It
+    # also guards against infinite parent-child relationship loops, though
+    # those aren't *supposed* to happen anyhow.
+    #
+    # Note that this only short-circuits the *propagation* from an entity. The
+    # side-effect for each individual (cause, effect) edge is always recorded,
+    # even when the affected entity has already been processed. (An earlier
+    # version of this code skipped the edge as well, so when two sibling Units
+    # under the same Subsection both had changed children, only the first
+    # Unit's side-effect on the Subsection was recorded.)
+    propagated_entity_ids: set[PublishableEntity.ID] = set()
+    for original_change in original_changes:
+        if original_change.entity_id in propagated_entity_ids:
+            # We already reached this entity as a side-effect of an earlier
+            # original change, which queued up everything that depends on it.
+            continue
+        propagated_entity_ids.add(original_change.entity_id)
+        # This is a stack, so the last affected entity gets processed first.
+        changes_and_affected = [
+            (original_change, affected) for affected in dependents.get(original_change.entity_id, [])
+        ]
         while changes_and_affected:
             change, affected = changes_and_affected.pop()
-            change_log_param = {}
-            if branch_cls == Draft:
-                change_log_param['draft_change_log'] = change.draft_change_log  # type: ignore[union-attr]
-            elif branch_cls == Published:
-                change_log_param['publish_log'] = change.publish_log  # type: ignore[union-attr]
 
             # Example: If the original_change is a DraftChangeLogRecord that
             # represents editing a Component, the side_effect_change is the
             # DraftChangeLogRecord that represents the fact that the containing
             # Unit was also altered (even if the Unit version doesn't change).
-            side_effect_change, _created = change_record_cls.objects.get_or_create(
-                **change_log_param,
-                entity_id=affected.entity_id,
-                defaults={
-                    # If a change record already exists because the affected
-                    # entity was separately modified, then we don't touch the
-                    # old/new version entries. But if we're creating this change
-                    # record as a pure side-effect, then we use the (old_version
-                    # == new_version) convention to indicate that.
-                    'old_version_id': affected.version_id,
-                    'new_version_id': affected.version_id,
-                }
-            )
+            side_effect_change = records_by_entity_id.get(affected.entity_id)
+            if side_effect_change is None:
+                # If a change record already exists because the affected
+                # entity was separately modified, then we don't touch the
+                # old/new version entries. But if we're creating this change
+                # record as a pure side-effect, then we use the (old_version
+                # == new_version) convention to indicate that.
+                side_effect_change = change_record_cls(
+                    **{log_rel: change_log},
+                    entity_id=affected.entity_id,
+                    old_version_id=affected.version_id,
+                    new_version_id=affected.version_id,
+                )
+                records_by_entity_id[affected.entity_id] = side_effect_change
+                new_records.append(side_effect_change)
+
             # Update the current branch pointer (Draft or Published) for this
             # entity to point to the side_effect_change (if it's not already).
-            if branch_cls == Published:
-                published_obj = cast(Published, affected)
-                if published_obj.publish_log_record_id != side_effect_change.pk:
-                    published_obj.publish_log_record = cast(
-                        PublishLogRecord, side_effect_change
-                    )
-                    branch_objs_to_update_with_side_effects.append(published_obj)
-            elif branch_cls == Draft:
-                draft_obj = affected  # 'affected' is the current Draft object
-                if draft_obj.draft_log_record_id != side_effect_change.pk:  # type: ignore[union-attr]
-                    draft_obj.draft_log_record = side_effect_change  # type: ignore[union-attr]
-                    branch_objs_to_update_with_side_effects.append(draft_obj)
+            if not _points_at(affected.entity_id, side_effect_change):
+                branch_pointers[affected.entity_id] = side_effect_change
+                branch_rows_to_repoint[affected.entity_id] = side_effect_change
 
             # Create a new side effect (DraftSideEffect or PublishSideEffect) to
             # record the relationship between the ``change`` and the
@@ -1284,33 +1441,45 @@ def _create_side_effects_for_change_log(change_log: DraftChangeLog | PublishLog)
             #    as the new version of the child component). The version of the
             #    Unit will be incremented, but we'll also create the
             #    DraftSideEffect.
-            side_effect_cls.objects.get_or_create(  # type: ignore[misc]
-                cause=change,
-                effect=side_effect_change,
-            )
+            #
+            # There is only one record per entity in a change log, so the pair
+            # of entity IDs uniquely identifies a side effect.
+            side_effect_key = (change.entity_id, side_effect_change.entity_id)
+            if side_effect_key not in side_effect_keys:
+                side_effect_keys.add(side_effect_key)
+                side_effects.append((change, side_effect_change))
 
             # Now we find the next layer up by looking at Drafts or Published
-            # that have ``affected.entity`` as a dependency.
-            next_layer_of_affected = branch_cls.objects.filter(
-                version__dependencies=affected.entity
-            )
+            # that have ``affected.entity`` as a dependency, unless we've
+            # already done that for this entity.
+            if affected.entity_id not in propagated_entity_ids:
+                propagated_entity_ids.add(affected.entity_id)
+                changes_and_affected.extend(
+                    (side_effect_change, next_affected)
+                    for next_affected in dependents.get(affected.entity_id, [])
+                )
 
-            # Make sure we never re-add the change we just processed when we
-            # queue up the next layer.
-            processed_entity_ids.add(change.entity_id)
+    return new_records, side_effects, branch_rows_to_repoint
 
-            changes_and_affected.extend(
-                (side_effect_change, affected)
-                for affected in next_layer_of_affected
-                if affected.entity_id not in processed_entity_ids
-            )
 
-        branch_cls.objects.bulk_update(
-            branch_objs_to_update_with_side_effects,  # type: ignore[arg-type]
-            [log_record_rel],
-        )
+def _bulk_create(model_cls, objs):
+    """
+    bulk_create using the model class.
 
-    update_dependencies_hash_digests_for_log(change_log)
+    Like _bulk_update_hashes(), this exists only to keep mypy from choking on
+    bulk_create() being called via a union of model classes. The lack of type
+    annotations on this function is intentional.
+    """
+    model_cls.objects.bulk_create(objs)
+
+
+def _bulk_update(model_cls, objs, fields):
+    """
+    bulk_update using the model class (see _bulk_create()).
+
+    The lack of type annotations on this function is intentional.
+    """
+    model_cls.objects.bulk_update(objs, fields)
 
 
 def _emit_event_for_change_log(
