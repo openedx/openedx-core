@@ -434,6 +434,57 @@ class DraftTestCase(TestCase):
             assert changes2.pk is None  # type: ignore[union-attr]
             assert DraftChangeLog.objects.count() == 1
 
+    def test_has_unpublished_changes(self) -> None:
+        """
+        Draft.has_unpublished_changes() covers every draft/published state and
+        agrees with DraftQuerySet.with_unpublished_changes().
+        """
+        def make_entity(ref: str) -> PublishableEntity:
+            entity = publishing_api.create_publishable_entity(
+                self.learning_package_1.id, ref, created=self.now, created_by=None,
+            )
+            publishing_api.create_publishable_entity_version(
+                entity.id, version_num=1, title=ref, created=self.now, created_by=None,
+            )
+            return entity
+
+        never_published = make_entity("never_published")
+        same_version = make_entity("same_version")
+        newer_draft = make_entity("newer_draft")
+        unpublished_delete = make_entity("unpublished_delete")
+        published_delete = make_entity("published_delete")
+        deleted_before_publish = make_entity("deleted_before_publish")
+
+        publishing_api.publish_from_drafts(
+            self.learning_package_1.id,
+            Draft.objects.filter(entity__in=[same_version, newer_draft, unpublished_delete, published_delete]),
+        )
+        publishing_api.create_publishable_entity_version(
+            newer_draft.id, version_num=2, title="v2", created=self.now, created_by=None,
+        )
+        publishing_api.soft_delete_draft(unpublished_delete.id)
+        publishing_api.soft_delete_draft(published_delete.id)
+        publishing_api.publish_from_drafts(self.learning_package_1.id, Draft.objects.filter(entity=published_delete))
+        publishing_api.soft_delete_draft(deleted_before_publish.id)
+
+        expected: dict[PublishableEntity.ID, bool] = {
+            never_published.id: True,  # draft v1, no Published row
+            same_version.id: False,  # draft v1, published v1
+            newer_draft.id: True,  # draft v2, published v1
+            unpublished_delete.id: True,  # draft None, published v1
+            published_delete.id: False,  # draft None, published None (the delete was published)
+            deleted_before_publish.id: False,  # draft None, no Published row
+        }
+        drafts = list(Draft.objects.filter(entity__in=expected).select_related("entity__published"))
+        assert len(drafts) == len(expected)
+        with self.assertNumQueries(0):  # select_related("entity__published") is all it needs
+            assert {draft.entity_id: draft.has_unpublished_changes() for draft in drafts} == expected
+
+        # The queryset version must agree:
+        assert set(
+            Draft.objects.filter(entity__in=expected).with_unpublished_changes().values_list("entity_id", flat=True)
+        ) == {entity_id for entity_id, changed in expected.items() if changed}
+
     def test_get_entities_with_unpublished_changes(self) -> None:
         """Test fetching entities with unpublished changes after soft deletes."""
         entity = publishing_api.create_publishable_entity(
