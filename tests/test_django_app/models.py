@@ -75,6 +75,7 @@ class ContainerContainer(Container):
     """
 
     type_code = "test_container_container"
+    validate_entity_select_related = ("container",)
 
     # Test that we can name this field anything
     base_container = models.OneToOneField(Container, on_delete=models.CASCADE, parent_link=True, primary_key=True)

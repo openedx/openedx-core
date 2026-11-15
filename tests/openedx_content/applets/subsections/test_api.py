@@ -131,7 +131,7 @@ class SubsectionsTestCase(ComponentTestCase):
         """
         Test the number of queries needed for each part of the subsections API
         """
-        with self.assertNumQueries(42):
+        with self.assertNumQueries(32):
             subsection = self.create_subsection_with_units([self.unit_1, self.unit_1_v1])
         with self.assertNumQueries(20):
             content_api.publish_from_drafts(
