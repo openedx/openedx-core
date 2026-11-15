@@ -242,9 +242,11 @@ def create_next_component_version(
             created=created,
             created_by=created_by,
         )
+        # Pass the Component we already loaded (rather than just its ID), so
+        # that setting the media doesn't have to fetch it again.
         component_version = ComponentVersion.objects.create(
             publishable_entity_version=publishable_entity_version,
-            component_id=component_id,
+            component=component,
         )
 
         if ignore_previous_media or last_version is None:
