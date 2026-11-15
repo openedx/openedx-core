@@ -160,7 +160,7 @@ class SectionsTestCase(ComponentTestCase):
                 self.learning_package.id,
                 draft_qset=content_api.get_all_drafts(self.learning_package.id).filter(entity=section.id),
             )
-        with self.assertNumQueries(4):
+        with self.assertNumQueries(2):
             result = content_api.get_subsections_in_section(section, published=True)
         assert result == [
             Entry(self.subsection_1_v1),

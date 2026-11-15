@@ -138,7 +138,7 @@ class SubsectionsTestCase(ComponentTestCase):
                 self.learning_package.id,
                 draft_qset=content_api.get_all_drafts(self.learning_package.id).filter(entity=subsection.id),
             )
-        with self.assertNumQueries(4):
+        with self.assertNumQueries(2):
             result = content_api.get_units_in_subsection(subsection, published=True)
         assert result == [
             Entry(self.unit_1_v1),

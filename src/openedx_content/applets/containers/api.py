@@ -717,6 +717,7 @@ def get_entities_in_container(
         select_related = ["entity__published__version"]
         if select_related_version:
             select_related.append(f"entity__published__version__{select_related_version}")
+            select_related.append(f"entity_version__{select_related_version}")  # for pinned rows
     else:
         # Very minor optimization: reload the container with related 1:1 entities
         container = Container.objects.select_related(
@@ -726,6 +727,7 @@ def get_entities_in_container(
         select_related = ["entity__draft__version"]
         if select_related_version:
             select_related.append(f"entity__draft__version__{select_related_version}")
+            select_related.append(f"entity_version__{select_related_version}")  # for pinned rows
     if container_version is None:
         raise ContainerVersion.DoesNotExist  # This container has not been published yet, or has been deleted.
     assert isinstance(container_version, ContainerVersion)
@@ -738,6 +740,10 @@ def get_entities_in_container(
         if not entity_version:  # If this entity is "unpinned", use the latest published/draft version:
             entity_version = row.entity.published.version if published else row.entity.draft.version
         if entity_version is not None:  # As long as this hasn't been soft-deleted:
+            # We already have the entity loaded via the row, so attach it to the version. Otherwise, accessing
+            # ``entry.entity`` (i.e. ``entity_version.entity``) would be a query per entry.
+            assert entity_version.entity_id == row.entity_id
+            entity_version.entity = row.entity
             entity_list.append(
                 ContainerEntityListEntry(
                     entity_version=entity_version,
@@ -761,26 +767,29 @@ def get_entities_in_container_as_of(
     Also returns the ContainerVersion so you can see the container title,
     settings?, and any other metadata from that point in time.
 
-    TODO: optimize, perhaps by having the publishlog store a record of all
-          ancestors of every modified PublishableEntity in the publish.
+    This takes a fixed number of queries, regardless of the number of children.
     """
     assert isinstance(container, Container)
     pub_entity_version = publishing_api.get_published_version_as_of(container.publishable_entity_id, publish_log_id)
     if pub_entity_version is None:
         return None, []  # This container was not published as of the given PublishLog ID.
-    container_version = pub_entity_version.containerversion
+    container_version = ContainerVersion.objects.select_related("entity_list").get(pk=pub_entity_version.pk)
+
+    rows = list(container_version.entity_list.entitylistrow_set.select_related("entity_version").order_by("order_num"))
+    # Unpinned entities - figure out what their latest published versions were, in one query:
+    unpinned_versions_as_of = publishing_api.get_published_versions_as_of(
+        [row.entity_id for row in rows if row.entity_version_id is None],
+        publish_log_id,
+    )
 
     entity_list: list[ContainerEntityListEntry] = []
-    rows = container_version.entity_list.entitylistrow_set.order_by("order_num")
     for row in rows:
         if row.entity_version is not None:
             # Pinned child entity:
             entity_list.append(ContainerEntityListEntry(entity_version=row.entity_version, pinned=True))
         else:
-            # Unpinned entity - figure out what its latest published version was.
-            # This is not optimized. It could be done in one query per unit rather than one query per component.
-            pub_entity_version = publishing_api.get_published_version_as_of(row.entity_id, publish_log_id)
-            if pub_entity_version:
+            pub_entity_version = unpinned_versions_as_of.get(row.entity_id)
+            if pub_entity_version:  # None if the entity wasn't published (or was soft-deleted) as of that point.
                 entity_list.append(ContainerEntityListEntry(entity_version=pub_entity_version, pinned=False))
     return container_version, entity_list
 
@@ -887,15 +896,23 @@ def get_container_children_count(
             `False` for the draft version.
     """
     assert isinstance(container, Container)
-    container_version = container.versioning.published if published else container.versioning.draft
-    if container_version is None:
+    branch = "published" if published else "draft"
+    # Find the entity list of the current draft/published ContainerVersion directly, rather than walking
+    # container.versioning.published/draft, which loads several related objects one query at a time.
+    entity_list_id = (
+        ContainerVersion.objects
+        .filter(**{f"publishable_entity_version__{branch}__entity_id": container.id})
+        .values_list("entity_list_id", flat=True)
+        .first()
+    )
+    if entity_list_id is None:
         raise ContainerVersion.DoesNotExist  # This container has not been published yet, or has been deleted.
-    assert isinstance(container_version, ContainerVersion)
-    if published:
-        filter_deleted = {"entity__published__version__isnull": False}
-    else:
-        filter_deleted = {"entity__draft__version__isnull": False}
-    return container_version.entity_list.entitylistrow_set.filter(**filter_deleted).count()
+    # Count the rows, excluding soft-deleted entities:
+    return (
+        EntityListRow.objects
+        .filter(entity_list_id=entity_list_id, **{f"entity__{branch}__version__isnull": False})
+        .count()
+    )
 
 
 def get_container_children_entity_refs(container_version: ContainerVersion) -> list[str]:
