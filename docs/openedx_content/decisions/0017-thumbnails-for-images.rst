@@ -83,6 +83,13 @@ When a thumbnail is requested and its file does not exist yet, it is generated a
 
 Because lazy generation can be triggered by anyone who can view the source image, images whose declared dimensions exceed a safe limit are not decoded, and are treated as images that fail to generate.
 
+Checking whether a thumbnail exists in remote storage (e.g. S3) on every request would add significant latency, so the API keeps a cache of the outcome of each generation:
+
+- **Thumbnails that exist.** An entry is added when a thumbnail is generated or found in storage, so most requests serve the thumbnail without checking storage.
+- **Images that fail to generate.** If a :class:`Media` declares an ``image/*`` type but cannot be decoded, the failure is remembered, so the image is not decoded again on every request.
+
+Entries expire after a while, so a failure is retried eventually (e.g. after a fix in the resizing code), and a thumbnail removed from storage is regenerated. Losing the cache never affects correctness: it only means checking storage, or retrying a generation, once more.
+
 The lazy fallback covers every case where no eager generation happened, without any special handling: courses migrated from contentstore, whose thumbnails are not migrated; reruns, copies and syncs into other learning packages; past versions of an :class:`Asset`; and new variants added after the image was uploaded.
 
 6. Thumbnails are requested through their source, not by storage path
@@ -124,10 +131,10 @@ Consequences
 - The thumbnail for a past version of an :class:`Asset` can be retrieved the same way as the current one, starting from that version's :class:`Media`.
 - Supporting a new size only requires configuring a new variant.
 - Thumbnails are not included in a course's export package, and are regenerated after import. This preserves the behavior of the legacy contentstore.
-- Since there is no database record of which thumbnails exist, serving a thumbnail requires checking whether its file exists in storage. With remote storage (e.g. S3), this check adds latency to every thumbnail request. Eager generation (decision 5) means the file almost always exists, so a request rarely has to wait for a thumbnail to be generated, but it still pays for the check. If this becomes a problem, the check can be avoided later (e.g. by caching which thumbnails exist, or by redirecting to the expected URL) without changing this design.
+- Serving thumbnails depends on the cache from decision 5 to avoid checking storage. When the cache is empty (e.g. after it is cleared), the first request for each thumbnail checks storage again.
 - Thumbnail files are never deleted. When a configured size or the algorithm version changes, the previous files are left behind. ``openedx_content`` has no garbage-collection mechanism for :class:`Media` files either.
 - There is no inventory of thumbnails: finding which thumbnails exist for a :class:`Media` requires listing the storage under its hash. No such inventory is needed for now, because nothing in this design has to enumerate thumbnails.
-- Thumbnails are not covered by the per-learning-package storage accounting and cleanup that :class:`Media` rows support. A thumbnail is shared by every learning package that uses the same image bytes, so it cannot be attributed to a single one. Because every thumbnail path starts with ``thumbnails/{media_file_namespace}/``, thumbnails can still be measured or removed per organization by storage prefix, and any removed thumbnail is regenerated on its next request.
+- Thumbnails are not covered by the per-learning-package storage accounting and cleanup that :class:`Media` rows support. A thumbnail is shared by every learning package that uses the same image bytes, so it cannot be attributed to a single one. Because every thumbnail path starts with ``thumbnails/{media_file_namespace}/``, thumbnails can still be measured or removed per organization by storage prefix, and any removed thumbnail is regenerated on its next request once its cache entry expires.
 
 Rejected Alternatives
 ---------------------
@@ -175,6 +182,5 @@ Open Questions
 
 - **Deduplicating thumbnails across the whole site.** Using a single storage location for all thumbnails, instead of one per ``media_file_namespace``, would deduplicate more, but would make it harder to remove all of an organization's files. This ADR starts with per-namespace storage.
 - **Image metadata.** An ``ImageMedia`` model, joined 1:1 with :class:`Media` and holding metadata derived from the image bytes (e.g. dimensions), is not needed by this design, but could complement it (e.g. to avoid upscaling small images, or to show dimensions on the Files page).
-- **Images that fail to generate.** If a :class:`Media` declares an ``image/*`` type but cannot be decoded, no thumbnail file is ever created, and every request tries to generate it again. A first version can accept this, since such images should be rare. If it becomes a problem, failures could be remembered for a while (e.g. a cache entry with an expiry, or a marker file in storage) so they are not retried on every request.
 - **Name of the openedx-core app.** Decision 2 places the code in a new openedx-core app, but does not fix its name.
 - **Thumbnails of XBlocks, not just images.** This ADR is scoped to thumbnails of image files. A related, but architecturally distinct, need is a visual preview of an XBlock component itself (e.g. a Problem or an HTML interactive), generated by rendering the component rather than resizing an existing image — useful for content library "card" views that cover any component type, not just ones with an attached image. That is out of scope here, but worth exploring as a future extension.
