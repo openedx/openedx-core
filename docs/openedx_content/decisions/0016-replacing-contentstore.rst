@@ -33,11 +33,11 @@ Decisions
 1. Initial roll-out will be a per-course migration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For the next release or two, each course run will be in one of two states: **legacy** (course files in contentstore) or **migrated** (course files in ``openedx_content``). A course is migrated when it has a ``CourseContent`` / ``CourseRunLearningPackage`` row (:ref:`openedx-content-adr-0012`). There is no mixed state, nor write-through.
+For the next release or two, each course run will be in one of two states: **legacy assets** (course files in contentstore) or **migrated assets** (course files in ``openedx_content``). A course is migrated when it has a ``CourseContent`` / ``CourseRunLearningPackage`` row (:ref:`openedx-content-adr-0012`). There is no mixed state, nor write-through.
 
 Rollout:
 
-* **Willow:** opt-in, with a system-level setting controlling whether new courses should use the legacy or migrated mode, plus a tool/command for migrating courses either individually or in bulk.
+* **Willow:** opt-in, with a system-level setting controlling whether new courses should use the legacy assets or migrated assets mode, plus a tool/command for migrating courses either individually or in bulk.
 * **Xylon:** new courses (and reruns of migrated courses) are created as migrated by default. Operators are told to migrate existing courses.
 * **Yucca:** contentstore is removed, and any remaining courses must be migrated.
 
@@ -63,7 +63,7 @@ A management command migrates **one course run at a time**:
 
 The command should be idempotent and can be re-run after a failure. It should accept a list of one or more course runs and then migrate each of them in sequence.
 
-The original contentstore/GridFS data for migrated courses is left in place (but unused) until contentstore is removed. If necessary, a course can be rolled back, but doing so will lose any asset changes made in the new system following the migration. (If necessary, we *could* implement a reverse command that copies newer assets from the new system back to contentstore, or a write-through system that applies edits to both, but it is hoped that this will not be necessary.)
+The original contentstore/GridFS data for migrated courses is left in place (but unused) until contentstore is removed. Any course can be easily rolled back to the previous contentstore system if problems are encountered; the command for running the migration will have an "unmigrate" option. "Un-migrating" a course will be instant but will lose asset changes made in the new system following the migration (if any). (If necessary, we *could* implement a reverse command that copies newer assets from the new system back to contentstore, or a write-through system that applies edits to both, but it is hoped that this will not be necessary.)
 
 4. Phase 2 (Xylon): Publishing, usage, and per-component assets with shadow components
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
