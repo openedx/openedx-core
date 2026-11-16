@@ -34,7 +34,7 @@ A thumbnail is never a :class:`PublishableEntity`, a :class:`PublishableEntityVe
 2. Thumbnail generation is a generic API in openedx-core
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The code that computes thumbnail paths and generates thumbnails lives in a new app in openedx-core, outside of the learning package infrastructure. It exposes a generic API that takes a source :class:`Media` and the name of a variant (e.g. ``get_thumbnail(media, variant="files")``). The app does not define any variants of its own: it looks up the variant's dimensions in the setting from decision 4, where the platform and plugins define them.
+The code that computes thumbnail paths and generates thumbnails lives in a new app in openedx-core, outside of the learning package infrastructure. It exposes a generic API that takes a source :class:`Media` and the name of a variant (e.g. ``get_thumbnail(media, variant="files")``). The app does not define any variants of its own: it looks up the variant's dimensions and resize mode in the setting from decision 4, where the platform and plugins define them.
 
 Because the API only accepts variant names, a caller cannot request arbitrary dimensions. A plugin that passed a value taken from a request directly to the API would get an error for any name not listed in that setting, instead of generating a new size.
 
@@ -43,7 +43,7 @@ Because the API only accepts variant names, a caller cannot request arbitrary di
 
 Thumbnails are stored as plain files, under a path computed from the source :class:`Media` and the parameters used to generate them:
 
-``thumbnails/{media_file_namespace}/{source-media-hash}-{width}x{height}-{algorithm-version}.{ext}``
+``thumbnails/{media_file_namespace}/{source-media-hash}-{width}x{height}-{mode}-{algorithm-version}.{ext}``
 
 This mirrors the ``content/{media_file_namespace}/{hash_digest}`` path that :class:`Media` files already use (:ref:`openedx-content-adr-0012`, decision 6), under a separate ``thumbnails/`` prefix.
 
@@ -51,12 +51,18 @@ There is no database model that maps a source image to its thumbnails. Given a s
 
 - The **source hash** is the content hash that :class:`Media` already uses to store its own file, so the same image bytes always map to the same thumbnail, regardless of which :class:`Asset`, :class:`Component` or learning package they belong to.
 - The **width and height** are the actual dimensions requested. Changing the configured size of a thumbnail therefore produces new files, instead of leaving stale ones under the same name.
+- The **mode** defines how the image is fitted into those dimensions, and is part of each variant's definition:
+
+  - ``fit``: at most ``{width}x{height}``, preserving the aspect ratio of the source image.
+  - ``crop``: exactly ``{width}x{height}``, scaling the source image to cover those dimensions and cropping it around its center.
+
+  Including it in the path means that two variants with the same dimensions but different modes never share a file.
 - The **algorithm version** is bumped whenever the resizing code or its output format changes in a way that changes the result, so that existing thumbnails are never overwritten with different content.
 
 4. Thumbnail sizes are named, configured variants
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Each consumer defines the sizes it needs as named variants (for example, one for the Files page, one for content library cards, and the two course card image sizes). Requests ask for a variant by name, and the variant's configured dimensions are used to compute the path from decision 3.
+Each consumer defines the sizes it needs as named variants (for example, one for the Files page, one for content library cards, and the two course card image sizes). Requests ask for a variant by name, and the variant's configured dimensions and mode are used to compute the path from decision 3.
 
 This bounds how many thumbnails can exist for each image, and prevents a request from forcing the generation of an unbounded number of sizes. Because the API from decision 2 only accepts the variants listed in the setting described below, this limit does not depend on each consumer following this convention.
 
@@ -64,9 +70,9 @@ Variants are defined in a single Django setting, read by the openedx-core app fr
 
 - **Variant names are a contract with the frontend.** Each UI requests the variant it was built for, so adding or removing a variant only makes sense together with the code that uses it.
 - **Dimensions are a UI decision.** The size of a thumbnail follows the layout that displays it, and should change together with that layout's code.
-- **Changing a variant's dimensions is expensive.** It leaves every existing thumbnail of that variant unused (see Consequences) and causes all of them to be generated again.
+- **Changing a variant's dimensions or mode is expensive.** It leaves every existing thumbnail of that variant unused (see Consequences) and causes all of them to be generated again.
 
-The name and format of the setting, and which properties a variant has beyond its dimensions (e.g. whether it is generated eagerly, see decision 5), are left to the implementation.
+The name and format of the setting, and which properties a variant has beyond its dimensions and mode (e.g. whether it is generated eagerly, see decision 5), are left to the implementation.
 
 5. Thumbnails are generated eagerly when possible, and lazily as a fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
