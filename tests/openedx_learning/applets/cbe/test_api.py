@@ -38,11 +38,9 @@ from openedx_learning.api import (
 )
 from openedx_learning.applets.cbe import api as cbe_api
 from openedx_learning.applets.cbe.api import (
-    _archived_course_level_run,
     _create_leaf_group,
     _fetch_criteria_in_group_order,
-    _rank_requested_course_runs,
-    _scope_groups_to_requested_runs,
+    _scope_groups_to_requested_courses,
     _walk_group_tree,
 )
 from openedx_learning.models import (
@@ -1636,13 +1634,13 @@ def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
     django_assert_num_queries,
 ) -> None:
     """
-    Reading several groups and criteria costs two queries unscoped and four scoped, not one per row.
+    Reading several groups and criteria costs two queries unscoped and three scoped, not one per row.
 
     Pins the select_related("course")/select_related("object_tag") calls in
     get_competency_criteria_tree(): dropping either would still pass every other test in this
     module (the rows returned would be identical), since select_related only changes how many
-    queries fetch them, not which rows come back. The two extra scoped queries resolve the course
-    keys to course run ids and count the criteria under every reachable group. An archived
+    queries fetch them, not which rows come back. The one extra scoped query counts the criteria
+    under every kept group; the course keys are matched in Python, with no lookup. An archived
     course-level group is in the setup so reading ``archived_course_keys`` is held to the same budget.
     """
     leaf = _create_leaf_group(tag, course_run)
@@ -1663,7 +1661,7 @@ def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
         for criterion in tree.criteria:
             _ = criterion.object_tag
 
-    with django_assert_num_queries(4):
+    with django_assert_num_queries(3):
         tree = get_competency_criteria_tree(tag, [course_run.course_key, archived_run.course_key])
         assert tree.archived_course_keys == [archived_run.course_key]
         for group in tree.groups:
@@ -1707,7 +1705,7 @@ def test_get_competency_criteria_tree_scoped_fetches_only_the_scoped_criteria_an
 def test_get_competency_criteria_tree_costs_one_query_when_the_competency_has_no_groups(
     tag: Tag, course_run: CourseRun, django_assert_num_queries,
 ) -> None:
-    """A competency with no groups skips the criteria query and, when scoped, the course run lookup."""
+    """A competency with no groups skips the criteria query and, when scoped, the criteria count."""
     assert course_run.course_key is not None
     with django_assert_num_queries(1):
         get_competency_criteria_tree(tag, [course_run.course_key])
@@ -1843,6 +1841,43 @@ def test_get_competency_criteria_tree_course_keys_unresolvable_key_is_silently_i
     assert {g.id for g in tree.groups} == {root.id}
     assert not tree.criteria
     assert tree.criteria_count == 0
+
+
+def test_get_competency_criteria_tree_ignores_a_requested_key_that_matches_no_course_run(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    Adding a key that matches no course run to a request changes nothing, wherever it sits in the list.
+
+    The result equals the same request without that key: the same groups and criteria in the same order,
+    the same counts, and the same archived course keys.
+    """
+    other_run = make_course_run(organization, "Python200", "Fall2026")
+    archived_run = make_course_run(organization, "Archived101", "2026")
+    leaf = _create_leaf_group(tag, course_run)
+    other_leaf = _create_leaf_group(tag, other_run)
+    root = CompetencyCriteriaGroup.objects.get(tag=tag, parent=None)
+    _create_course_level_group(tag, archived_run, root, archived=True)
+    for run, group in ((course_run, leaf), (other_run, other_leaf)):
+        object_tag = ObjectTag.objects.create(object_id=usage_key(run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+        CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
+    unknown = CourseKey.from_string("course-v1:NoOrg+NoCourse+NoRun")
+    requested = [course_key(other_run), course_key(course_run), course_key(archived_run)]
+
+    expected = get_competency_criteria_tree(tag, requested)
+
+    for with_unknown in (
+        [unknown, *requested], [requested[0], unknown, *requested[1:]], [*requested, unknown],
+    ):
+        tree = get_competency_criteria_tree(tag, with_unknown)
+        assert [group.id for group in tree.groups] == [group.id for group in expected.groups]
+        assert [criterion.id for criterion in tree.criteria] == [criterion.id for criterion in expected.criteria]
+        assert tree.criteria_count == expected.criteria_count == 2
+        assert tree.total_criteria_count == expected.total_criteria_count == 2
+        assert tree.archived_course_keys == expected.archived_course_keys == [course_key(archived_run)]
+    assert [group.id for group in expected.groups] == [
+        root.id, other_leaf.parent_id, other_leaf.id, leaf.parent_id, leaf.id,
+    ]
 
 
 def test_get_competency_criteria_tree_course_keys_scoped_to_a_course_with_nothing(
@@ -2255,46 +2290,6 @@ def _groups_in_query_order(tag: Tag) -> list[CompetencyCriteriaGroup]:
     )
 
 
-def test_rank_requested_course_runs_ranks_runs_from_one_in_request_order(
-    course_run: CourseRun, organization: Organization,
-) -> None:
-    """Each resolved run's id maps to its position in the request, starting at 1."""
-    other_run = make_course_run(organization, "Python200", "Fall2026")
-    assert course_run.course_key is not None
-    assert other_run.course_key is not None
-
-    ranks = _rank_requested_course_runs([other_run.course_key, course_run.course_key])
-
-    assert ranks == {other_run.id: 1, course_run.id: 2}
-
-
-def test_rank_requested_course_runs_keeps_the_first_rank_of_a_repeated_key(
-    course_run: CourseRun, organization: Organization,
-) -> None:
-    """A repeated key keeps its first position and does not use up a rank."""
-    other_run = make_course_run(organization, "Python200", "Fall2026")
-    assert course_run.course_key is not None
-    assert other_run.course_key is not None
-
-    ranks = _rank_requested_course_runs([course_run.course_key, other_run.course_key, course_run.course_key])
-
-    assert ranks == {course_run.id: 1, other_run.id: 2}
-
-
-def test_rank_requested_course_runs_drops_a_key_that_matches_no_run(course_run: CourseRun) -> None:
-    """An unresolvable key is dropped, and the ranks of the keys after it stay consecutive."""
-    unknown = CourseKey.from_string("course-v1:Nobody+Nothing+Nowhere")
-    assert course_run.course_key is not None
-
-    assert _rank_requested_course_runs([unknown, course_run.course_key]) == {course_run.id: 1}
-    assert not _rank_requested_course_runs([unknown])
-
-
-def test_rank_requested_course_runs_returns_an_empty_dict_for_an_empty_request() -> None:
-    """No requested keys means no ranked runs."""
-    assert not _rank_requested_course_runs([])
-
-
 def test_walk_group_tree_maps_each_reachable_group_to_its_branch_course(
     tag: Tag, course_run: CourseRun,
 ) -> None:
@@ -2305,10 +2300,12 @@ def test_walk_group_tree_maps_each_reachable_group_to_its_branch_course(
     root = course_level.parent
     assert root is not None
 
-    branch_course_ids, archived_course_keys_by_run_id = _walk_group_tree(_groups_in_query_order(tag))
+    course_key_of_branch, archived_course_keys = _walk_group_tree(_groups_in_query_order(tag))
 
-    assert branch_course_ids == {root.id: None, course_level.id: course_run.id, leaf.id: course_run.id}
-    assert not archived_course_keys_by_run_id
+    assert course_key_of_branch == {
+        root.id: None, course_level.id: course_run.course_key, leaf.id: course_run.course_key,
+    }
+    assert not archived_course_keys
 
 
 def test_walk_group_tree_prunes_the_subtree_of_an_archived_course_level_group(
@@ -2324,11 +2321,11 @@ def test_walk_group_tree_prunes_the_subtree_of_an_archived_course_level_group(
     course_level.archived = True
     course_level.save()
 
-    branch_course_ids, _archived = _walk_group_tree(_groups_in_query_order(tag))
+    course_key_of_branch, _archived = _walk_group_tree(_groups_in_query_order(tag))
 
-    assert branch_course_ids == {root.id: None}
-    assert leaf.id not in branch_course_ids
-    assert nested.id not in branch_course_ids
+    assert course_key_of_branch == {root.id: None}
+    assert leaf.id not in course_key_of_branch
+    assert nested.id not in course_key_of_branch
 
 
 def test_walk_group_tree_prunes_the_subtree_of_an_archived_group_above_any_course(
@@ -2340,12 +2337,12 @@ def test_walk_group_tree_prunes_the_subtree_of_an_archived_group_above_any_cours
     course_level = _create_course_level_group(tag, course_run, mid)
     leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
 
-    branch_course_ids, archived_course_keys_by_run_id = _walk_group_tree(_groups_in_query_order(tag))
+    course_key_of_branch, archived_course_keys = _walk_group_tree(_groups_in_query_order(tag))
 
-    assert branch_course_ids == {root.id: None}
-    assert course_level.id not in branch_course_ids
-    assert leaf.id not in branch_course_ids
-    assert not archived_course_keys_by_run_id
+    assert course_key_of_branch == {root.id: None}
+    assert course_level.id not in course_key_of_branch
+    assert leaf.id not in course_key_of_branch
+    assert not archived_course_keys
 
 
 def test_walk_group_tree_collects_an_archived_course_level_group_but_not_an_archived_rule_group(
@@ -2361,12 +2358,12 @@ def test_walk_group_tree_collects_an_archived_course_level_group_but_not_an_arch
     )
     archived_course_level = _create_course_level_group(tag, archived_run, root, archived=True)
 
-    branch_course_ids, archived_course_keys_by_run_id = _walk_group_tree(_groups_in_query_order(tag))
+    course_key_of_branch, archived_course_keys = _walk_group_tree(_groups_in_query_order(tag))
 
-    assert archived_course_keys_by_run_id == {archived_run.id: archived_run.course_key}
-    assert branch_course_ids[course_level.id] == course_run.id
-    assert carrying_rule_group.id not in branch_course_ids
-    assert archived_course_level.id not in branch_course_ids
+    assert archived_course_keys == {archived_run.course_key}
+    assert course_key_of_branch[course_level.id] == course_run.course_key
+    assert carrying_rule_group.id not in course_key_of_branch
+    assert archived_course_level.id not in course_key_of_branch
 
 
 def test_walk_group_tree_places_a_group_re_parented_under_a_later_id_parent_by_its_real_parent(
@@ -2385,11 +2382,11 @@ def test_walk_group_tree_places_a_group_re_parented_under_a_later_id_parent_by_i
     groups = _groups_in_query_order(tag)
     assert [group.id for group in groups if group.id in {group_a.id, group_b.id}] == [group_a.id, group_b.id]
 
-    branch_course_ids, _archived = _walk_group_tree(groups)
+    course_key_of_branch, _archived = _walk_group_tree(groups)
 
-    assert branch_course_ids[group_a.id] == course_run.id
-    assert branch_course_ids[group_b.id] == course_run.id
-    assert branch_course_ids[group_c.id] == course_run.id
+    assert course_key_of_branch[group_a.id] == course_run.course_key
+    assert course_key_of_branch[group_b.id] == course_run.course_key
+    assert course_key_of_branch[group_c.id] == course_run.course_key
 
 
 def test_walk_group_tree_collects_an_archived_course_level_group_below_an_archived_root(
@@ -2399,61 +2396,32 @@ def test_walk_group_tree_collects_an_archived_course_level_group_below_an_archiv
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, archived=True)
     archived_course_level = _create_course_level_group(tag, course_run, root, archived=True)
 
-    branch_course_ids, archived_course_keys_by_run_id = _walk_group_tree(_groups_in_query_order(tag))
+    course_key_of_branch, archived_course_keys = _walk_group_tree(_groups_in_query_order(tag))
 
-    assert not branch_course_ids
-    assert archived_course_level.id not in branch_course_ids
-    assert archived_course_keys_by_run_id == {course_run.id: course_run.course_key}
-
-
-def test_archived_course_level_run_returns_the_run_id_and_key_of_an_archived_course_level_group(
-    tag: Tag, course_run: CourseRun,
-) -> None:
-    """An archived group that sets its branch's course returns that run's id and key."""
-    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    archived_course_level = _create_course_level_group(tag, course_run, root, archived=True)
-
-    assert _archived_course_level_run(archived_course_level, None) == (course_run.id, course_run.course_key)
+    assert not course_key_of_branch
+    assert archived_course_level.id not in course_key_of_branch
+    assert archived_course_keys == {course_run.course_key}
 
 
-def test_archived_course_level_run_returns_none_below_a_group_that_already_set_the_course(
-    tag: Tag, course_run: CourseRun,
-) -> None:
-    """An archived Rule Group carrying the course of its branch does not archive that run."""
-    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    course_level = _create_course_level_group(tag, course_run, root)
-    carrying_rule_group = CompetencyCriteriaGroup.objects.create(
-        tag=tag, parent=course_level, course=course_run, archived=True,
-    )
-
-    assert _archived_course_level_run(carrying_rule_group, course_run.id) is None
-
-
-def test_archived_course_level_run_returns_none_for_a_group_that_is_not_archived(
-    tag: Tag, course_run: CourseRun,
-) -> None:
-    """An active course-level group archives nothing."""
-    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    course_level = _create_course_level_group(tag, course_run, root)
-
-    assert _archived_course_level_run(course_level, None) is None
-
-
-def test_scope_groups_to_requested_runs_keeps_groups_above_any_course_first(
+def test_scope_groups_to_requested_courses_keeps_groups_above_any_course_first(
     tag: Tag, course_run: CourseRun,
 ) -> None:
     """Groups with no course on their path rank ahead of every requested branch, whatever the input order."""
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
     mid = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
     course_level = _create_course_level_group(tag, course_run, mid)
-    branch_course_ids: dict[int, int | None] = {root.id: None, mid.id: None, course_level.id: course_run.id}
+    course_key_of_branch: dict[int, CourseKey | None] = {
+        root.id: None, mid.id: None, course_level.id: course_key(course_run),
+    }
 
-    scoped = _scope_groups_to_requested_runs([course_level, root, mid], branch_course_ids, {course_run.id: 1})
+    scoped = _scope_groups_to_requested_courses(
+        [course_level, root, mid], course_key_of_branch, {course_key(course_run): 1},
+    )
 
     assert scoped == [root, mid, course_level]
 
 
-def test_scope_groups_to_requested_runs_drops_a_branch_whose_course_was_not_requested(
+def test_scope_groups_to_requested_courses_drops_a_branch_whose_course_was_not_requested(
     tag: Tag, course_run: CourseRun, organization: Organization,
 ) -> None:
     """A branch of an unrequested run is left out, and with nothing requested only the groups above any course stay."""
@@ -2463,23 +2431,23 @@ def test_scope_groups_to_requested_runs_drops_a_branch_whose_course_was_not_requ
     other_course_level = _create_course_level_group(tag, other_run, root)
     other_leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=other_course_level)
     groups = [root, requested_course_level, other_course_level, other_leaf]
-    branch_course_ids: dict[int, int | None] = {
+    course_key_of_branch: dict[int, CourseKey | None] = {
         root.id: None,
-        requested_course_level.id: course_run.id,
-        other_course_level.id: other_run.id,
-        other_leaf.id: other_run.id,
+        requested_course_level.id: course_key(course_run),
+        other_course_level.id: course_key(other_run),
+        other_leaf.id: course_key(other_run),
     }
 
-    assert _scope_groups_to_requested_runs(groups, branch_course_ids, {course_run.id: 1}) == [
+    assert _scope_groups_to_requested_courses(groups, course_key_of_branch, {course_key(course_run): 1}) == [
         root, requested_course_level,
     ]
-    assert _scope_groups_to_requested_runs(groups, branch_course_ids, {}) == [root]
+    assert _scope_groups_to_requested_courses(groups, course_key_of_branch, {}) == [root]
 
 
-def test_scope_groups_to_requested_runs_orders_branches_by_request_rank_keeping_query_order_within_one(
+def test_scope_groups_to_requested_courses_orders_branches_by_rank_keeping_query_order_within_one(
     tag: Tag, course_run: CourseRun, organization: Organization,
 ) -> None:
-    """Branches follow the request rank, not the input order, and each branch keeps its own input order."""
+    """Branches follow their rank (position in the request), not the input order, and each keeps its own input order."""
     other_run = make_course_run(organization, "Python200", "Fall2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
     course_level = _create_course_level_group(tag, course_run, root)
@@ -2487,15 +2455,17 @@ def test_scope_groups_to_requested_runs_orders_branches_by_request_rank_keeping_
     second_leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
     other_course_level = _create_course_level_group(tag, other_run, root)
     groups = [root, course_level, other_course_level, first_leaf, second_leaf]
-    branch_course_ids: dict[int, int | None] = {
+    course_key_of_branch: dict[int, CourseKey | None] = {
         root.id: None,
-        course_level.id: course_run.id,
-        first_leaf.id: course_run.id,
-        second_leaf.id: course_run.id,
-        other_course_level.id: other_run.id,
+        course_level.id: course_key(course_run),
+        first_leaf.id: course_key(course_run),
+        second_leaf.id: course_key(course_run),
+        other_course_level.id: course_key(other_run),
     }
 
-    scoped = _scope_groups_to_requested_runs(groups, branch_course_ids, {other_run.id: 1, course_run.id: 2})
+    rank_by_course_key = {course_key(other_run): 1, course_key(course_run): 2}
+
+    scoped = _scope_groups_to_requested_courses(groups, course_key_of_branch, rank_by_course_key)
 
     assert scoped == [root, other_course_level, course_level, first_leaf, second_leaf]
 
