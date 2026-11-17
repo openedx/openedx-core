@@ -183,7 +183,7 @@ def test_course_level_group_name_is_truncated(
 def test_copies_leaf_groups_with_operator_name_and_ordering(
     course_run: CourseRun, destination_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """Every in-force group below the course-level group is copied, at any depth, with its own fields."""
+    """Every group with a non-archived criterion beneath it is copied, at any depth, with its own fields."""
     source_group = _course_level_group(tag, course_run)
     leaf_b = _child_group(source_group, name="Leaf B", ordering=2, logic_operator=None)
     leaf_a = _child_group(source_group, name="Leaf A", ordering=1, logic_operator=LogicOperator.AND)
@@ -348,10 +348,10 @@ def test_other_runs_sharing_the_root_are_not_copied(
     assert list(CompetencyCriterion.objects.filter(group=other_leaf).order_by("id").values()) == other_criteria
 
 
-def test_group_with_one_in_force_criterion_is_still_copied(
+def test_group_with_one_non_archived_criterion_beneath_is_still_copied(
     course_run: CourseRun, destination_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """A group with no criteria of its own is copied when one in-force criterion sits further down."""
+    """A group with no criteria of its own is copied when one non-archived criterion sits further down."""
     source_group = _course_level_group(tag, course_run)
     outer = _child_group(source_group, name="Outer")
     inner = _child_group(outer, name="Inner")
@@ -368,7 +368,7 @@ def test_group_with_one_in_force_criterion_is_still_copied(
     assert copied_inner[0].criteria.count() == 1
 
 
-def test_group_with_no_in_force_criteria_is_not_created(
+def test_group_with_no_non_archived_criteria_beneath_is_not_created(
     course_run: CourseRun,
     destination_run: CourseRun,
     tag: Tag,
