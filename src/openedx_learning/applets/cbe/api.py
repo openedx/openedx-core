@@ -310,39 +310,75 @@ def _fetch_criteria_in_group_order(scoped_groups: list[CompetencyCriteriaGroup])
 
 def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None = None) -> CompetencyCriteriaTree:
     """
-    Return ``tag``'s non-archived CompetencyCriteriaGroup tree, CompetencyCriterion leaves, and archived course runs.
+    Return the active criteria tree of the competency ``tag``, and the course runs whose rules are archived.
 
     UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
     behavior may change this function's shape without a deprecation cycle.
 
-    A group is reachable only if it and every ancestor up to its root are non-archived. A
-    criterion is returned only if it is non-archived and its group is returned, so the result
-    always forms one tree: no returned ``parent_id`` or ``group_id`` names a row that was left out.
+    **The tree.** A competency has at most one criteria tree. Its root group has one child per
+    course run the competency is used in, the course-level group, which holds that run's Rule
+    Groups and criteria::
 
-    ``course_keys`` scopes the result by course run. A course run's groups are its course-level
-    group (the group whose ``course`` is that run) and every group nested below it, at any depth.
-    The groups above any course are the ones not nested in any course-level group.
+        root group                    (no course run)
+        |-- course-level group: X     (course run X)
+        |   `-- Rule Group -> criteria
+        |-- course-level group: Y     (course run Y, archived)
+        |   `-- Rule Group -> criteria
+        `-- course-level group: Z     (course run Z)
+            `-- Rule Group -> criteria
 
-    - ``None`` (the default) returns every reachable group.
-    - A list returns the groups above any course plus the groups of the named course runs.
-      ``[]`` returns only the groups above any course.
-    - A key that matches no course run is dropped, and a repeated key counts once, at its
-      first position. A list in which no key resolves returns only the groups above any course.
+    A course run's branch is its course-level group and everything below it. The root, and any
+    other group outside every branch, belongs to no course run.
 
-    Groups come back with the groups above any course first, then the named courses in the order
-    requested, and within each of those by ``(parent_id, ordering, id)`` with root-level rows first.
-    Criteria are ordered by their group's position in ``groups``, then ``id``.
+    **Archived rows are left out.** An archived group is left out with everything below it, even
+    rows that are not archived themselves, and so is an archived criterion. The result is always
+    one connected tree: every returned ``parent_id`` and ``group_id`` names a returned group.
 
-    ``criteria_count`` is ``len(criteria)``. ``total_criteria_count`` is the number of criteria
-    under every reachable group before ``course_keys`` is applied, so a caller scoped down to
-    zero criteria can still tell the competency is not empty.
+    **Scoping by course run.** ``course_keys`` picks which branches come back. It does not select
+    a single course run's tree. The groups outside every branch always come back, and the lists
+    below call them "the root", which is the only such group in a tree the API creates:
 
-    ``archived_course_keys`` lists the course runs whose course-level group is archived, sorted by
-    ``str`` with each run once, and ``[]`` when there are none. An archived group counts when its
-    own ``course`` is the first one on its path from the root, so an archived Rule Group that
-    carries its course-level group's course is not reported for that reason alone, and an archived
-    root does not hide the archived course-level groups below it. ``course_keys`` limits the list
-    to the runs it names (``[]`` lists none).
+    - ``None`` (the default) returns the whole tree.
+    - A list such as ``[Z, X]`` returns the root, then Z's branch, then X's branch. Branches of
+      runs it does not name are left out.
+    - ``[]`` returns only the root.
+
+    A key that matches no course run is ignored, and a repeated key counts once, at its first
+    position. If no key matches, only the root comes back.
+
+    **Order.** ``groups`` and ``criteria`` are flat lists; ``parent_id`` and ``group_id`` rebuild
+    the tree. ``groups`` starts with the root, and is empty when the root is archived or the
+    competency has no groups. With a ``course_keys`` list, each requested branch follows in the
+    order named, and the groups inside each branch are sorted by ``(parent_id, ordering, id)``.
+    With ``None``, the whole list is sorted that way, so the branches are interleaved. That sort
+    keeps the children of one parent next to each other, ordered by parent id, so it is neither
+    depth-first nor strictly level by level. ``criteria`` follow their group's position in
+    ``groups``, then ``id``.
+
+    **Counts.** ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is
+    the number of active criteria in the whole tree, ignoring ``course_keys``, so a caller that
+    scoped the result down to zero criteria can still tell the competency has some.
+
+    **Archived course runs.** ``archived_course_keys`` lists the course runs whose course-level
+    group is archived. Such a run can no longer take new criteria for this competency, and its
+    branch is missing from ``groups``, so without this list it would look like a run with no
+    rules yet. The list holds course run keys, sorted by ``str``,
+    each once, and is ``[]`` when none are archived. It follows the ``course_keys`` scope: ``None``
+    lists every archived run, a list keeps only the runs it names, and ``[]`` lists none.
+
+    Only an archived course-level group puts its run on the list:
+
+    - An archived Rule Group or criterion under an active course-level group does not, even when
+      the Rule Group carries the same course.
+    - An archived root does not hide the archived course-level groups below it. The root is not
+      listed itself, because the API creates it with no course.
+    - Precisely, an archived group is listed when its own ``course`` is the first course on its
+      path down from the root. In every tree the API creates, that is the group directly under
+      the root.
+
+    For the tree above, ``course_keys=[Z, X]`` returns the root, Z's branch, and X's branch, with
+    ``archived_course_keys=[]``. ``course_keys=[Y]`` returns only the root, with
+    ``archived_course_keys=[Y]``.
     """
     # Archived rows are fetched too: the walk below skips them for the tree but still reads them
     # to find archived course runs.
