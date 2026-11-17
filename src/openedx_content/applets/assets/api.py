@@ -82,8 +82,12 @@ def create_asset(
         but may change in the future).
     allow_scripts: for HTML assets only, set this ``True`` to serve the asset in
         a more permissive sandbox that allows referencing JavaScript files.
+
+        Raises AssetAlreadyExists if an Asset exists with the same ``path``.
     """
     learning_package_id = _get_learning_package_id(learning_package)
+    # Label this asset with a unique, semi-human-readable reference string.
+    # Subject to change. API callers: do *not* assume this entity_ref structure.
     entity_ref = f"openedx-asset:{path}"
     if permissions is None:
         permissions = AssetPermissions.PUBLIC
@@ -219,7 +223,7 @@ def create_asset_and_version(
         a more permissive sandbox that allows referencing JavaScript files.
     overwrite_deleted: if this asset has the same name as a deleted asset or a
         "placeholder" asset (an asset with no versions at all), then un-delete
-        it and create a new version of it.
+        it and create a new version of it. Otherwise, raise AssetAlreadyExists.
     """
     learning_package_id = _get_learning_package_id(learning_package)
     if created is None:
