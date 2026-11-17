@@ -37,7 +37,7 @@ For the next release or two, each course run will be in one of two states: **leg
 
 Rollout:
 
-* **Willow:** opt-in, with a system-level setting controlling whether new courses should use the legacy assets or migrated assets mode, plus a tool/command for migrating courses either individually or in bulk.
+* **Willow:** opt-in, with a system-level setting controlling whether new courses should use the legacy assets or migrated assets mode, plus a tool for migrating courses either individually or in bulk (via Django admin or management command).
 * **Xylon:** new courses (and reruns of migrated courses) are created as migrated by default. Operators are told to migrate existing courses.
 * **Yucca:** contentstore is removed, and any remaining courses must be migrated.
 
@@ -53,9 +53,9 @@ The OLX tarball format stays exactly the same initially.
 3. Migration is a per-course command
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A management command migrates **one course run at a time**:
+A Django admin action (also available as a management command) will be available to migrate **one course run at a time** (or optionally several courses at once):
 
-1. Mark the course read-only for file writes (at the new routing layer per decision 2). During this time, any contentstore write operations will result in an error. While read-only, a warning should be shown in Studio on the course Files page, and importing over that course should also be blocked.
+1. Mark the course read-only for file writes (at the new routing layer per decision 2). During this time, any contentstore write operations will result in an error. While read-only, a warning should be shown in Studio on the course Files page, and importing over that course should also be blocked. If any writes/uploads were in progress before the course was marked as read-only, wait for them to finish (if possible) before proceeding.
 2. Create a new Learning Package for the course assets.
 3. Copy every file to an Asset (following the special cases in :ref:`openedx-content-adr-0013`, decision 4), and auto-publish it.
 4. Verify the result (count, sizes and hashes match).
@@ -73,14 +73,14 @@ Once the first phase (decisions 1-3) is stable and working well, the course Stud
 * Storing shared assets in libraries, in a similar manner to Components
 * Referencing shared assets from Components in libraries
 * Better tracking of asset usage and missing asset references on the course files page
-* Per-component files attached to XBlocks in courses (using :ref:`openedx-content-adr-0015`)
+* Per-component files attached to XBlocks in courses (using :ref:`openedx-content-adr-0015`, with the shadow components created on demand, whenever a user first attempts to attach an asset to an individual component)
 
 The course OLX export format must be expanded to support these new features in a backwards and forwards compatible way:
 
 * Shared Assets are still exported to ``static/``, with their metadata in ``policies/assets.json``. New attributes (``allow_scripts``, ``title``) are extra keys there, which older importers ignore.
 * Shared Assets marked as ``private`` (other than ``python_lib.zip``) go into a separate top-level folder outside of ``static/``, so that they will be ignored when imported to older versions of the platform that don't support private assets.
 * Content references stay as ``/static/...`` (:ref:`openedx-content-adr-0014`).
-* Files attached to components (via Shadow Components) are exported under ``static/_component_assets/``, so older versions import them as ordinary Files, and newer versions import them back as attached files. The file name should be derived from a hash of the contents, so that an asset attached to many components is included only once (gzip's 32 KB window will not deduplicate large files on its own). OLX references will necessarily be rewritten on export, e.g. to ``static/_component_assets/<hash>.ext``, and restored on import (the original filenames will have to be mapped out in ``assets.json``).
+* Files attached to components (via Shadow Components) are exported under ``static/_component_assets/``, so older versions import them as ordinary Files, and newer versions import them back as attached files. The file name should be derived from a hash of the contents, so that an asset attached to many components is included only once (gzip's 32 KB window will not deduplicate large files on its own). OLX references will necessarily be rewritten on export, e.g. to ``static/_component_assets/<hash>.ext``, and restored on import (the original filenames will have to be mapped out in ``assets.json``). Because this renaming would break any relative references between attached HTML files and attached CSS/JS/image files, such relative references from attached HTML files could not be supported (i.e. assets attached to [Shadow] Components are always in "strict mode" described in :ref:`openedx-content-adr-0014`).
 
 5. Phase 3 (Yucca): Complete Removal of contentstore
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
