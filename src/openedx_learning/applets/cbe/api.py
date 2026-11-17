@@ -1187,8 +1187,9 @@ def copy_competency_criteria_for_course_rerun(
 
     The destination run's ObjectTags must already exist: a missing one raises ObjectTag.DoesNotExist, and a
     missing destination CourseRun raises CourseRun.DoesNotExist. A source key with no CourseRun copies nothing and
-    returns zero counts. A competency already on the destination run is skipped with a warning. Everything runs in
-    one transaction, so a failure copies nothing.
+    returns zero counts. A competency already on the destination run is skipped with a warning. The destination run
+    must have no criterion on a taxonomy ancestor or descendant of a copied competency: the copy does not check for
+    one. Everything runs in one transaction, so a failure copies nothing.
 
     UNSTABLE: the criteria-authoring family is incomplete, so this function's shape may change without a
     deprecation cycle.
