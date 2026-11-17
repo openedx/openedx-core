@@ -330,10 +330,25 @@ def _check_new_tag_count(
     else:
         current_count = ObjectTag.objects.filter(object_id=object_id).exclude(_export_id=taxonomy_export_id).count()
 
+    _check_object_tag_limit(current_count, new_tag_count, object_id)
+
+
+def _check_object_tag_limit(current_count: int, new_tag_count: int, object_id: str) -> None:
+    """
+    Raises ValueError if ``new_tag_count`` tags on top of ``current_count`` would exceed OBJECT_MAX_TAGS.
+    """
     if current_count + new_tag_count > OBJECT_MAX_TAGS:
         raise ValueError(
             _("Cannot add more than {limit} tags to ({object_id}).").format(object_id=object_id, limit=OBJECT_MAX_TAGS)
         )
+
+
+def _check_taxonomy_allows_tag_count(taxonomy: Taxonomy, tag_count: int) -> None:
+    """
+    Raises ValueError if ``tag_count`` tags on one object is more than the taxonomy allows.
+    """
+    if not taxonomy.allow_multiple and tag_count > 1:
+        raise ValueError(_("Taxonomy ({name}) only allows one tag per object.").format(name=taxonomy.name))
 
 
 def _get_current_tags(
@@ -346,8 +361,7 @@ def _get_current_tags(
     Returns the current object tags of the related object_id with taxonomy
     """
     if taxonomy:
-        if not taxonomy.allow_multiple and len(tags) > 1:
-            raise ValueError(_("Taxonomy ({name}) only allows one tag per object.").format(name=taxonomy.name))
+        _check_taxonomy_allows_tag_count(taxonomy, len(tags))
         current_tags = list(
            ObjectTag.objects.filter(taxonomy=taxonomy, object_id=object_id)
         )
@@ -459,6 +473,46 @@ def tag_object(
         for object_tag in updated_tags:
             object_tag.full_clean()  # Run validation
             object_tag.save()
+
+
+def add_tag_to_object(object_id: str, tag: Tag) -> ObjectTag:
+    """
+    Adds one existing ``tag`` to ``object_id``, and returns its ObjectTag.
+
+    UNSTABLE: this function is new, so its shape may change without a deprecation cycle.
+
+    Unlike :func:`tag_object`, no other ObjectTag of the object is read for replacement or changed,
+    so a concurrent write of another tag on the same object, even one in the same taxonomy, is not
+    undone by this call. If ``tag`` is already applied to the object, its existing ObjectTag is
+    returned and nothing is written.
+
+    Raises ValueError if the taxonomy of ``tag`` allows only one tag per object and the object
+    already has a different tag in it, or if the object already has the maximum number of tags
+    (``OBJECT_MAX_TAGS``). Both use the same messages as :func:`tag_object`. Raises ValueError if
+    ``tag`` does not belong to a taxonomy. Raises Django's ``ValidationError`` if the new ObjectTag
+    fails ``full_clean()``.
+
+    The checks and the insert are not atomic, so a caller that needs them to hold against concurrent
+    writers must serialize those writers itself.
+    """
+    taxonomy = tag.taxonomy
+    if taxonomy is None:
+        raise ValueError(_("Tag ({value}) does not belong to a taxonomy.").format(value=tag.value))
+
+    object_tag = ObjectTag.objects.filter(object_id=object_id, taxonomy_id=taxonomy.id, tag_id=tag.id).first()
+    if object_tag is not None:
+        return object_tag
+
+    if not taxonomy.allow_multiple:
+        # The new tag would be the one after the ones the object already has in this taxonomy.
+        existing_count = ObjectTag.objects.filter(object_id=object_id, taxonomy_id=taxonomy.id).count()
+        _check_taxonomy_allows_tag_count(taxonomy, existing_count + 1)
+    _check_object_tag_limit(ObjectTag.objects.filter(object_id=object_id).count(), 1, object_id)
+
+    object_tag = ObjectTag(taxonomy=taxonomy, object_id=object_id, tag=tag)
+    object_tag.full_clean()
+    object_tag.save()
+    return object_tag
 
 
 def add_tag_to_taxonomy(

@@ -2029,6 +2029,75 @@ def test_create_competency_criterion_takes_the_tag_lock_itself(
         cbe_api.create_competency_criterion(group, usage_key(course_run, "p1"), course_run=course_run)
 
 
+def test_create_competency_criterion_writes_only_its_own_object_tag(
+    tag: Tag, course_run: CourseRun, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """
+    Creating a criterion for one competency inserts that competency's ObjectTag and nothing else, so
+    it cannot undo a concurrent create or delete of a sibling competency's ObjectTag on the same object.
+    """
+    sibling_tag = make_tag(competency_taxonomy, "Sibling Skill")
+    object_id = usage_key(course_run, "p1")
+    sibling = ObjectTag.objects.create(object_id=object_id, taxonomy=competency_taxonomy, tag=sibling_tag)
+    group = _create_leaf_group(tag, course_run)
+
+    with CaptureQueriesContext(connection) as queries:
+        criterion = cbe_api.create_competency_criterion(group, object_id, course_run=course_run)
+
+    quoted_table = re.escape(connection.ops.quote_name("oel_tagging_objecttag"))
+    object_tag_writes = [
+        query["sql"] for query in queries.captured_queries
+        if re.match(rf"(INSERT INTO|UPDATE|DELETE FROM) {quoted_table}", query["sql"])
+    ]
+    assert len(object_tag_writes) == 1
+    assert object_tag_writes[0].startswith("INSERT")
+    assert criterion.object_tag.tag_id == tag.id
+    assert ObjectTag.objects.get(id=sibling.id).tag_id == sibling_tag.id
+
+
+def test_create_competency_criterion_does_not_resurrect_a_sibling_object_tag_deleted_mid_create(
+    tag: Tag, course_run: CourseRun, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """
+    A sibling competency's ObjectTag deleted by a concurrent request, right after this create first
+    reads ObjectTags, stays deleted; the create adds only its own competency's tag.
+    """
+    sibling_tag = make_tag(competency_taxonomy, "Sibling Skill")
+    object_id = usage_key(course_run, "p1")
+    sibling = ObjectTag.objects.create(object_id=object_id, taxonomy=competency_taxonomy, tag=sibling_tag)
+    group = _create_leaf_group(tag, course_run)
+    raced = False
+    quoted_table = connection.ops.quote_name("oel_tagging_objecttag")
+
+    def _delete_sibling_after_first_object_tag_query(execute, sql, params, many, context):
+        nonlocal raced
+        result = execute(sql, params, many, context)
+        if not raced and quoted_table in sql:
+            raced = True
+            ObjectTag.objects.filter(pk=sibling.pk).delete()
+        return result
+
+    with connection.execute_wrapper(_delete_sibling_after_first_object_tag_query):
+        cbe_api.create_competency_criterion(group, object_id, course_run=course_run)
+
+    assert raced
+    assert list(ObjectTag.objects.filter(object_id=object_id).values_list("tag_id", flat=True)) == [tag.id]
+
+
+def test_create_competency_criterion_reuses_an_existing_object_tag_for_the_same_competency(
+    tag: Tag, course_run: CourseRun, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """An ObjectTag already tying the object to this competency is reused rather than duplicated."""
+    object_id = usage_key(course_run, "p1")
+    existing = ObjectTag.objects.create(object_id=object_id, taxonomy=competency_taxonomy, tag=tag)
+    group = _create_leaf_group(tag, course_run)
+
+    criterion = cbe_api.create_competency_criterion(group, object_id, course_run=course_run)
+
+    assert criterion.object_tag_id == existing.id
+    assert ObjectTag.objects.filter(object_id=object_id).count() == 1
+
+
 def test_associate_competency_criterion_creates_the_course_runs_cbe_row(
     tag: Tag, course_run: CourseRun,
 ) -> None:
