@@ -137,13 +137,13 @@ Decision
    7. ``rule_payload``: JSON payload keyed by ``rule_type`` to avoid freeform strings. It is structured JSON (not arbitrary freeform data): each ``rule_type`` defines the allowed payload shape and required keys, and validation enforces this contract. JSON is used instead of fixed columns like ``op``, ``value``, and ``scale`` so that future rule types (for example, ``MasteryLevel`` thresholds or plugin-defined evaluators such as CEL-based rules) can add their own fields without repeated schema migrations or many nullable columns. Examples:
 
       1. ``Grade``: ``{"op": "gte", "value": 0.75, "scale": "percent"}``. Allowed ``op`` values: ``gte``, ``lte``, ``eq``. ``value`` must be a fraction between 0.0 and 1.0 inclusive, matching the platform's existing fractional grade representation, not a 0-100 scale.
-   8. ``archived``: Boolean, defaults to false. Set instead of deleting a profile that is no longer wanted. Archived profiles are hidden from authoring and new associations but remain queryable, so existing ``CompetencyCriterion`` rows and learner status rows stay resolvable.
+   8. ``archived``: Boolean, defaults to false. Set instead of deleting a profile that is no longer wanted. Archived profiles are hidden from authoring and new associations but remain queryable, so existing ``CompetencyCriterion`` rows and learner status rows stay resolvable. The one exception is a criterion copied to a new course run by a course rerun: it keeps the profile of the criterion it was copied from, even when that profile is archived, so the new run evaluates the same way as the source run (Decision 4).
 
    A check constraint requires that at most one of ``organization_id``, ``course_id``, and ``competency_taxonomy_id`` is non-null on any row, matching the scoping rule above.
 
    Editing a profile may change ``rule_type``/``rule_payload`` only; scope fields are immutable after creation, to avoid silently re-scoping criteria that already resolved to this profile.
 
-   MVP note: only the system-default profile exists in this phase; taxonomy-, course-, and organization-scoped profiles are all out of scope for this MVP, so every profile row in this phase has ``competency_taxonomy_id``, ``course_id``, and ``organization_id`` null. If/when taxonomy-, course-, or organization-scoped competency rule profiles are built, no schema change is needed here to support them -- the columns, the uniqueness constraint, and the re-assignment behavior (Decision 4) already do.
+   MVP note: only the system-default profile exists in this phase; taxonomy-, course-, and organization-scoped profiles are all out of scope for this MVP, so every profile row in this phase has ``competency_taxonomy_id``, ``course_id``, and ``organization_id`` null. If/when taxonomy-, course-, or organization-scoped competency rule profiles are built, no schema change is needed here to support them -- the columns, the uniqueness constraint, and the re-assignment behavior (Decision 4) already do. Course-scoped profiles leave one question open for the course rerun copy. A criterion copied to a new run keeps its source criterion's profile, so it would reference the profile scoped to the source run. Deleting the source run would then be refused: deleting a course deletes its course-scoped profile (Decision 7), and a profile that a criterion references cannot be deleted. Whoever adds course-scoped profiles must decide which profile a copied criterion gets.
 
 4. ``CompetencyCriterion`` concept (``CompetencyCriteria`` database table)
 
@@ -191,6 +191,8 @@ Decision
    (A future authoring action to revert a criterion to the next-closest scope, once course/organization scoping exists, would be a fifth trigger using the same computation; out of scope for this phase.)
 
    In no case is the FK re-resolved dynamically at evaluation time -- only these explicit write events change it.
+
+   A course rerun copies criteria from the source run to the new run. The copy is not one of these write events: a copied criterion keeps the ``competency_rule_profile_id`` or the override fields of the criterion it was copied from, and the assignment computation is not run for it.
 
    Which profile a criterion is assigned, by which profile rows exist for its context:
 
@@ -507,3 +509,9 @@ Changelog
 
 * Decision 4 states that no ancestor or descendant of a competency tag may hold live criteria
   in the same course as that tag, and why.
+
+2026-11-17:
+
+* For issue #694: recorded in Decisions 3 and 4 that a criterion copied to a new course run by a
+  course rerun keeps its source criterion's rule profile or overrides, including an archived
+  profile, and that course-scoped profiles leave open which profile a copied criterion gets.
