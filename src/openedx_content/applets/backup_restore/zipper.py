@@ -2,6 +2,7 @@
 This module provides functionality to create a zip file containing the learning package data,
 including a TOML representation of the learning package and its entities.
 """
+
 import hashlib
 import time
 import tomllib
@@ -180,8 +181,8 @@ class LearningPackageZipper:
         lp_id = self.learning_package.id
         publishable_entities: QuerySet[PublishableEntity] = publishing_api.get_publishable_entities(lp_id)
         return (
-            publishable_entities  # type: ignore[no-redef]
-            .select_related(
+            publishable_entities.select_related(  # type: ignore[no-redef]
+                "asset",
                 "container",
                 "component__component_type",
                 "draft__version__componentversion",
@@ -316,13 +317,13 @@ class LearningPackageZipper:
                     entity, versions_to_write, draft_version, published_version
                 )
 
-                if hasattr(entity, 'container'):
+                if hasattr(entity, "container"):
                     entity_filename = self.get_entity_toml_filename(entity.entity_ref)
                     entity_toml_filename = f"{entity_filename}.toml"
                     entity_toml_path = entities_folder / entity_toml_filename
                     self.add_file_to_zip(zipf, entity_toml_path, entity_toml_content, timestamp=latest_modified)
 
-                if hasattr(entity, 'component'):
+                if hasattr(entity, "component"):
                     # Create the component folder structure for the entity. The structure is as follows:
                     # entities/
                     #     xblock.v1/  (component namespace)
@@ -396,6 +397,11 @@ class LearningPackageZipper:
                                 # If no file and no text, we skip this media
                                 continue
                             self.add_file_to_zip(zipf, file_path, file_data, timestamp=media.created)
+
+                if hasattr(entity, "asset"):
+                    # As shared assets are new, we're holding off on defining the serialization format for them.
+                    # But we can implement this whenever it becomes needed (e.g. when libraries support assets)
+                    raise NotImplementedError("Packages with assets cannot yet be imported/exported.")
 
             # ------ COLLECTION SERIALIZATION -------------
             collections = self.get_collections()

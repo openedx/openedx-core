@@ -1,6 +1,8 @@
 """
 Tests relating to dumping learning packages to disk
 """
+
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from io import StringIO
@@ -288,6 +290,23 @@ class LpDumpCommandTestCase(TestCase):
             call_command("lp_dump", package_ref, file_name, stdout=out)
             self.assertIn("Learning package 'nonexistent_lp' does not exist", out.getvalue())
 
+    def test_dump_with_assets_not_supported(self):
+        """
+        Exporting a learning package that contains shared assets is not yet
+        supported, so it should raise NotImplementedError.
+        """
+        api.create_asset_and_version(
+            self.learning_package.id,
+            path="images/example.png",
+            created=self.now,
+            created_by=self.user.id,
+            media=b"fake image data",
+        )
+        zipper = LearningPackageZipper(self.learning_package, self.user)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            zip_path = Path(tmp_dir) / "backup.zip"
+            with self.assertRaisesMessage(NotImplementedError, "Packages with assets cannot yet be imported/exported."):
+                zipper.create_zip(str(zip_path))
     def test_queries_n_plus_problem(self):
         """
         Test n plus problem over LearningPackageZipper for performance.
