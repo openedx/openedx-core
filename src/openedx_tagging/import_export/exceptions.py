@@ -85,7 +85,7 @@ class ParentCycleError(TagImportError):
     Exception raised when a row's parent_id would make its tag its own ancestor.
 
     ``row`` is the 1-based position of the row among the file's data rows, as
-    in DuplicateFinalIdError.
+    in ``TagImportPlan._validate_no_duplicate_final_ids``.
     """
 
     def __init__(self, row: int, parent_id: str, **kargs):

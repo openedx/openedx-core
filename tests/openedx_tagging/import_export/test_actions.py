@@ -137,6 +137,22 @@ class TestImportAction(TestImportActionMixin, TestCase):
                 )
             )
 
+    def test_validate_parent_unknown_parent_names_its_row(self):
+        action = CreateTag(
+            self.taxonomy,
+            TagItem(id='tag_110', value='_', parent_id='tag_100', index=100),
+            index=100,
+            row=4,
+        )
+        errors = action.validate(self.indexed_actions)
+        self.assertEqual(
+            [error.message for error in errors],
+            [
+                "Action error in 'create' (#100): "
+                "Row 4: Unknown parent tag (tag_100). Add a row for the parent to your file."
+            ],
+        )
+
     def test_validate_parent_with_rename_external_id_action(self) -> None:
         """
         Regression: a parent referenced by external_id that doesn't exist in
