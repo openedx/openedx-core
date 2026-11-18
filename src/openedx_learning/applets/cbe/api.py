@@ -217,12 +217,12 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
     ``criteria_count`` is ``len(criteria)``. ``total_criteria_count`` is the number of criteria
     under every reachable group before ``course_keys`` is applied, so a caller scoped down to
     zero criteria can still tell the competency is not empty.
+
+    A group re-parented behind ``save()`` keeps its old ``subtree_course``, so a scoped read may omit it.
     """
-    groups = list(
-        CompetencyCriteriaGroup.objects.filter(tag=tag, archived=False)
-        .select_related("course")
-        .order_by(F("parent_id").asc(nulls_first=True), "ordering", "id")
-    )
+    run_ids_by_key = get_course_run_ids(course_keys) if course_keys else {}
+    scoped_run_ids = None if course_keys is None else set(run_ids_by_key.values())
+    groups = list(_tree_groups_queryset(tag, scoped_run_ids))
     if not groups:
         return CompetencyCriteriaTree(groups=[], criteria=[], criteria_count=0, total_criteria_count=0)
 
@@ -232,7 +232,9 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
     groups_by_parent_id: dict[int | None, list[CompetencyCriteriaGroup]] = {}
     for group in groups:
         groups_by_parent_id.setdefault(group.parent_id, []).append(group)
-    # Maps each reachable group id to the course run id of its branch, or None above any course.
+    # Maps each reachable group id to the course run id of its branch, or None above any course. This walk and
+    # the ranking below must stay on course_id, not subtree_course: a group whose subtree_course is NULL still
+    # places correctly by its branch, and ranking by subtree_course would put it in every scope.
     branch_course_ids: dict[int, int | None] = {}
     pending = [(group, group.course_id) for group in groups_by_parent_id.get(None, [])]
     while pending:
@@ -245,7 +247,6 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
     if course_keys is None:
         scoped_groups = reachable_groups
     else:
-        run_ids_by_key = get_course_run_ids(course_keys)
         rank_by_run_id = {
             run_ids_by_key[key]: rank
             for rank, key in enumerate((key for key in dict.fromkeys(course_keys) if key in run_ids_by_key), start=1)
@@ -273,8 +274,15 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
     if course_keys is None:
         total_criteria_count = len(criteria)
     else:
+        # The scoped walk above saw only some branches, so reachability for the count needs its own scan.
+        # Thin (id, parent_id) rows keep it cheap. A single aggregate count over live criteria whose group is
+        # live is not used because it assumes no live group sits under an archived one, and the reachability
+        # rule documented above does not.
+        reachable_group_ids = _reachable_group_ids(
+            CompetencyCriteriaGroup.objects.filter(tag=tag, archived=False).values_list("id", "parent_id")
+        )
         total_criteria_count = CompetencyCriterion.objects.filter(
-            group_id__in=branch_course_ids.keys(), archived=False,
+            group_id__in=reachable_group_ids, archived=False,
         ).count()
 
     return CompetencyCriteriaTree(
@@ -283,6 +291,41 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
         criteria_count=len(criteria),
         total_criteria_count=total_criteria_count,
     )
+
+
+def _tree_groups_queryset(tag: Tag, scoped_run_ids: set[int] | None) -> QuerySet[CompetencyCriteriaGroup]:
+    """
+    Return the non-archived groups of ``tag`` in tree-read order, with ``course`` loaded.
+
+    ``scoped_run_ids=None`` returns every group. A set returns only the groups above any course
+    (``subtree_course`` is null) and the groups whose branch belongs to one of those course runs, so a
+    scoped read loads full rows only for those groups. ``total_criteria_count`` still needs reachability
+    over the whole tree, so the caller reads thin ``(id, parent_id)`` rows of every non-archived group
+    separately.
+    """
+    groups = CompetencyCriteriaGroup.objects.filter(tag=tag, archived=False)
+    if scoped_run_ids is not None:
+        groups = groups.filter(Q(subtree_course__isnull=True) | Q(subtree_course_id__in=scoped_run_ids))
+    return groups.select_related("course").order_by(F("parent_id").asc(nulls_first=True), "ordering", "id")
+
+
+def _reachable_group_ids(rows: Iterable[tuple[int, int | None]]) -> set[int]:
+    """
+    Return the ids reachable from the roots, given ``(id, parent_id)`` rows of non-archived groups.
+
+    A group whose parent is missing from ``rows`` (for example an archived parent) is unreachable,
+    and so is everything below it.
+    """
+    child_ids_by_parent_id: dict[int | None, list[int]] = {}
+    for group_id, parent_id in rows:
+        child_ids_by_parent_id.setdefault(parent_id, []).append(group_id)
+    reachable: set[int] = set()
+    pending = list(child_ids_by_parent_id.get(None, []))
+    while pending:
+        group_id = pending.pop()
+        reachable.add(group_id)
+        pending.extend(child_ids_by_parent_id.get(group_id, []))
+    return reachable
 
 
 def _create_leaf_group(
