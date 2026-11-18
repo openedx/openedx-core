@@ -2,7 +2,9 @@
 Tests relating to dumping learning packages to disk
 """
 
+import os
 import tempfile
+import unittest
 import zipfile
 from datetime import datetime, timezone
 from io import StringIO
@@ -307,6 +309,24 @@ class LpDumpCommandTestCase(TestCase):
             zip_path = Path(tmp_dir) / "backup.zip"
             with self.assertRaisesMessage(NotImplementedError, "Packages with assets cannot yet be imported/exported."):
                 zipper.create_zip(str(zip_path))
+            # The partially-written zip file should have been cleaned up, so it's not mistaken for a valid export
+            self.assertFalse(zip_path.exists())
+
+    @unittest.skipIf(os.name != "posix" or os.geteuid() == 0, "Needs POSIX permissions enforced (not root)")
+    def test_dump_does_not_delete_existing_unwritable_file(self):
+        """
+        If the output file can't be opened for writing (e.g. an existing
+        read-only backup), the existing file must be left untouched.
+        """
+        zipper = LearningPackageZipper(self.learning_package, self.user)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            zip_path = Path(tmp_dir) / "backup.zip"
+            zip_path.write_bytes(b"previous backup")
+            zip_path.chmod(0o444)
+            with self.assertRaises(PermissionError):
+                zipper.create_zip(str(zip_path))
+            self.assertEqual(zip_path.read_bytes(), b"previous backup")
+
     def test_queries_n_plus_problem(self):
         """
         Test n plus problem over LearningPackageZipper for performance.

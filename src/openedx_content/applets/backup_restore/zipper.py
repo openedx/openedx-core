@@ -3,6 +3,7 @@ This module provides functionality to create a zip file containing the learning 
 including a TOML representation of the learning package and its entities.
 """
 
+import contextlib
 import hashlib
 import time
 import tomllib
@@ -278,13 +279,32 @@ class LearningPackageZipper:
     def create_zip(self, path: str) -> None:
         """
         Creates a zip file containing the learning package data.
+
+        If zip creation fails partway through, the incomplete file is removed so
+        that it can't be mistaken for a valid backup.
+
         Args:
             path (str): The path where the zip file will be created.
         Raises:
             Exception: If the learning package cannot be found or if the zip creation fails.
         """
+        # Open the file outside the try block: if opening fails (e.g. an existing read-only file), that file was
+        # not touched, so it must not be deleted.
+        zipf = zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9)
+        try:
+            self._write_zip(zipf)  # closes zipf, even on error
+        except BaseException:
+            # Opening succeeded, so the file at ``path`` is one we created or truncated; it only holds partial data.
+            # Don't let a cleanup failure mask the original error.
+            with contextlib.suppress(OSError):
+                Path(path).unlink(missing_ok=True)
+            raise
 
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
+    def _write_zip(self, zipf: zipfile.ZipFile) -> None:
+        """
+        Write the learning package data into the open ``zipf``, then close it. See ``create_zip()``.
+        """
+        with zipf:
             # Add the package.toml file
             package_toml_content: str = toml_learning_package(
                 self.learning_package, self.utc_now, user=self.user, origin_server=self.origin_server
