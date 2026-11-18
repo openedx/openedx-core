@@ -1648,6 +1648,63 @@ class TestArchiveLockedObjectTags(TestTagTaxonomyMixin, TestCase):
         assert reimported.archived is False
         assert reimported.deletion_locked is True
 
+    @ddt.data("association", "tag", "taxonomy")
+    def test_delete_object_tags_keep_hidden_deletes_visible_and_leaves_hidden_untouched(self, hidden_by: str) -> None:
+        if hidden_by == "taxonomy":
+            self._apply("obj1", ["Fungi"])
+            self._apply("obj1", ["hidden free text"], self.free_text_taxonomy)
+            visible_pk = self._object_tag("obj1", "Fungi").pk
+            hidden = self._object_tag("obj1", "hidden free text", self.free_text_taxonomy)
+            Taxonomy.objects.filter(pk=self.free_text_taxonomy.pk).update(archived=True)
+        else:
+            self._apply("obj1", ["Fungi", "Mammalia"])
+            visible_pk = self._object_tag("obj1", "Fungi").pk
+            hidden = self._object_tag("obj1", "Mammalia")
+            if hidden_by == "association":
+                ObjectTag.objects.filter(pk=hidden.pk).update(archived=True)
+            else:
+                Tag.objects.filter(taxonomy=self.taxonomy, value="Mammalia").update(archived=True)
+        assert [t.pk for t in tagging_api.get_object_tags("obj1")] == [visible_pk]
+        hidden_before = ObjectTag.objects.get(pk=hidden.pk)
+
+        tagging_api.delete_object_tags("obj1", keep_hidden=True)
+
+        assert not ObjectTag.objects.filter(pk=visible_pk).exists()
+        hidden_after = ObjectTag.objects.get(pk=hidden.pk)
+        assert hidden_after.archived is hidden_before.archived
+        assert hidden_after.deletion_locked is hidden_before.deletion_locked
+
+    def test_delete_object_tags_keep_hidden_archives_visible_locked_and_deletes_visible_unlocked(self) -> None:
+        self._apply("obj1", ["Mammalia", "Fungi"])
+        locked = self._locked("obj1", "Mammalia")
+        unlocked_pk = self._object_tag("obj1", "Fungi").pk
+
+        tagging_api.delete_object_tags("obj1", keep_hidden=True)
+
+        archived = ObjectTag.objects.get(pk=locked.pk)
+        assert archived.archived is True
+        assert archived.deletion_locked is True
+        assert not ObjectTag.objects.filter(pk=unlocked_pk).exists()
+
+    def test_delete_object_tags_keep_hidden_deletes_placeholder_association(self) -> None:
+        tagging_api.tag_object("obj1", None, ["X"], create_invalid=True, taxonomy_export_id="missing-taxonomy")
+        placeholder = ObjectTag.objects.get(object_id="obj1")
+        assert placeholder.taxonomy is None
+        assert placeholder.export_id == "missing-taxonomy"
+
+        tagging_api.delete_object_tags("obj1", keep_hidden=True)
+
+        assert not ObjectTag.objects.filter(pk=placeholder.pk).exists()
+
+    def test_delete_object_tags_by_default_deletes_hidden_unlocked_association(self) -> None:
+        self._apply("obj1", ["Mammalia", "Fungi"])
+        hidden = self._object_tag("obj1", "Mammalia")
+        ObjectTag.objects.filter(pk=hidden.pk).update(archived=True)
+
+        tagging_api.delete_object_tags("obj1")
+
+        assert not ObjectTag.objects.filter(object_id="obj1").exists()
+
     @ddt.data("taxonomy", "free_text_taxonomy")
     def test_copy_tags_archives_dropped_locked_copy_and_keeps_shared_one(self, taxonomy_attr: str) -> None:
         """
@@ -1794,6 +1851,38 @@ class TestArchiveLockedObjectTags(TestTagTaxonomyMixin, TestCase):
         assert reapplied.archived is False
         assert reapplied.value == "Therians"
         assert reapplied.deletion_locked is True
+
+    @ddt.data("association", "tag")
+    def test_tag_object_keeps_hidden_associations(self, hidden_by: str) -> None:
+        """
+        AC: saving a block's tags, changing only the visible ones, leaves an association the author cannot see alone.
+        """
+        self._apply("obj1", ["Mammalia", "Fungi"])
+        hidden = self._object_tag("obj1", "Mammalia")
+        if hidden_by == "association":
+            ObjectTag.objects.filter(pk=hidden.pk).update(archived=True)
+        else:
+            Tag.objects.filter(taxonomy=self.taxonomy, value="Mammalia").update(archived=True)
+        assert [t.value for t in tagging_api.get_object_tags("obj1")] == ["Fungi"]
+
+        self._apply("obj1", ["Archaea"])
+
+        assert [t.value for t in tagging_api.get_object_tags("obj1")] == ["Archaea"]
+        assert ObjectTag.objects.filter(object_id="obj1", _value="Mammalia").count() == 1
+        still_hidden = ObjectTag.objects.get(pk=hidden.pk)
+        assert still_hidden.archived is (hidden_by == "association")
+        assert still_hidden.deletion_locked is False
+
+    def test_tag_object_unarchives_unlocked_hidden_association_on_reapply(self) -> None:
+        self._apply("obj1", ["Mammalia"])
+        hidden = self._object_tag("obj1", "Mammalia")
+        ObjectTag.objects.filter(pk=hidden.pk).update(archived=True)
+
+        self._apply("obj1", ["Mammalia", "Fungi"])
+
+        reapplied = ObjectTag.objects.get(pk=hidden.pk)
+        assert reapplied.archived is False
+        assert sorted(t.value for t in tagging_api.get_object_tags("obj1")) == ["Fungi", "Mammalia"]
 
     def test_tag_object_query_count_is_constant(self) -> None:
         """`tag_object()` removing a mixed set of tags runs the same queries however many tags it removes."""
