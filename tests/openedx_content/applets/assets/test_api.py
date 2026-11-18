@@ -220,7 +220,7 @@ def test_valid_invalid_paths(path: str, valid: bool, lp: LearningPackage) -> Non
     ("permissions", "valid"),
     [
         (api.AssetPermissions.PUBLIC, True),
-        (api.AssetPermissions.LOCKED, True),
+        (api.AssetPermissions.ENROLLED, True),
         (api.AssetPermissions.STAFF, True),
         ("invalid", False),
         ("", False),
@@ -352,7 +352,7 @@ def test_create_two_assets(lp: LearningPackage, user1: User, black_png: Media) -
     assert asset2_v1.media.id == black_png.id
 
 
-@pytest.mark.parametrize("permissions", [api.AssetPermissions.LOCKED, api.AssetPermissions.STAFF])
+@pytest.mark.parametrize("permissions", [api.AssetPermissions.ENROLLED, api.AssetPermissions.STAFF])
 def test_create_asset_and_version_permissions(
     lp: LearningPackage, user1: User, black_png: Media, permissions: api.AssetPermissions
 ) -> None:
@@ -493,10 +493,10 @@ def test_change_permissions(black: Asset):
     assert black.permissions == api.AssetPermissions.PUBLIC
     assert not black.allow_scripts
 
-    api.update_asset(black, permissions=api.AssetPermissions.LOCKED)
-    assert black.permissions == api.AssetPermissions.LOCKED
+    api.update_asset(black, permissions=api.AssetPermissions.ENROLLED)
+    assert black.permissions == api.AssetPermissions.ENROLLED
     black.refresh_from_db()
-    assert black.permissions == api.AssetPermissions.LOCKED
+    assert black.permissions == api.AssetPermissions.ENROLLED
     assert not black.allow_scripts
 
     api.update_asset(black, permissions=api.AssetPermissions.STAFF)

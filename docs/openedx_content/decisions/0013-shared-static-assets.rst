@@ -41,9 +41,9 @@ Each Asset holds only a single file, e.g. ``solar-system.svg``, and within a giv
 
 Filenames should be case-sensitive, such that ``fig1.png`` and ``Fig1.png`` are both allowed. Since MySQL's default collation is case-insensitive, the ``path`` column which stores it must explicitly use a case-sensitive collation (e.g. using ``case_sensitive_char_field``, as ``ref_field`` does), including for its uniqueness constraint. For backwards compatibility, the filename/path is also allowed to contain ``/``, such as ``images/image1.png``. By convention, an Asset's ``entity_ref`` is ``openedx-asset:{path}``, but nothing (including asset URLs) should rely on that; look Assets up by ``path`` using its explicit column.
 
-If a file is uploaded with the same filename/path as an Asset that has been (soft) deleted, the deleted Asset is un-deleted: the upload becomes a new draft version of the existing Asset, rather than creating a new Asset. Its version history and any existing references to it are retained. If a specific permissions mode (``locked`` or ``staff``, and separately ``allow_scripts`` or not) was specified when uploading, it will have that value; otherwise it will take on the most restrictive values between the defaults and the previous values (i.e. if the previously-deleted asset was locked, the new asset will be locked; the ``allow_scripts`` flag will be reset to ``False``).
+If a file is uploaded with the same filename/path as an Asset that has been (soft) deleted, the deleted Asset is un-deleted: the upload becomes a new draft version of the existing Asset, rather than creating a new Asset. Its version history and any existing references to it are retained. If a specific permissions mode (``enrolled`` or ``staff``, and separately ``allow_scripts`` or not) was specified when uploading, it will have that value; otherwise it will take on the most restrictive values between the defaults and the previous values (i.e. if the previously-deleted asset was ``enrolled``, the new asset will be ``enrolled``; the ``allow_scripts`` flag will be reset to ``False``).
 
-3. Assets support relative links
+1. Assets support relative links
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Within a single Learning Package, Assets can use relative references to each other. For example, an HTML file stored as an Asset can reference ``image.jpg`` (or ``./image.jpg``) which would be rendered if the HTML file was viewed in the browser and the image in question was another Asset in the same Learning Package.
@@ -121,18 +121,18 @@ The title of an asset can be changed at any time, but the filename/path cannot b
 
 Assets are not children of the course container or any of its descendants. Putting them there would mean every asset upload creates a new version of an outline container.
 
-9. Asset permissions mode: "public", "locked", "staff"
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+9. Asset permissions mode: "public", "enrolled", "staff"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``Asset`` model will have a permissions column with an enum that allows values of ``public`` (default), ``locked``, and ``staff``. The permissions mode is on the unversioned model (not part of versioning), because often authors will wish to lock down all versions of an asset, not just lock the current version while still allowing access to previous versions.
+The ``Asset`` model will have a permissions column with an enum that allows values of ``public`` (default), ``enrolled``, and ``staff``. The permissions mode is on the unversioned model (not part of versioning), because often authors will wish to lock down all versions of an asset, not just lock the current version while still allowing access to previous versions.
 
-* ``public`` is the default for now, as it was in contentstore. There are no permissions checks on such assets, and anyone who knows the filename/URL can access it. This was chosen as the default more for performance reasons (skipping expensive permissions checks) rather than product reasons, and we may change to ``locked`` as default in the future.
-* ``locked`` mirrors the existing contentstore flag for course files. It means that only enrolled users can access the given file.
+* ``public`` is the default for now, as it was in contentstore. There are no permissions checks on such assets, and anyone who knows the filename/URL can access it. This was chosen as the default more for performance reasons (skipping expensive permissions checks) rather than product reasons, and we may change to ``enrolled`` as default in the future.
+* ``enrolled`` mirrors the existing contentstore flag for course files. It means that only enrolled users can access the given file.
 * ``staff`` means that only course staff can access the asset, e.g. for storing grading rubric PDFs. This is a new feature compared to contentstore, although it will be used to prevent learners from downloading ``python_lib.zip``, a special shared asset used by the problem XBlock that must not be accessible to learners (contentstore achieves this with a hard-coded rule).
 
 In **libraries**, these permissions checks have little effect, but indicate what permissions an asset should have when copied into the course.
 
-This information must be preserved round-trip on course exports/import. The attributes like ``locked``, ``staff``, ``allow_scripts``, and ``title`` need to go into ``policies/assets.json``. Staff-only shared assets other than ``python_lib.zip`` will have to be exported to a separate folder outside of ``static/`` and will be silently ignored if imported into an older version of Open edX that doesn't support private ``staff`` assets.
+This information must be preserved round-trip on course exports/import. The attributes like ``enrolled``, ``staff``, ``allow_scripts``, and ``title`` need to go into ``policies/assets.json``. Staff-only shared assets other than ``python_lib.zip`` will have to be exported to a separate folder outside of ``static/`` and will be silently ignored if imported into an older version of Open edX that doesn't support private ``staff`` assets.
 
 10. HTML Assets can be allowed to run scripts
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -158,7 +158,7 @@ Consequences
 
 **Assets cannot be renamed.** Because the filename/path *is* the identifier, new files can be uploaded, but renaming an Asset would break any existing usages that refer to it by its filename identifier.
 
-**There will be two different ways to use files in course content**: by attaching them directly to XBlock Components, or by uploading them as shared assets. Content libraries already support the former (attached to Components), and courses support the latter. Note that the ``locked`` and ``staff`` modes will only be supported for shared assets, as any files attached to a ``Component`` that are meant to be accessible to learners will share the same permissions as the ``Component`` they're attached to.
+**There will be two different ways to use files in course content**: by attaching them directly to XBlock Components, or by uploading them as shared assets. Content libraries already support the former (attached to Components), and courses support the latter. Note that the ``enrolled`` and ``staff`` modes will only be supported for shared assets, as any files attached to a ``Component`` that are meant to be accessible to learners will share the same permissions as the ``Component`` they're attached to.
 
 **Linking library components into courses will be simplified**, once we support XBlocks with files attached to their ``Component``, because part of the complexity in copying library components into courses involves analyzing their attached files and merging them into the course's shared Course Files. If we can instead just copy the ``Component``, including all its attached files, directly into the course's Learning Package, no analysis nor merging into shared files is necessary.
 
@@ -235,10 +235,10 @@ Other names for Assets
 - **File** was used in a later draft, to match the Studio "Files" page. It was dropped because "File component" and "file" are too easily confused, since every Component can have files attached to it.
 - **Folder** was considered when Assets could hold multiple files, but it implies using Assets as an organizational tool. Each Asset holds exactly one file and represents a singular thing (an image, a PDF, a document); grouping is done with Collections or by attaching files to a Component.
 
-"locked" mode alternatives
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+"enrolled" mode alternatives
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-"Make all assets locked" and "don't implement locking at all" are rejected for lack of backwards compatibility and lack of the strong buy-in required for removing a feature. "Make new assets locked by default" is worth considering in the future; it was previously not done only for performance reasons which may or may not be as relevant in the future.
+"Make all assets limited to enrolled learners" and "don't implement enrolled restrictions at all" are rejected for lack of backwards compatibility and lack of the strong buy-in required for removing a feature. "Make new assets enrolled-only by default" is worth considering in the future; it was previously not done only for performance reasons which may or may not be as relevant in the future.
 
 Serving shared Assets only at a learning-package-level URL
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

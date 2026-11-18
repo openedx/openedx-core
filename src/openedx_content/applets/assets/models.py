@@ -54,7 +54,7 @@ class AssetPermissions(models.TextChoices):
     # No authentication required. Default (for performance reasons, not product reasons).
     PUBLIC = "public"
     # Restricted to enrolled users only
-    LOCKED = "locked"
+    ENROLLED = "enrolled"
     # Restricted to staff only
     STAFF = "staff"
 

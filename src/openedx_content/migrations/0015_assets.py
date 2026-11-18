@@ -34,7 +34,7 @@ class Migration(migrations.Migration):
                 (
                     "permissions",
                     models.CharField(
-                        choices=[("public", "Public"), ("locked", "Locked"), ("staff", "Staff")],
+                        choices=[("public", "Public"), ("enrolled", "Enrolled"), ("staff", "Staff")],
                         default="public",
                         max_length=12,
                     ),
@@ -109,7 +109,7 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="asset",
             constraint=models.CheckConstraint(
-                condition=models.Q(("permissions__in", ["public", "locked", "staff"])),
+                condition=models.Q(("permissions__in", ["public", "enrolled", "staff"])),
                 name="oe_content_asset_permissions_enum",
             ),
         ),
