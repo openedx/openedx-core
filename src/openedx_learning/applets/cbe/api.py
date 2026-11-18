@@ -402,12 +402,21 @@ def _groups_with_competency_ids_in_result_order(
     """
     Return the result's groups, each paired with its competency id, sorted by ``(ordering, id)``.
 
-    The groups are the root above each of ``live_course_level_groups_with_criteria``, once per root, and each
-    group in ``groups_by_id`` whose id is in ``group_ids_with_criteria``, that is, one holding a criterion
-    directly or below it.
+    ``groups_by_id`` holds this course run's course-level groups and every live group below them, and
+    ``group_ids_with_criteria`` holds the ids of those that have a criterion directly or below them. The root group
+    is not in ``groups_by_id``. It is taken from the ``parent`` of each of
+    ``live_course_level_groups_with_criteria``. For one competency whose course-level group in this course run is
+    tagged ``T``::
 
-    A group's competency id is the tag of its course-level group. That tag's archive state was checked, so every
-    competency id names a returned competency.
+        Root group                                  returned once per root, from ``group.parent``     -> T
+        ├── Course-level group, another course run  not passed in, so not returned
+        └── Course-level group, this course run     returned                                          -> T
+            ├── Group holding a criterion below it  returned                                          -> T
+            │   └── Group holding a criterion       returned                                          -> T
+            └── Group with no criterion left        not in ``group_ids_with_criteria``, not returned
+
+    Every returned group, the root included, is paired with ``T``, the tag id of its course-level group. That
+    tag's archive state was checked, so every competency id names a returned competency.
     """
     root_groups = {
         group.parent_id: (cast(CompetencyCriteriaGroup, group.parent), group.tag_id)
@@ -483,7 +492,8 @@ def get_course_competency_criteria(course_key: CourseKey) -> LearnerCourseCriter
     taxonomies = {}
     for tag in competency_tags.values():
         # A group's tag is always a competency tag, so its taxonomy is always set.
-        assert tag.taxonomy is not None
+        if tag.taxonomy is None:
+            raise TypeError(f"Competency tag {tag.id} has no taxonomy.")
         taxonomies[tag.taxonomy_id] = tag.taxonomy
     groups = _groups_with_competency_ids_in_result_order(
         live_course_level_groups_with_criteria, groups_by_id, group_ids_with_criteria,

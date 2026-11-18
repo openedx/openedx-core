@@ -17,7 +17,12 @@ from rules.permissions import permissions as rule_permissions
 
 from openedx_catalog.models import CourseRun
 from openedx_learning.api import delete_or_archive_competency_criteria_group, delete_or_archive_competency_criterion
-from openedx_learning.applets.cbe.api import _create_leaf_group, get_course_competency_criteria
+from openedx_learning.applets.cbe import api as cbe_api
+from openedx_learning.applets.cbe.api import (
+    _create_leaf_group,
+    _get_live_course_level_groups,
+    get_course_competency_criteria,
+)
 from openedx_learning.applets.cbe.data import (
     LearnerCompetency,
     LearnerCourseCriteria,
@@ -282,6 +287,27 @@ def test_competency_taxonomies_are_listed_and_other_taxonomies_are_not(
     assert sorted(criterion.usage_key for criterion in result.criteria) == [
         usage_key(course_run, "s1"), usage_key(course_run, "s2"),
     ]
+
+
+def test_a_course_level_group_whose_tag_has_no_taxonomy_raises_type_error(
+    monkeypatch: pytest.MonkeyPatch,
+    course_run: CourseRun,
+    tag: Tag,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A course-level group whose tag has lost its taxonomy, a state the query rules out, raises a TypeError."""
+    _make_branch(tag, course_run, default_rule_profile, ["s1"])
+
+    def _groups_with_taxonomy_removed(course_key: CourseKey) -> list[CompetencyCriteriaGroup]:
+        groups = _get_live_course_level_groups(course_key)
+        for group in groups:
+            group.tag.taxonomy = None
+        return groups
+
+    monkeypatch.setattr(cbe_api, "_get_live_course_level_groups", _groups_with_taxonomy_removed)
+
+    with pytest.raises(TypeError, match=f"Competency tag {tag.id} has no taxonomy."):
+        get_course_competency_criteria(_course_key(course_run))
 
 
 def test_competency_lineage_runs_from_the_taxonomy_top_down_to_the_tag(
