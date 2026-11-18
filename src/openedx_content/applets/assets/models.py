@@ -43,7 +43,7 @@ PATH_RE = re.compile(
 INVALID_PATH_MSG = "Asset path is invalid."
 # Limit path length to 480. If not for this, on MySQL the actual limit would be 487 in practice anyways, due to
 # 'entity_ref' being 'openedx-asset:...' and limited to 500 chars.
-PATH_MAX_LENGTH = 480
+ASSET_PATH_MAX_LENGTH = 480
 # Sentinel value used so only internal APIs can call `Asset.save()`
 INTERNAL_API = Sentinel("INTERNAL_API")
 
@@ -119,7 +119,7 @@ class Asset(PublishableEntityMixin):
     """
 
     path = case_sensitive_char_field(
-        max_length=PATH_MAX_LENGTH,
+        max_length=ASSET_PATH_MAX_LENGTH,
         blank=False,
         # Validation of path value is below, as a CheckConstraint.
     )
@@ -159,7 +159,7 @@ class Asset(PublishableEntityMixin):
             ),
             # Make SQLite enforce a maximum path length like MySQL does
             models.CheckConstraint(
-                condition=models.Q(path__length__lte=PATH_MAX_LENGTH), name="oe_content_asset_path_maxlength"
+                condition=models.Q(path__length__lte=ASSET_PATH_MAX_LENGTH), name="oe_content_asset_path_maxlength"
             ),
             models.CheckConstraint(
                 condition=models.Q(permissions__in=AssetPermissions.values), name="oe_content_asset_permissions_enum"

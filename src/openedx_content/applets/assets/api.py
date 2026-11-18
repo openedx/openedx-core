@@ -20,7 +20,15 @@ from ..media import api as media_api
 from ..media.models import Media
 from ..publishing import api as publishing_api
 from ..publishing.models import LearningPackage, PublishableEntityVersion
-from .models import INTERNAL_API, INVALID_PATH_MSG, PATH_MAX_LENGTH, PATH_RE, Asset, AssetPermissions, AssetVersion
+from .models import (
+    ASSET_PATH_MAX_LENGTH,
+    INTERNAL_API,
+    INVALID_PATH_MSG,
+    PATH_RE,
+    Asset,
+    AssetPermissions,
+    AssetVersion,
+)
 
 # The public API that will be re-exported by openedx_content.api
 # is listed in the __all__ entries below. Internal helper functions that are
@@ -28,6 +36,7 @@ from .models import INTERNAL_API, INVALID_PATH_MSG, PATH_MAX_LENGTH, PATH_RE, As
 # start with an underscore AND it is not in __all__, that function is considered
 # to be callable only by other applets in the openedx_content package.
 __all__ = [
+    "ASSET_PATH_MAX_LENGTH",
     "AssetAlreadyExists",
     "AssetPermissions",
     "create_asset",
@@ -94,7 +103,7 @@ def create_asset(
     # Do some quick checks now in python. These are similar to what `Asset.validate_constraints()`` would run for us,
     # but it wraps each check in a savepoint, so adds a lot of queries. The DB constraints remain as a backstop against
     # things like `Asset.objects.update(...)`, which bypass all other validation.
-    if len(path) > PATH_MAX_LENGTH or not PATH_RE.fullmatch(path):
+    if len(path) > ASSET_PATH_MAX_LENGTH or not PATH_RE.fullmatch(path):
         raise ValidationError(INVALID_PATH_MSG)
     if permissions not in AssetPermissions.values:
         raise RuntimeError("Invalid permissions enum value.")  # This is a coding error, not a user input error
@@ -410,7 +419,8 @@ def get_missing_asset_dependencies(learning_package: LearningPackage | LearningP
     """
     learning_package_id = _get_learning_package_id(learning_package)
     qset = (
-        Asset.with_publishing_relations.filter(learning_package_id=learning_package_id)
+        Asset.with_publishing_relations
+        .filter(learning_package_id=learning_package_id)
         .filter(publishable_entity__draft__version__isnull=True)
         .filter(publishable_entity__publishableentityversiondependency__referring_version__draft__isnull=False)
         .distinct()
