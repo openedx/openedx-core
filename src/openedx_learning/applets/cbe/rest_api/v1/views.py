@@ -3,8 +3,6 @@ Views for the CBE REST API, v1.
 """
 from __future__ import annotations
 
-from dataclasses import asdict
-
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
 from django.db.models import QuerySet
@@ -14,7 +12,6 @@ from edx_rest_framework_extensions.auth.jwt.authentication import JwtAuthenticat
 from edx_rest_framework_extensions.auth.session.authentication import (  # type: ignore[import]
     SessionAuthenticationAllowInactiveUser,
 )
-from opaque_keys import InvalidKeyError
 from rest_framework import generics, mixins, status
 from rest_framework.exceptions import APIException, NotFound, PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -35,16 +32,11 @@ from ...api import (
     get_blocked_courses,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
-    get_course_competency_criteria,
     resolve_competency_tag,
     update_competency_criteria_group,
 )
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile
-from ..paginators import (
-    CompetencyBlockedCoursesPagination,
-    CompetencyRuleProfilePagination,
-    CourseCompetencyCriteriaPagination,
-)
+from ..paginators import CompetencyBlockedCoursesPagination, CompetencyRuleProfilePagination
 from .permissions import CompetencyReadPermission, CompetencyRuleProfilePermissions
 from .serializers import (
     BlockedCourseSerializer,
@@ -55,7 +47,6 @@ from .serializers import (
     CompetencyCriterionReadSerializer,
     CompetencyCriterionSerializer,
     CompetencyRuleProfileSerializer,
-    parse_plain_course_key,
 )
 
 
@@ -235,78 +226,6 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
             "criteria": CompetencyCriterionReadSerializer(tree.criteria, many=True).data,
             "criteria_count": tree.criteria_count,
             "total_criteria_count": tree.total_criteria_count,
-        })
-
-
-class CourseCompetencyCriteriaView(generics.GenericAPIView):
-    """
-    GET-only. Return the competency criteria of one course run, for the learner Progress tab.
-
-    ``GET api/cbe/v1/courses/<course_key>/criteria/``
-
-    UNSTABLE: this response shape becomes stable once the learner Progress tab frontends
-    (https://github.com/openedx/openedx-core/issues/734 and https://github.com/openedx/openedx-core/issues/839)
-    ship and the learner status endpoints reuse it.
-
-    The body is four flat lists that reference each other by id: ``taxonomies``, ``competencies``,
-    ``groups`` and ``criteria``. See ``get_course_competency_criteria`` for what each holds and which
-    rows are left out. The course key may carry a branch or a version, which are ignored. A value that
-    is not a course run key is a 400, and a course run with no criteria is a 200 with four empty lists.
-
-    Who may read is decided by ``openedx_learning.view_course_competency_criteria``, checked with the
-    plain course key. openedx-core's default rule admits any signed-in caller, and openedx-platform
-    replaces it to admit only learners with an active enrollment and course staff. Checks run in this
-    order: sign-in (401), key (400), permission (403).
-
-    The response is not paginated unless ``page`` or ``page_size`` is in the query string. A page holds
-    up to ``page_size`` competencies, with their taxonomies, all their groups and the criteria of those
-    groups, plus ``count`` (all competencies), ``num_pages``, ``current_page``, ``next`` and ``previous``.
-    A page past the end is a 404.
-    """
-
-    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
-    permission_classes = [IsAuthenticated]
-    pagination_class = CourseCompetencyCriteriaPagination
-    http_method_names = ["get"]
-
-    def get(self, request, course_key):
-        """Return the course run's criteria, after the key is parsed and the permission checked."""
-        try:
-            plain_course_key = parse_plain_course_key(course_key)
-        except InvalidKeyError as exc:
-            raise DRFValidationError(
-                {"course_key": [_("'%(value)s' is not a valid course run key.") % {"value": course_key}]}
-            ) from exc
-        if not request.user.has_perm("openedx_learning.view_course_competency_criteria", plain_course_key):
-            raise PermissionDenied()
-        result = get_course_competency_criteria(plain_course_key)
-        competencies = result.competencies
-        taxonomies = result.taxonomies
-        groups = result.groups
-        criteria = result.criteria
-        pagination = {}
-        if "page" in request.query_params or "page_size" in request.query_params:
-            competencies = self.paginator.paginate_queryset(competencies, request, view=self)
-            competency_ids = {competency.id for competency in competencies}
-            taxonomy_ids = {competency.taxonomy_id for competency in competencies}
-            taxonomies = [taxonomy for taxonomy in taxonomies if taxonomy.id in taxonomy_ids]
-            groups = [group for group in groups if group.competency_id in competency_ids]
-            group_ids = {group.id for group in groups}
-            criteria = [criterion for criterion in criteria if criterion.group_id in group_ids]
-            page = self.paginator.page
-            pagination = {
-                "count": page.paginator.count,
-                "num_pages": page.paginator.num_pages,
-                "current_page": page.number,
-                "next": self.paginator.get_next_link(),
-                "previous": self.paginator.get_previous_link(),
-            }
-        return Response({
-            "taxonomies": [asdict(taxonomy) for taxonomy in taxonomies],
-            "competencies": [asdict(competency) for competency in competencies],
-            "groups": [asdict(group) for group in groups],
-            "criteria": [asdict(criterion) for criterion in criteria],
-            **pagination,
         })
 
 

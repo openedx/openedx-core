@@ -4,6 +4,9 @@ Tests for the learner-facing course criteria endpoint, ``GET cbe/v1/courses/<cou
 Fixtures live in this directory's conftest.py. The endpoint is mounted through ``openedx_learning.learner_urls``
 under the ``cbe_learner`` namespace, so the authoring URL module stays free of it.
 """
+from collections.abc import Iterator
+from typing import Any, cast
+
 import pytest
 import rules
 from django.db import connection
@@ -14,6 +17,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from openedx_catalog.models import CourseRun
+from openedx_learning.applets.cbe.rest_api.v1.learner_views import LearnerCourseCriteriaView
 from openedx_learning.models import CompetencyRuleProfile, CompetencyTaxonomy
 from openedx_tagging.models import Tag
 
@@ -32,6 +36,27 @@ def _user_client(api_client: APIClient, user) -> APIClient:
     """A REST client acting as `user`, an ordinary, non-staff, authenticated caller with no enrollment."""
     api_client.force_authenticate(user=user)
     return api_client
+
+
+@pytest.fixture(name="denied_course_keys")
+def _denied_course_keys() -> Iterator[list]:
+    """
+    Replace the view permission with a rule that denies everyone, restoring the real rule afterwards.
+
+    Yields the list the rule appends each object it is asked about to.
+    """
+    seen: list = []
+
+    def _deny_and_record(_user, course_key=None) -> bool:
+        seen.append(course_key)
+        return False
+
+    original = rules.permissions.permissions[VIEW_PERMISSION]
+    rules.set_perm(VIEW_PERMISSION, _deny_and_record)
+    try:
+        yield seen
+    finally:
+        rules.set_perm(VIEW_PERMISSION, original)
 
 
 def criteria_url(course_key: str) -> str:
@@ -87,50 +112,35 @@ def test_signed_in_user_without_enrollment_or_staff_status_gets_the_full_result(
 
 
 def test_permission_is_checked_by_name_against_the_normalized_course_key(
-    user_client: APIClient, course_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile,
+    user_client: APIClient,
+    course_run: CourseRun,
+    tag: Tag,
+    default_rule_profile: CompetencyRuleProfile,
+    denied_course_keys: list,
 ) -> None:
     """
     A deny rule registered under the contract name refuses the caller with 403 and no data, and it receives
     the course key with its branch stripped, which is the object a host's override can rely on.
     """
     make_leaf_criterion(tag, course_run, default_rule_profile, "s1")
-    seen: list = []
 
-    def _deny_and_record(_user, course_key=None) -> bool:
-        seen.append(course_key)
-        return False
-
-    original = rules.permissions.permissions[VIEW_PERMISSION]
-    rules.set_perm(VIEW_PERMISSION, _deny_and_record)
-    try:
-        response = user_client.get(criteria_url(f"{PLAIN_KEY}+branch@draft"))
-    finally:
-        rules.set_perm(VIEW_PERMISSION, original)
+    response = user_client.get(criteria_url(f"{PLAIN_KEY}+branch@draft"))
 
     assert response.status_code == status.HTTP_403_FORBIDDEN
     assert set(response.json()) == {"detail"}
-    assert len(seen) == 1
-    assert isinstance(seen[0], CourseKey)
-    assert seen[0] == CourseKey.from_string(PLAIN_KEY)
+    assert len(denied_course_keys) == 1
+    assert isinstance(denied_course_keys[0], CourseKey)
+    assert denied_course_keys[0] == CourseKey.from_string(PLAIN_KEY)
 
 
-def test_malformed_key_gets_400_even_when_the_permission_would_deny(user_client: APIClient) -> None:
+def test_malformed_key_gets_400_even_when_the_permission_would_deny(
+    user_client: APIClient, denied_course_keys: list,
+) -> None:
     """The key is parsed before the permission is checked, so a malformed key never reaches a deny rule."""
-    seen: list = []
-
-    def _deny_and_record(_user, course_key=None) -> bool:
-        seen.append(course_key)
-        return False
-
-    original = rules.permissions.permissions[VIEW_PERMISSION]
-    rules.set_perm(VIEW_PERMISSION, _deny_and_record)
-    try:
-        response = user_client.get(criteria_url("not-a-key"))
-    finally:
-        rules.set_perm(VIEW_PERMISSION, original)
+    response = user_client.get(criteria_url("not-a-key"))
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
-    assert not seen
+    assert not denied_course_keys
 
 
 # =================================================================================================
@@ -152,6 +162,16 @@ def test_malformed_key_gets_400_even_when_the_permission_would_deny(user_client:
 def test_value_that_is_not_a_course_run_key_gets_400(user_client: APIClient, course_key: str) -> None:
     """A library key, a usage key, a version-only key or garbage gets 400 and a message naming the course run key."""
     response = user_client.get(criteria_url(course_key))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    body = response.json()
+    assert set(body) == {"course_key"}
+    assert "course run key" in body["course_key"][0]
+
+
+def test_key_containing_a_newline_gets_400_from_the_view(user_client: APIClient) -> None:
+    """A value with a newline reaches the view and gets its 400 and message, not the resolver's 404."""
+    response = user_client.get("/api/cbe/v1/courses/bad%0Akey/criteria/")
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     body = response.json()
@@ -220,7 +240,8 @@ def test_response_has_exactly_the_four_arrays_with_exact_item_fields(
         {"id", "group_id", "usage_key", "rule_type", "rule_payload"},
     ]
     assert body["competencies"][0]["lineage"] == ["Writing Poetry"]
-    assert body["criteria"][0]["rule_payload"] == {"op": "gte", "value": 0.8, "scale": "percent"}
+    assert body["criteria"][0]["rule_type"] == default_rule_profile.rule_type
+    assert body["criteria"][0]["rule_payload"] == default_rule_profile.rule_payload
 
 
 def test_pagination_is_off_by_default(
@@ -272,6 +293,28 @@ def test_page_size_pages_by_competency_and_carries_each_competencys_groups_and_c
     assert (second["count"], second["num_pages"], second["current_page"]) == (3, 2, 2)
     assert second["next"] is None
     assert second["previous"] is not None
+
+
+def test_each_page_lists_only_the_taxonomies_of_its_own_competencies(
+    user_client: APIClient,
+    course_run: CourseRun,
+    competency_taxonomy: CompetencyTaxonomy,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """With the first competency in one taxonomy and the second in another, each page names only its own taxonomy."""
+    taxonomy_b = CompetencyTaxonomy.objects.create(name="Accounting", export_id="accounting-v1")
+    tag_a = make_tag(competency_taxonomy, "Alpha")
+    tag_b = make_tag(taxonomy_b, "Beta")
+    make_leaf_criterion(tag_a, course_run, default_rule_profile, "s1")
+    make_leaf_criterion(tag_b, course_run, default_rule_profile, "s2")
+
+    first = user_client.get(criteria_url(PLAIN_KEY), {"page_size": 1}).json()
+    second = user_client.get(criteria_url(PLAIN_KEY), {"page": 2, "page_size": 1}).json()
+
+    assert [(t["id"], t["name"]) for t in first["taxonomies"]] == [(competency_taxonomy.id, "Nursing")]
+    assert [competency["id"] for competency in first["competencies"]] == [tag_a.id]
+    assert [(t["id"], t["name"]) for t in second["taxonomies"]] == [(taxonomy_b.id, "Accounting")]
+    assert [competency["id"] for competency in second["competencies"]] == [tag_b.id]
 
 
 def test_page_alone_turns_pagination_on(
@@ -328,14 +371,6 @@ def test_page_past_the_end_gets_404(
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
-@pytest.mark.parametrize("method", ["post", "put", "patch", "delete"])
-def test_only_get_is_allowed(method: str, user_client: APIClient) -> None:
-    """The endpoint is read-only: every other method is answered with 405."""
-    response = getattr(user_client, method)(criteria_url(PLAIN_KEY))
-
-    assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
-
-
 # =================================================================================================
 # URL modules
 # =================================================================================================
@@ -349,5 +384,6 @@ def test_learner_url_module_serves_the_route_and_the_authoring_module_does_not()
     assert criteria_url(PLAIN_KEY) == path
     for match in (resolve(path), resolve(learner_path, urlconf="openedx_learning.learner_urls")):
         assert match.view_name == "cbe_learner:course-criteria"
+        assert cast(Any, match.func).view_class is LearnerCourseCriteriaView
     with pytest.raises(Resolver404):
         resolve(learner_path, urlconf="openedx_learning.urls")

@@ -1,8 +1,7 @@
 """
 Tests for get_course_competency_criteria(), the course-run read of competency criteria (#733).
 
-Fixtures live in this directory's conftest.py. The result types are reached through module attributes
-(``cbe_data``, ``cbe_api``) so that each test fails on its own while those names are missing.
+Fixtures live in this directory's conftest.py.
 """
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -17,9 +16,14 @@ from rules.permissions import permissions as rule_permissions
 
 from openedx_catalog.models import CourseRun
 from openedx_learning.api import delete_or_archive_competency_criteria_group, delete_or_archive_competency_criterion
-from openedx_learning.applets.cbe import api as cbe_api
-from openedx_learning.applets.cbe import data as cbe_data
-from openedx_learning.applets.cbe.api import _create_leaf_group
+from openedx_learning.applets.cbe.api import _create_leaf_group, get_course_competency_criteria
+from openedx_learning.applets.cbe.data import (
+    LearnerCompetency,
+    LearnerCourseCriteria,
+    LearnerCriteriaGroup,
+    LearnerCriterion,
+    LearnerTaxonomy,
+)
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
     CompetencyCriterion,
@@ -36,9 +40,6 @@ from .utils import make_course_run, make_tag, usage_key
 pytestmark = pytest.mark.django_db
 
 CHANGE_OBJECTTAG_OBJECTID = "oel_tagging.change_objecttag_objectid"
-
-# What migration 0005 seeds the system default rule profile with.
-SEEDED_GRADE_PAYLOAD = {"op": "gte", "value": 0.8, "scale": "percent"}
 
 
 @pytest.fixture(autouse=True)
@@ -143,7 +144,7 @@ def _assert_references_resolve(result) -> None:
 
 def _empty_result():
     """Return the result for a course run with no criteria."""
-    return cbe_data.CourseCompetencyCriteria(taxonomies=[], competencies=[], groups=[], criteria=[])
+    return LearnerCourseCriteria(taxonomies=[], competencies=[], groups=[], criteria=[])
 
 
 # =================================================================================================
@@ -160,13 +161,14 @@ def test_full_reassembly_returns_every_array_with_exact_fields(
     """
     tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Writing Poetry", external_id="WP-101")
     branch = _make_branch(tag, course_run, default_rule_profile, ["s1", "s2"])
+    CompetencyCriteriaGroup.objects.filter(pk=branch.leaf.pk).update(ordering=3)
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
-    assert result == cbe_data.CourseCompetencyCriteria(
-        taxonomies=[cbe_data.CourseCriteriaTaxonomy(id=competency_taxonomy.id, name="Nursing")],
+    assert result == LearnerCourseCriteria(
+        taxonomies=[LearnerTaxonomy(id=competency_taxonomy.id, name="Nursing")],
         competencies=[
-            cbe_data.CourseCriteriaCompetency(
+            LearnerCompetency(
                 id=tag.id,
                 name="Writing Poetry",
                 external_id="WP-101",
@@ -175,7 +177,7 @@ def test_full_reassembly_returns_every_array_with_exact_fields(
             ),
         ],
         groups=[
-            cbe_data.CourseCriteriaGroup(
+            LearnerCriteriaGroup(
                 id=branch.root.id,
                 competency_id=tag.id,
                 parent_id=None,
@@ -183,7 +185,7 @@ def test_full_reassembly_returns_every_array_with_exact_fields(
                 logic_operator=None,
                 ordering=0,
             ),
-            cbe_data.CourseCriteriaGroup(
+            LearnerCriteriaGroup(
                 id=branch.course_level.id,
                 competency_id=tag.id,
                 parent_id=branch.root.id,
@@ -191,22 +193,22 @@ def test_full_reassembly_returns_every_array_with_exact_fields(
                 logic_operator=None,
                 ordering=0,
             ),
-            cbe_data.CourseCriteriaGroup(
+            LearnerCriteriaGroup(
                 id=branch.leaf.id,
                 competency_id=tag.id,
                 parent_id=branch.course_level.id,
                 name="",
                 logic_operator="OR",
-                ordering=0,
+                ordering=3,
             ),
         ],
         criteria=[
-            cbe_data.CourseCriteriaCriterion(
+            LearnerCriterion(
                 id=criterion.id,
                 group_id=branch.leaf.id,
                 usage_key=usage_key(course_run, block_id),
                 rule_type="Grade",
-                rule_payload=SEEDED_GRADE_PAYLOAD,
+                rule_payload=default_rule_profile.rule_payload,
             )
             for criterion, block_id in zip(branch.criteria, ["s1", "s2"], strict=True)
         ],
@@ -231,8 +233,8 @@ def test_shared_root_returns_only_the_requested_courses_branch(
     branch_only_y = _make_branch(only_in_y, course_y, default_rule_profile, ["y2"])
     assert branch_x.root.id == branch_y.root.id
 
-    result_x = cbe_api.get_course_competency_criteria(_course_key(course_run))
-    result_y = cbe_api.get_course_competency_criteria(_course_key(course_y))
+    result_x = get_course_competency_criteria(_course_key(course_run))
+    result_y = get_course_competency_criteria(_course_key(course_y))
 
     assert _ids(result_x.competencies) == [tag.id]
     assert _ids(result_x.groups) == [branch_x.root.id, branch_x.course_level.id, branch_x.leaf.id]
@@ -264,7 +266,7 @@ def test_competency_taxonomies_are_listed_and_other_taxonomies_are_not(
     for block_id in ["s1", "s2"]:
         ObjectTag.objects.create(object_id=usage_key(course_run, block_id), taxonomy=topics, tag=topic_tag)
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert {taxonomy.id: taxonomy.name for taxonomy in result.taxonomies} == {
         competency_taxonomy.id: "Nursing", taxonomy_b.id: "Accounting",
@@ -288,7 +290,7 @@ def test_competency_lineage_runs_from_the_taxonomy_top_down_to_the_tag(
     _make_branch(skills.root_cause, course_run, default_rule_profile, ["s1"])
     _make_branch(skills.communication, course_run, default_rule_profile, ["s2"])
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert {competency.name: competency.lineage for competency in result.competencies} == {
         "Root Cause Analysis": ["Problem Solving", "Problem Definition", "Root Cause Analysis"],
@@ -304,34 +306,28 @@ def test_rule_from_the_system_default_profile(
     default_rule_profile.save()
     _make_branch(tag, course_run, default_rule_profile, ["s1"])
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert [(c.rule_type, c.rule_payload) for c in result.criteria] == [
         ("Grade", {"op": "gte", "value": 0.75, "scale": "percent"}),
     ]
 
 
-def test_rule_from_the_criterion_override(course_run: CourseRun, tag: Tag) -> None:
-    """A criterion with no profile reports its own override type and payload."""
-    leaf = _create_leaf_group(tag, course_run)
-    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "s1"), taxonomy=tag.taxonomy, tag=tag)
-    CompetencyCriterion.objects.create(
-        group=leaf,
-        object_tag=object_tag,
-        rule_profile=None,
-        rule_type_override=RuleType.GRADE,
-        rule_payload_override={"op": "gte", "value": 0.82, "scale": "percent"},
-    )
-
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
-
-    assert [(c.rule_type, c.rule_payload) for c in result.criteria] == [
+@pytest.mark.parametrize(
+    ("rule_type", "rule_payload"),
+    [
         ("Grade", {"op": "gte", "value": 0.82, "scale": "percent"}),
-    ]
-
-
-def test_unknown_rule_type_is_returned_verbatim(course_run: CourseRun, tag: Tag) -> None:
-    """A rule type and payload the validators don't know, stored by bypassing validation, are reported unchanged."""
+        ("Novel", {"depth": 3, "tags": ["a", "b"]}),
+    ],
+    ids=["known rule type", "unknown rule type"],
+)
+def test_rule_from_the_criterion_override_is_returned_as_stored(
+    rule_type: str, rule_payload: dict, course_run: CourseRun, tag: Tag,
+) -> None:
+    """
+    A criterion with no profile reports its own override type and payload exactly as stored, including
+    a rule type and payload the validators don't know, written by bypassing validation.
+    """
     leaf = _create_leaf_group(tag, course_run)
     object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "s1"), taxonomy=tag.taxonomy, tag=tag)
     criterion = CompetencyCriterion.objects.create(
@@ -339,17 +335,15 @@ def test_unknown_rule_type_is_returned_verbatim(course_run: CourseRun, tag: Tag)
         object_tag=object_tag,
         rule_profile=None,
         rule_type_override=RuleType.GRADE,
-        rule_payload_override={"op": "gte", "value": 0.82, "scale": "percent"},
+        rule_payload_override={"op": "gte", "value": 0.5, "scale": "percent"},
     )
     CompetencyCriterion.objects.filter(pk=criterion.pk).update(
-        rule_type_override="Novel", rule_payload_override={"depth": 3, "tags": ["a", "b"]},
+        rule_type_override=rule_type, rule_payload_override=rule_payload,
     )
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
-    assert [(c.rule_type, c.rule_payload) for c in result.criteria] == [
-        ("Novel", {"depth": 3, "tags": ["a", "b"]}),
-    ]
+    assert [(c.rule_type, c.rule_payload) for c in result.criteria] == [(rule_type, rule_payload)]
 
 
 def test_rule_of_an_archived_profile_is_still_reported(
@@ -365,7 +359,7 @@ def test_rule_of_an_archived_profile_is_still_reported(
     profile.archived = True
     profile.save()
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert _ids(result.criteria) == [branch.criteria[0].id]
     assert [(c.rule_type, c.rule_payload) for c in result.criteria] == [
@@ -396,7 +390,7 @@ def test_result_order_is_deterministic(
     criterion_early_1 = _add_criterion(early_1, tag_a, course_run, "a3", default_rule_profile)
     criterion_early_2 = _add_criterion(early_2, tag_a, course_run, "a4", default_rule_profile)
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert _ids(result.taxonomies) == [competency_taxonomy.id, taxonomy_b.id]
     assert _ids(result.competencies) == [tag_z.id, tag_a.id]
@@ -409,7 +403,7 @@ def test_result_order_is_deterministic(
         branch_z.criteria[0].id, branch_a.criteria[0].id,
         criterion_late.id, criterion_early_1.id, criterion_early_2.id,
     ]
-    assert cbe_api.get_course_competency_criteria(_course_key(course_run)) == result
+    assert get_course_competency_criteria(_course_key(course_run)) == result
 
 
 def test_group_nested_under_a_bottom_tier_group_is_returned_with_its_parent(
@@ -420,7 +414,7 @@ def test_group_nested_under_a_bottom_tier_group_is_returned_with_its_parent(
     nested = CompetencyCriteriaGroup.objects.create(tag=tag, parent=branch.leaf)
     nested_criterion = _add_criterion(nested, tag, course_run, "s2", default_rule_profile)
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert {group.id: group.parent_id for group in result.groups} == {
         branch.root.id: None,
@@ -433,6 +427,40 @@ def test_group_nested_under_a_bottom_tier_group_is_returned_with_its_parent(
     }
 
 
+def test_bottom_tier_group_with_a_tag_other_than_the_roots_is_returned_with_its_criterion(
+    course_run: CourseRun,
+    competency_taxonomy: CompetencyTaxonomy,
+    tag: Tag,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A group below this run's course-level group is found through its parent, whatever tag it carries."""
+    other_tag = make_tag(competency_taxonomy, "Reading Poetry")
+    branch = _make_branch(tag, course_run, default_rule_profile, ["s1"])
+    odd_group = CompetencyCriteriaGroup.objects.create(tag=other_tag, parent=branch.course_level)
+    odd_criterion = _add_criterion(odd_group, other_tag, course_run, "s2", default_rule_profile)
+
+    result = get_course_competency_criteria(_course_key(course_run))
+
+    assert odd_group.id in _ids(result.groups)
+    assert _ids(result.criteria) == [branch.criteria[0].id, odd_criterion.id]
+    assert {group.competency_id for group in result.groups} == {tag.id}
+    _assert_references_resolve(result)
+
+
+def test_group_below_the_course_level_group_is_returned_even_when_it_has_a_course(
+    course_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A group below this run's course-level group is found through its parent, whether or not it has a course."""
+    branch = _make_branch(tag, course_run, default_rule_profile, ["s1"])
+    scoped_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=branch.course_level, course=course_run)
+    scoped_criterion = _add_criterion(scoped_group, tag, course_run, "s2", default_rule_profile)
+
+    result = get_course_competency_criteria(_course_key(course_run))
+
+    assert scoped_group.id in _ids(result.groups)
+    assert _ids(result.criteria) == [branch.criteria[0].id, scoped_criterion.id]
+
+
 def test_criterion_on_the_course_level_group_is_returned_and_one_on_the_root_is_not(
     course_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
@@ -441,7 +469,7 @@ def test_criterion_on_the_course_level_group_is_returned_and_one_on_the_root_is_
     on_course_level = _add_criterion(branch.course_level, tag, course_run, "s1", default_rule_profile)
     _add_criterion(branch.root, tag, course_run, "s2", default_rule_profile)
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert _ids(result.criteria) == [on_course_level.id]
     assert result.criteria[0].group_id == branch.course_level.id
@@ -465,15 +493,17 @@ def test_criterion_archived_through_the_authoring_api_is_left_out_and_its_siblin
     outcome = delete_or_archive_competency_criterion(archived.id, user)
     assert outcome.archived is True
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert _ids(result.criteria) == [sibling.id]
     assert _ids(result.groups) == [branch.root.id, branch.course_level.id, branch.leaf.id]
 
 
 @pytest.mark.parametrize("target_name", ["bottom_tier", "course_level"])
-def test_group_archived_through_the_authoring_api_hides_its_whole_subtree(
+@pytest.mark.parametrize("archived_by", ["authoring api", "flag only"])
+def test_archived_group_hides_its_whole_subtree(
     target_name: str,
+    archived_by: str,
     *,
     user,
     now: datetime,
@@ -483,51 +513,10 @@ def test_group_archived_through_the_authoring_api_hides_its_whole_subtree(
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
-    Archiving a bottom-tier group removes it, its nested groups and their criteria while the rest of
-    the competency stays. Archiving the course-level group removes that competency and its root, and the
-    other competency stays. No returned item names a parent that was left out.
-    """
-    other_tag = make_tag(competency_taxonomy, "Reading Poetry")
-    branch = _make_branch(tag, course_run, default_rule_profile, ["a1"])
-    nested = CompetencyCriteriaGroup.objects.create(tag=tag, parent=branch.leaf)
-    _add_criterion(nested, tag, course_run, "a2", default_rule_profile)
-    sibling_leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=branch.course_level)
-    sibling_criterion = _add_criterion(sibling_leaf, tag, course_run, "a3", default_rule_profile)
-    other = _make_branch(other_tag, course_run, default_rule_profile, ["b1"])
-    StudentCompetencyCriterionStatus.objects.create(
-        user=user, criterion=branch.criteria[0], status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
-    )
-    target = branch.leaf if target_name == "bottom_tier" else branch.course_level
-    outcome = delete_or_archive_competency_criteria_group(target.id, user)
-    assert outcome.archived is True
-
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
-
-    other_group_ids = {other.root.id, other.course_level.id, other.leaf.id}
-    if target_name == "bottom_tier":
-        assert _ids(result.competencies) == [tag.id, other_tag.id]
-        assert {group.id for group in result.groups} == (
-            {branch.root.id, branch.course_level.id, sibling_leaf.id} | other_group_ids
-        )
-        assert _ids(result.criteria) == [sibling_criterion.id, other.criteria[0].id]
-    else:
-        assert _ids(result.competencies) == [other_tag.id]
-        assert {group.id for group in result.groups} == other_group_ids
-        assert _ids(result.criteria) == [other.criteria[0].id]
-    _assert_references_resolve(result)
-
-
-@pytest.mark.parametrize("archived_group_name", ["bottom_tier", "course_level"])
-def test_archived_flag_on_an_upper_group_hides_live_descendants(
-    archived_group_name: str,
-    course_run: CourseRun,
-    competency_taxonomy: CompetencyTaxonomy,
-    tag: Tag,
-    default_rule_profile: CompetencyRuleProfile,
-) -> None:
-    """
-    With only the flag set on an upper group, as when the archive cascade did not run, its live
-    descendants and their live criteria are still left out of the result.
+    An archived bottom-tier group removes it, its nested groups and their criteria while the rest of
+    the competency stays. An archived course-level group removes that competency and its root, and the
+    other competency stays. The same holds when only the archived flag is set on the group, leaving its
+    descendants live. No returned item names a parent that was left out.
     """
     other_tag = make_tag(competency_taxonomy, "Reading Poetry")
     branch = _make_branch(tag, course_run, default_rule_profile, ["a1"])
@@ -536,15 +525,22 @@ def test_archived_flag_on_an_upper_group_hides_live_descendants(
     sibling_leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=branch.course_level)
     sibling_criterion = _add_criterion(sibling_leaf, tag, course_run, "a3", default_rule_profile)
     other = _make_branch(other_tag, course_run, default_rule_profile, ["b1"])
-    archived_group = branch.leaf if archived_group_name == "bottom_tier" else branch.course_level
-    CompetencyCriteriaGroup.objects.filter(pk=archived_group.pk).update(archived=True)
-    assert CompetencyCriteriaGroup.objects.filter(pk=nested.pk, archived=False).exists()
-    assert CompetencyCriterion.objects.filter(pk=nested_criterion.pk, archived=False).exists()
+    target = branch.leaf if target_name == "bottom_tier" else branch.course_level
+    if archived_by == "authoring api":
+        StudentCompetencyCriterionStatus.objects.create(
+            user=user, criterion=branch.criteria[0], status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+        )
+        assert delete_or_archive_competency_criteria_group(target.id, user).archived is True
+    else:
+        CompetencyCriteriaGroup.objects.filter(pk=target.pk).update(archived=True)
+        assert CompetencyCriteriaGroup.objects.filter(pk=nested.pk, archived=False).exists()
+        assert CompetencyCriterion.objects.filter(pk=nested_criterion.pk, archived=False).exists()
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     other_group_ids = {other.root.id, other.course_level.id, other.leaf.id}
-    if archived_group_name == "bottom_tier":
+    if target_name == "bottom_tier":
+        assert _ids(result.competencies) == [tag.id, other_tag.id]
         assert {group.id for group in result.groups} == (
             {branch.root.id, branch.course_level.id, sibling_leaf.id} | other_group_ids
         )
@@ -569,14 +565,17 @@ def test_archived_flag_on_a_root_group_hides_the_whole_competency(
     CompetencyCriteriaGroup.objects.filter(pk=branch.root.pk).update(archived=True)
     assert CompetencyCriteriaGroup.objects.filter(pk=branch.leaf.pk, archived=False).exists()
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert _ids(result.competencies) == [other_tag.id]
     assert _ids(result.groups) == [other.root.id, other.course_level.id, other.leaf.id]
     assert _ids(result.criteria) == [other.criteria[0].id]
 
 
-@pytest.mark.parametrize("condition", ["tag archived", "taxonomy archived", "taxonomy disabled"])
+@pytest.mark.parametrize(
+    "condition",
+    ["tag archived", "taxonomy archived", "taxonomy disabled", "parent tag archived", "grandparent tag archived"],
+)
 def test_competency_in_an_unavailable_tag_or_taxonomy_is_left_out(
     condition: str,
     *,
@@ -587,8 +586,9 @@ def test_competency_in_an_unavailable_tag_or_taxonomy_is_left_out(
     default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """
-    An archived tag, an archived taxonomy whose tags are not archived, or a disabled taxonomy removes
-    the competency in that taxonomy with everything beneath it, and the other taxonomy's competency stays.
+    An archived tag, an archived parent or grandparent tag above a live tag, an archived taxonomy whose
+    tags are not archived, or a disabled taxonomy removes the competency with everything beneath it,
+    and the other taxonomy's competency stays.
     """
     _make_branch(skills.root_cause, course_run, default_rule_profile, ["s1"])
     kept = _make_branch(skills.communication, course_run, default_rule_profile, ["s2"])
@@ -596,10 +596,14 @@ def test_competency_in_an_unavailable_tag_or_taxonomy_is_left_out(
         Tag.objects.filter(pk=skills.root_cause.pk).update(archived=True)
     elif condition == "taxonomy archived":
         Taxonomy.objects.filter(pk=competency_taxonomy.pk).update(archived=True)
-    else:
+    elif condition == "taxonomy disabled":
         Taxonomy.objects.filter(pk=competency_taxonomy.pk).update(enabled=False)
+    else:
+        ancestor = skills.problem_definition if condition == "parent tag archived" else skills.problem_solving
+        Tag.objects.filter(pk=ancestor.pk).update(archived=True)
+        assert Tag.objects.filter(pk=skills.root_cause.pk, archived=False).exists()
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert _ids(result.taxonomies) == [taxonomy_b.id]
     assert _ids(result.competencies) == [skills.communication.id]
@@ -607,25 +611,23 @@ def test_competency_in_an_unavailable_tag_or_taxonomy_is_left_out(
     assert _ids(result.criteria) == [kept.criteria[0].id]
 
 
-@pytest.mark.parametrize("archived_ancestor", ["problem_definition", "problem_solving"])
-def test_competency_under_an_archived_ancestor_tag_is_left_out(
-    archived_ancestor: str,
-    course_run: CourseRun,
-    taxonomy_b: CompetencyTaxonomy,
-    skills: Skills,
-    default_rule_profile: CompetencyRuleProfile,
+def test_groups_and_criteria_on_a_tag_of_a_plain_taxonomy_are_not_returned(
+    course_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """A live competency tag with an archived parent, or an archived grandparent, is left out."""
-    _make_branch(skills.root_cause, course_run, default_rule_profile, ["s1"])
-    kept = _make_branch(skills.communication, course_run, default_rule_profile, ["s2"])
-    Tag.objects.filter(pk=getattr(skills, archived_ancestor).pk).update(archived=True)
-    assert Tag.objects.filter(pk=skills.root_cause.pk, archived=False).exists()
+    """A complete branch with a criterion on a tag of a plain taxonomy, not a competency taxonomy, is left out."""
+    kept = _make_branch(tag, course_run, default_rule_profile, ["s1"])
+    topics = Taxonomy.objects.create(name="Topics")
+    topic_tag = Tag.objects.create(taxonomy=topics, value="Poetry")
+    topic_root = CompetencyCriteriaGroup.objects.create(tag=topic_tag)
+    topic_course_level = CompetencyCriteriaGroup.objects.create(tag=topic_tag, parent=topic_root, course=course_run)
+    topic_leaf = CompetencyCriteriaGroup.objects.create(tag=topic_tag, parent=topic_course_level)
+    _add_criterion(topic_leaf, topic_tag, course_run, "s2", default_rule_profile)
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
-    assert _ids(result.taxonomies) == [taxonomy_b.id]
-    assert _ids(result.competencies) == [skills.communication.id]
+    assert _ids(result.competencies) == [tag.id]
     assert _ids(result.groups) == [kept.root.id, kept.course_level.id, kept.leaf.id]
+    assert _ids(result.criteria) == [kept.criteria[0].id]
 
 
 def test_criterion_with_an_archived_object_tag_is_left_out(
@@ -636,7 +638,7 @@ def test_criterion_with_an_archived_object_tag_is_left_out(
     hidden, sibling = branch.criteria
     ObjectTag.objects.filter(pk=hidden.object_tag_id).update(archived=True)
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert _ids(result.criteria) == [sibling.id]
     assert _ids(result.groups) == [branch.root.id, branch.course_level.id, branch.leaf.id]
@@ -651,10 +653,33 @@ def test_group_whose_only_criterion_is_archived_is_pruned(
     sibling_criterion = _add_criterion(sibling_leaf, tag, course_run, "s2", default_rule_profile)
     CompetencyCriterion.objects.filter(pk=branch.criteria[0].pk).update(archived=True)
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert _ids(result.groups) == [branch.root.id, branch.course_level.id, sibling_leaf.id]
     assert _ids(result.criteria) == [sibling_criterion.id]
+
+
+@pytest.mark.parametrize("exclusion", ["criterion archived", "object tag archived"])
+def test_competency_whose_only_criterion_is_excluded_is_pruned_with_its_unarchived_groups(
+    exclusion: str, course_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A competency whose single criterion is excluded, while its root, course-level and bottom-tier groups
+    stay unarchived, leaves nothing to return: the competency, its groups and its taxonomy are pruned.
+    """
+    branch = _make_branch(tag, course_run, default_rule_profile, ["s1"])
+    criterion = branch.criteria[0]
+    if exclusion == "criterion archived":
+        CompetencyCriterion.objects.filter(pk=criterion.pk).update(archived=True)
+    else:
+        ObjectTag.objects.filter(pk=criterion.object_tag_id).update(archived=True)
+    assert CompetencyCriteriaGroup.objects.filter(
+        pk__in=[branch.root.pk, branch.course_level.pk, branch.leaf.pk], archived=False,
+    ).count() == 3
+
+    result = get_course_competency_criteria(_course_key(course_run))
+
+    assert result == _empty_result()
 
 
 @pytest.mark.parametrize("cause", ["all criteria archived", "taxonomy disabled"])
@@ -679,7 +704,7 @@ def test_course_left_with_nothing_returns_empty_arrays(
     else:
         Taxonomy.objects.filter(pk=competency_taxonomy.pk).update(enabled=False)
 
-    result = cbe_api.get_course_competency_criteria(_course_key(course_run))
+    result = get_course_competency_criteria(_course_key(course_run))
 
     assert result == _empty_result()
 
@@ -699,7 +724,7 @@ def test_course_with_no_criteria_or_no_course_run_returns_empty_arrays(
         "course-v1:Org1+Unknown999+Never2026"
     )
 
-    result = cbe_api.get_course_competency_criteria(key)
+    result = get_course_competency_criteria(key)
 
     assert result == _empty_result()
 
@@ -708,8 +733,9 @@ def test_course_with_no_criteria_or_no_course_run_returns_empty_arrays(
 # Query counts
 # =================================================================================================
 
-# Course-level groups (with tag, taxonomy and ancestor-tag checks joined in), descendant groups, then criteria.
-FIXED_QUERY_COUNT = 3
+# For a root, a course-level group and a bottom-tier group: the course-level groups (with tag, taxonomy and
+# ancestor-tag checks joined in), the bottom-tier groups, the empty level below them, then the criteria.
+QUERY_COUNT_FOR_ONE_BOTTOM_TIER_LEVEL = 4
 
 
 def test_course_without_criteria_costs_one_query(course_run: CourseRun, django_assert_num_queries) -> None:
@@ -717,22 +743,9 @@ def test_course_without_criteria_costs_one_query(course_run: CourseRun, django_a
     key = _course_key(course_run)
 
     with django_assert_num_queries(1):
-        result = cbe_api.get_course_competency_criteria(key)
+        result = get_course_competency_criteria(key)
 
     assert result == _empty_result()
-
-
-def test_one_criterion_on_a_top_level_tag_costs_the_fixed_count(
-    course_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile, django_assert_num_queries,
-) -> None:
-    """The count does not depend on the competency tag's depth: a top-level tag costs the same as a nested one."""
-    _make_branch(tag, course_run, default_rule_profile, ["s1"])
-    key = _course_key(course_run)
-
-    with django_assert_num_queries(FIXED_QUERY_COUNT):
-        result = cbe_api.get_course_competency_criteria(key)
-
-    assert len(result.criteria) == 1
 
 
 def test_query_count_stays_fixed_as_the_course_grows(
@@ -743,16 +756,16 @@ def test_query_count_stays_fixed_as_the_course_grows(
     django_assert_num_queries,
 ) -> None:
     """
-    One criterion on a nested competency costs the same number of queries as a course with several
-    taxonomies, competencies, multi-level groups, many criteria, nested tags and an archived parent tag.
+    One criterion on a nested competency costs the same number of queries as a course of the same depth
+    with several taxonomies, competencies, groups and criteria, nested tags and an archived parent tag.
     """
     key = _course_key(course_run)
     parent = make_tag(competency_taxonomy, "Problem Solving")
     first_tag = make_tag(competency_taxonomy, "Problem Definition", parent=parent)
     _make_branch(first_tag, course_run, default_rule_profile, ["first"])
 
-    with django_assert_num_queries(FIXED_QUERY_COUNT):
-        small = cbe_api.get_course_competency_criteria(key)
+    with django_assert_num_queries(QUERY_COUNT_FOR_ONE_BOTTOM_TIER_LEVEL):
+        small = get_course_competency_criteria(key)
     assert len(small.criteria) == 1
 
     taxonomies = [competency_taxonomy, taxonomy_b, CompetencyTaxonomy.objects.create(name="Law", export_id="law-v1")]
@@ -762,17 +775,59 @@ def test_query_count_stays_fixed_as_the_course_grows(
         for c_index in range(3):
             competency = make_tag(taxonomy, f"Skill {t_index}-{c_index}", parent=middle)
             branch = _make_branch(competency, course_run, default_rule_profile, [f"t{t_index}c{c_index}a"])
-            nested = CompetencyCriteriaGroup.objects.create(tag=competency, parent=branch.leaf)
-            _add_criterion(nested, competency, course_run, f"t{t_index}c{c_index}b", default_rule_profile)
-            _add_criterion(nested, competency, course_run, f"t{t_index}c{c_index}c", default_rule_profile)
+            sibling = CompetencyCriteriaGroup.objects.create(tag=competency, parent=branch.course_level)
+            _add_criterion(sibling, competency, course_run, f"t{t_index}c{c_index}b", default_rule_profile)
+            _add_criterion(sibling, competency, course_run, f"t{t_index}c{c_index}c", default_rule_profile)
     retired_parent = make_tag(competency_taxonomy, "Retired Parent")
     retired_child = make_tag(competency_taxonomy, "Child Of Retired", parent=retired_parent)
     _make_branch(retired_child, course_run, default_rule_profile, ["retired"])
     Tag.objects.filter(pk=retired_parent.pk).update(archived=True)
 
-    with django_assert_num_queries(FIXED_QUERY_COUNT):
-        big = cbe_api.get_course_competency_criteria(key)
+    with django_assert_num_queries(QUERY_COUNT_FOR_ONE_BOTTOM_TIER_LEVEL):
+        big = get_course_competency_criteria(key)
 
     assert len(big.competencies) == 10
     assert len(big.criteria) == 1 + 9 * 3
     assert len(big.taxonomies) == 3
+
+
+@pytest.mark.parametrize("other_run_count", [1, 5])
+def test_query_count_does_not_grow_with_other_course_runs_using_the_same_competency(
+    other_run_count: int,
+    *,
+    course_run: CourseRun,
+    organization: Organization,
+    tag: Tag,
+    default_rule_profile: CompetencyRuleProfile,
+    django_assert_num_queries,
+) -> None:
+    """Branches that other course runs hang under the same root are not read, so they cost no extra query."""
+    _make_branch(tag, course_run, default_rule_profile, ["s1"])
+    for index in range(other_run_count):
+        other_run = make_course_run(organization, f"Other{index}", "Fall2026")
+        other = _make_branch(tag, other_run, default_rule_profile, [f"o{index}"])
+        nested = CompetencyCriteriaGroup.objects.create(tag=tag, parent=other.leaf)
+        _add_criterion(nested, tag, other_run, f"n{index}", default_rule_profile)
+    key = _course_key(course_run)
+
+    with django_assert_num_queries(QUERY_COUNT_FOR_ONE_BOTTOM_TIER_LEVEL):
+        result = get_course_competency_criteria(key)
+
+    assert len(result.criteria) == 1
+
+
+def test_each_extra_level_of_nesting_adds_one_query(
+    course_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile, django_assert_num_queries,
+) -> None:
+    """The groups below the course-level group are read one level per query, so depth, not volume, sets the count."""
+    branch = _make_branch(tag, course_run, default_rule_profile, ["s1"])
+    key = _course_key(course_run)
+    parent = branch.leaf
+    for extra_levels in (1, 2):
+        parent = CompetencyCriteriaGroup.objects.create(tag=tag, parent=parent)
+        _add_criterion(parent, tag, course_run, f"n{extra_levels}", default_rule_profile)
+
+        with django_assert_num_queries(QUERY_COUNT_FOR_ONE_BOTTOM_TIER_LEVEL + extra_levels):
+            result = get_course_competency_criteria(key)
+
+        assert len(result.criteria) == 1 + extra_levels

@@ -183,9 +183,8 @@ def parse_plain_course_key(value: str) -> CourseKey:
     Parse ``value`` into the plain course key the database stores, or raise InvalidKeyError.
 
     Accepts course-v1, old slash-separated and CCX keys; library keys, usage keys and anything else are
-    rejected. A course key may carry a branch (draft or published copy) and a version (one saved
-    snapshot), and both are dropped to match what the database field holds. A version-only key has no
-    org, so it can't be turned into a plain key and is rejected.
+    rejected. Branch and version are dropped to match the database field; a version-only key has no org
+    and is rejected.
     """
     key = CourseKey.from_string(value)
     if not isinstance(key, CourseLocator):

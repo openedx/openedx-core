@@ -71,7 +71,7 @@ class GroupDeletionResult:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class CourseCriteriaTaxonomy:
+class LearnerTaxonomy:
     """
     A competency taxonomy that has at least one competency with criteria in a course run.
 
@@ -83,7 +83,7 @@ class CourseCriteriaTaxonomy:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class CourseCriteriaCompetency:
+class LearnerCompetency:
     """
     A competency (a Tag of a competency taxonomy) that has criteria in a course run.
 
@@ -101,11 +101,11 @@ class CourseCriteriaCompetency:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class CourseCriteriaGroup:
+class LearnerCriteriaGroup:
     """
     One CompetencyCriteriaGroup of a competency's criteria tree in a course run.
 
-    ``competency_id`` is the id of the group's tag, which every group of a competency's tree shares.
+    ``competency_id`` is the id of the competency the group's tree belongs to: the tag of its course-level group.
     ``parent_id`` is None only for the root group. ``logic_operator`` is the stored value: ``"AND"``,
     ``"OR"``, or None.
 
@@ -121,7 +121,7 @@ class CourseCriteriaGroup:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class CourseCriteriaCriterion:
+class LearnerCriterion:
     """
     One CompetencyCriterion of a course run.
 
@@ -139,19 +139,17 @@ class CourseCriteriaCriterion:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class CourseCompetencyCriteria:
+class LearnerCourseCriteria:
     """
     The competency criteria of one course run, as four flat lists that reference each other by id.
 
     Every ``parent_id``, ``competency_id``, ``group_id`` and ``taxonomy_id`` in one list names an
-    item in the list it refers to. See :func:`openedx_learning.applets.cbe.api.get_course_competency_criteria`.
+    item in the list it refers to.
 
-    UNSTABLE: becomes stable once the learner Progress tab frontends
-    (https://github.com/openedx/openedx-core/issues/734 and https://github.com/openedx/openedx-core/issues/839)
-    ship and the learner status endpoints reuse the same shape.
+    UNSTABLE: see :func:`openedx_learning.applets.cbe.api.get_course_competency_criteria`.
     """
 
-    taxonomies: list[CourseCriteriaTaxonomy]
-    competencies: list[CourseCriteriaCompetency]
-    groups: list[CourseCriteriaGroup]
-    criteria: list[CourseCriteriaCriterion]
+    taxonomies: list[LearnerTaxonomy]
+    competencies: list[LearnerCompetency]
+    groups: list[LearnerCriteriaGroup]
+    criteria: list[LearnerCriterion]
