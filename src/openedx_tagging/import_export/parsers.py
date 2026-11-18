@@ -216,7 +216,7 @@ class Parser:
         """
         tags = taxonomy.get_filtered_tags().all()
         result = []
-        exported: dict[str, TagData] = {}  # Parents always precede their children in `tags`.
+        exported: dict[str, TagData] = {}
         for tag in tags:
             result_tag = {
                 "id": tag["external_id"] or tag["_id"],

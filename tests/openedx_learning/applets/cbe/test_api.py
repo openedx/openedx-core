@@ -2728,6 +2728,47 @@ def test_get_blocked_courses_ignores_a_claim_on_the_tag_itself(
     assert get_blocked_courses(inference) == []
 
 
+def test_get_blocked_courses_ignores_an_archived_ancestor(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An archived ancestor is left out of the relatives, so its live criterion stops blocking the course."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    assert get_blocked_courses(inference)
+
+    Tag.objects.filter(pk=critical_thinking.pk).update(archived=True)
+
+    assert get_blocked_courses(inference) == []
+
+
+def test_get_blocked_courses_ignores_an_archived_descendant(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An archived descendant is left out of the relatives, so its live criterion stops blocking the course."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(inference, course_run, default_rule_profile, "p1")
+    assert get_blocked_courses(critical_thinking)
+
+    Tag.objects.filter(pk=inference.pk).update(archived=True)
+
+    assert get_blocked_courses(critical_thinking) == []
+
+
+def test_create_competency_criterion_ignores_an_archived_ancestor_claim(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A criterion refused for an ancestor's live criterion is accepted once that ancestor is archived."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    group = _create_leaf_group(inference, course_run)
+    with pytest.raises(ValidationError):
+        create_competency_criterion(group, usage_key(course_run, "new"), course_run=course_run)
+
+    Tag.objects.filter(pk=critical_thinking.pk).update(archived=True)
+
+    create_competency_criterion(group, usage_key(course_run, "new"), course_run=course_run)
+
+
 def test_get_blocked_courses_is_empty_for_a_tag_with_no_relatives(tag: Tag) -> None:
     """A root tag with no children has no relatives to conflict with."""
     assert get_blocked_courses(tag) == []

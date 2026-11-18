@@ -95,6 +95,17 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
                 self.parser_format,
             )
 
+    def test_import_archived_taxonomy(self) -> None:
+        Taxonomy.objects.filter(pk=self.taxonomy.pk).update(archived=True)
+        self.taxonomy.refresh_from_db()
+        tags_before = list(Tag.objects.filter(taxonomy=self.taxonomy).values_list("pk", "value"))
+
+        with self.assertRaisesRegex(ValueError, "archived"):
+            import_export_api.import_tags(self.taxonomy, self.file, self.parser_format, replace=True)
+
+        assert list(Tag.objects.filter(taxonomy=self.taxonomy).values_list("pk", "value")) == tags_before
+        assert not TagImportTask.objects.filter(taxonomy=self.taxonomy).exists()
+
     def test_with_python_error(self) -> None:
         self.file.close()
         result, task, _plan = import_export_api.import_tags(

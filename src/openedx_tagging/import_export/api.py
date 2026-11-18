@@ -77,7 +77,14 @@ def import_tags(
     if `replace=True`
 
     Set `plan_only` to True to only generate the actions and not execute them.
+
+    Raises ValueError if the taxonomy is archived, before anything is created or changed.
     """
+    if taxonomy.archived:
+        raise ValueError(
+            _("import_tags() doesn't work for archived taxonomies. They cannot be modified.")
+        )
+
     global_start_time = time.time()
     _import_validations(taxonomy)
 

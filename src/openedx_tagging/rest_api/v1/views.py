@@ -247,9 +247,6 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
         """
         Return the requested taxonomy object, if the user has appropriate
         permissions.
-
-        Archived taxonomies are not found, except for the write and delete actions, which resolve them so that
-        the write can be rejected with an explanation and destroy keeps its behavior for archived taxonomies.
         """
         pk = int(self.kwargs["pk"])
         if self.action in self.ACTIONS_THAT_RESOLVE_ARCHIVED:
@@ -263,11 +260,6 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
         return taxonomy
 
     def perform_update(self, serializer) -> None:
-        """
-        Update the taxonomy, unless it is archived.
-
-        `get_object` resolves archived taxonomies for this action, so the check lives here.
-        """
         if serializer.instance.archived:
             raise ValidationError(ARCHIVED_TAXONOMY_MESSAGE)
         super().perform_update(serializer)
@@ -371,7 +363,7 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
     def update_import(self, request: Request, **_kwargs) -> Response:
         """
         Imports tags from the uploaded file to an already created taxonomy,
-        overwriting any existing tags. Archived taxonomies cannot be imported into.
+        overwriting any existing tags.
         """
         body = TaxonomyImportBodySerializer(data=request.data)
         body.is_valid(raise_exception=True)
@@ -380,8 +372,6 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
         parser_format = body.validated_data["parser_format"]
 
         taxonomy = self.get_object()
-        if taxonomy.archived:
-            raise ValidationError(ARCHIVED_TAXONOMY_MESSAGE)
         try:
             import_success, task, _plan = import_tags(taxonomy, file, parser_format, replace=True)
 
@@ -399,7 +389,7 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
     def plan_update_import(self, request: Request, **_kwargs) -> Response:
         """
         Plan import tags from the uploaded file to an already created taxonomy,
-        overwriting any existing tags. Archived taxonomies cannot be imported into.
+        overwriting any existing tags.
         """
         body = TaxonomyImportBodySerializer(data=request.data)
         body.is_valid(raise_exception=True)
@@ -408,8 +398,6 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
         parser_format = body.validated_data["parser_format"]
 
         taxonomy = self.get_object()
-        if taxonomy.archived:
-            raise ValidationError(ARCHIVED_TAXONOMY_MESSAGE)
         try:
             import_success, task, plan = import_tags(taxonomy, file, parser_format, replace=True, plan_only=True)
 
