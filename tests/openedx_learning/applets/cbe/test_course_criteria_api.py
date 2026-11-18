@@ -314,6 +314,28 @@ def test_rule_from_the_system_default_profile(
     ]
 
 
+def test_change_to_the_system_default_profile_shows_on_the_next_call(
+    course_run: CourseRun, tag: Tag, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """The result is not cached: a changed threshold on the system default profile shows on the next call."""
+    default_rule_profile.rule_payload = {"op": "gte", "value": 0.75, "scale": "percent"}
+    default_rule_profile.save()
+    _make_branch(tag, course_run, default_rule_profile, ["s1"])
+    key = _course_key(course_run)
+
+    before = get_course_competency_criteria(key)
+    default_rule_profile.rule_payload = {"op": "gte", "value": 0.9, "scale": "percent"}
+    default_rule_profile.save()
+    after = get_course_competency_criteria(key)
+
+    assert [(c.rule_type, c.rule_payload) for c in before.criteria] == [
+        ("Grade", {"op": "gte", "value": 0.75, "scale": "percent"}),
+    ]
+    assert [(c.rule_type, c.rule_payload) for c in after.criteria] == [
+        ("Grade", {"op": "gte", "value": 0.9, "scale": "percent"}),
+    ]
+
+
 @pytest.mark.parametrize(
     ("rule_type", "rule_payload"),
     [
@@ -741,6 +763,24 @@ QUERY_COUNT_FOR_ONE_BOTTOM_TIER_LEVEL = 4
 
 def test_course_without_criteria_costs_one_query(course_run: CourseRun, django_assert_num_queries) -> None:
     """The first query finds no course-level group, so nothing else runs."""
+    key = _course_key(course_run)
+
+    with django_assert_num_queries(1):
+        result = get_course_competency_criteria(key)
+
+    assert result == _empty_result()
+
+
+def test_course_without_criteria_costs_one_query_when_other_course_runs_have_criteria(
+    course_run: CourseRun,
+    organization: Organization,
+    tag: Tag,
+    default_rule_profile: CompetencyRuleProfile,
+    django_assert_num_queries,
+) -> None:
+    """Another course run's groups under the same competency do not make the empty course run cost more."""
+    other_run = make_course_run(organization, "Python200", "Fall2026")
+    _make_branch(tag, other_run, default_rule_profile, ["s1"])
     key = _course_key(course_run)
 
     with django_assert_num_queries(1):

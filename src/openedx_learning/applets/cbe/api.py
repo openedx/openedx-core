@@ -394,6 +394,35 @@ def _ids_of_groups_with_criteria(
     }
 
 
+def _groups_with_competency_ids_in_result_order(
+    live_course_level_groups_with_criteria: list[CompetencyCriteriaGroup],
+    groups_by_id: dict[int, CompetencyCriteriaGroup],
+    group_ids_with_criteria: set[int],
+) -> list[tuple[CompetencyCriteriaGroup, int]]:
+    """
+    Return the result's groups, each paired with its competency id, sorted by ``(ordering, id)``.
+
+    The groups are the root above each of ``live_course_level_groups_with_criteria``, once per root, and each
+    group in ``groups_by_id`` whose id is in ``group_ids_with_criteria``, that is, one holding a criterion
+    directly or below it.
+
+    A group's competency id is the tag of its course-level group. That tag's archive state was checked, so every
+    competency id names a returned competency.
+    """
+    root_groups = {
+        group.parent_id: (cast(CompetencyCriteriaGroup, group.parent), group.tag_id)
+        for group in live_course_level_groups_with_criteria
+    }
+    groups_with_competency_ids = list(root_groups.values())
+    groups_with_competency_ids.extend(
+        (group, _course_level_ancestor(group, groups_by_id).tag_id)
+        for group in groups_by_id.values()
+        if group.id in group_ids_with_criteria
+    )
+    groups_with_competency_ids.sort(key=lambda pair: (pair[0].ordering, pair[0].id))
+    return groups_with_competency_ids
+
+
 def get_course_competency_criteria(course_key: CourseKey) -> LearnerCourseCriteria:
     """
     Return the live competency criteria of one course run, for learners.
@@ -446,27 +475,19 @@ def get_course_competency_criteria(course_key: CourseKey) -> LearnerCourseCriter
         .order_by("id")
     )
     group_ids_with_criteria = _ids_of_groups_with_criteria(groups_by_id, criteria)
-    kept_course_level_groups = [group for group in course_level_groups if group.id in group_ids_with_criteria]
+    live_course_level_groups_with_criteria = [
+        group for group in course_level_groups if group.id in group_ids_with_criteria
+    ]
 
-    tags = {group.tag_id: group.tag for group in kept_course_level_groups}
+    competency_tags = {group.tag_id: group.tag for group in live_course_level_groups_with_criteria}
     taxonomies = {}
-    for tag in tags.values():
+    for tag in competency_tags.values():
         # A group's tag is always a competency tag, so its taxonomy is always set.
         assert tag.taxonomy is not None
         taxonomies[tag.taxonomy_id] = tag.taxonomy
-    # The competency of every group in a tree is the tag of its course-level group, the tag whose archive
-    # state was checked, so every competency_id names an item of ``competencies``.
-    roots = {
-        group.parent_id: (cast(CompetencyCriteriaGroup, group.parent), group.tag_id)
-        for group in kept_course_level_groups
-    }
-    groups = list(roots.values())
-    groups.extend(
-        (group, _course_level_ancestor(group, groups_by_id).tag_id)
-        for group in groups_by_id.values()
-        if group.id in group_ids_with_criteria
+    groups = _groups_with_competency_ids_in_result_order(
+        live_course_level_groups_with_criteria, groups_by_id, group_ids_with_criteria,
     )
-    groups.sort(key=lambda group_and_competency: (group_and_competency[0].ordering, group_and_competency[0].id))
 
     learner_criteria = []
     for criterion in criteria:
@@ -494,7 +515,7 @@ def get_course_competency_criteria(course_key: CourseKey) -> LearnerCourseCriter
                 lineage=tag.get_lineage(),
                 taxonomy_id=cast(int, tag.taxonomy_id),
             )
-            for _, tag in sorted(tags.items())
+            for _, tag in sorted(competency_tags.items())
         ],
         groups=[
             LearnerCriteriaGroup(
