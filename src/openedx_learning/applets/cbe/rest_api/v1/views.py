@@ -4,6 +4,7 @@ Views for the CBE REST API, v1.
 from __future__ import annotations
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError
 from django.db.models import QuerySet
 from django.shortcuts import get_object_or_404
 from django.utils.translation import gettext_lazy as _
@@ -26,15 +27,19 @@ from ...api import (
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
+    delete_or_archive_competency_criteria_group,
+    delete_or_archive_competency_criterion,
+    get_blocked_courses,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
     resolve_competency_tag,
     update_competency_criteria_group,
 )
 from ...models import CompetencyCriteriaGroup, CompetencyCriterion, CompetencyRuleProfile
-from ..paginators import CompetencyRuleProfilePagination
+from ..paginators import CompetencyBlockedCoursesPagination, CompetencyRuleProfilePagination
 from .permissions import CompetencyReadPermission, CompetencyRuleProfilePermissions
 from .serializers import (
+    BlockedCourseSerializer,
     CompetencyCriteriaGroupSerializer,
     CompetencyCriteriaGroupUpdateSerializer,
     CompetencyCriteriaQueryParamsSerializer,
@@ -165,7 +170,7 @@ class CompetencyCriterionBulkUpdateView(generics.GenericAPIView):
                 rule_payload_override=data.get("rule_payload_override"),
                 user=request.user,
             )
-        except (CompetencyCriteriaGroup.DoesNotExist, CompetencyCriterion.DoesNotExist) as exc:
+        except (CompetencyCriteriaGroup.DoesNotExist, CompetencyCriterion.DoesNotExist, Tag.DoesNotExist) as exc:
             raise NotFound(str(exc)) from exc
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
@@ -192,7 +197,8 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
     Omitting the parameter returns every reachable group. Supplying it returns the groups above
     any course plus the groups of the named runs, ordered with the groups above any course first
     and then by the order requested; keys that match no run are ignored, and an empty value
-    returns only the groups above any course. The parameter may be supplied once.
+    returns only the groups above any course. The parameter may be supplied once. A key's branch
+    and version are ignored, and a version-only or library key is a 400.
 
     ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is the number
     under every reachable group regardless of ``course_keys``, so a client scoped down to zero
@@ -225,25 +231,33 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
 
 class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
     """
-    PATCH-only. Change how one CompetencyCriteriaGroup combines the criteria and groups beneath it.
+    PATCH or DELETE one CompetencyCriteriaGroup.
 
-    **Example Request**
+    PATCH changes how the group combines the criteria and groups beneath it. DELETE hard-deletes
+    the group's subtree, or archives it if learner status exists anywhere in it.
+
+    **Example Requests**
         PATCH api/cbe/v1/competencies/<tag_id>/criteria-groups/<group_id>/
         ``{"logic_operator": "AND"}``
 
-    The response is the group as stored, in the criteria-tree endpoint's shape. ``logic_operator``
+        DELETE api/cbe/v1/competencies/<tag_id>/criteria-groups/<group_id>/
+
+    PATCH responds with the group as stored, in the criteria-tree endpoint's shape. ``logic_operator``
     is the only editable field. The body may also repeat any other field the group's representation
     carries, so a client can send back what it read, as long as each one matches what is stored.
 
-    A thin adapter: :func:`update_competency_criteria_group` makes every other refusal, including
-    the edit permission check, so an in-process caller is refused in the same cases. The body's
-    fixed fields are compared here, before that function runs, because only a REST body carries
-    them. Comparing them reveals what's stored, so a caller who can't read the competency's tree is
-    refused with 403 before the group is looked up.
+    For PATCH, the view is a thin adapter: :func:`update_competency_criteria_group` makes every other
+    refusal, including the edit permission check, so an in-process caller is refused in the same
+    cases. The body's fixed fields are compared here, before that function runs, because only a REST
+    body carries them. Comparing them reveals what's stored, so a caller who can't read the
+    competency's tree is refused with 403 before the group is looked up.
+
+    DELETE only resolves the group from the URL. Course resolution and the permission check happen in
+    :func:`delete_or_archive_competency_criteria_group`, so a refused user gets 403 and a root group gets 400.
     """
 
     serializer_class = CompetencyCriteriaGroupUpdateSerializer
-    http_method_names = ["patch"]
+    http_method_names = ["patch", "delete"]
     authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
     permission_classes = [IsAuthenticated, CompetencyReadPermission]
 
@@ -266,10 +280,116 @@ class CompetencyCriteriaGroupDetailView(generics.GenericAPIView):
             group = update_competency_criteria_group(
                 group.id, logic_operator=serializer.validated_data["logic_operator"], user=request.user,
             )
-        except CompetencyCriteriaGroup.DoesNotExist as exc:
+        except (CompetencyCriteriaGroup.DoesNotExist, Tag.DoesNotExist) as exc:
             raise NotFound(str(exc)) from exc
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
         except CompetencyCriteriaGroupArchivedError as exc:
             raise CompetencyCriteriaConflict(str(exc)) from exc
         return Response(CompetencyCriteriaGroupSerializer(group).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, *args, **kwargs):
+        """
+        Resolve the group by the `group_id` and `tag_id` in the URL, then delegate to the public API.
+
+        The public API checks permission. The lookup keeps archived groups, so a repeat DELETE on an
+        archived subtree still returns 200.
+        """
+        group = get_object_or_404(
+            CompetencyCriteriaGroup, pk=self.kwargs["group_id"], tag_id=self.kwargs["tag_id"],
+        )
+        try:
+            result = delete_or_archive_competency_criteria_group(group.id, request.user)
+        except (CompetencyCriteriaGroup.DoesNotExist, Tag.DoesNotExist) as exc:
+            # Removed between the lookup above and the API call, or while the call waited for the Tag lock.
+            raise NotFound() from exc
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
+        except IntegrityError as exc:
+            # ProtectedError is a subclass. The API already archives when the target subtree itself gained a
+            # status, so this is a conflict outside it, such as a status on an ancestor. A retry re-checks.
+            raise CompetencyCriteriaConflict(
+                _("The delete conflicted with a concurrent change. Retry the DELETE.")
+            ) from exc
+        return Response(
+            {
+                "id": result.id,
+                "archived": result.archived,
+                "cascaded_group_count": result.cascaded_group_count,
+                "cascaded_criteria_count": result.cascaded_criteria_count,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class CompetencyCriterionDeleteView(generics.GenericAPIView):
+    """
+    DELETE-only. Remove a CompetencyCriterion: hard-delete, or archive if learner status exists.
+
+    Does not call self.check_object_permissions(): the public API function checks
+    oel_tagging.can_tag_object itself and raises Django's PermissionDenied, which becomes a 403.
+    """
+
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, *args, **kwargs):
+        """
+        Resolve the criterion by the `criterion_id` and `tag_id` in the URL, then delegate to the public API.
+
+        Archived rows still resolve, so a repeat DELETE on one returns 200.
+        """
+        criterion = get_object_or_404(
+            CompetencyCriterion, pk=self.kwargs["criterion_id"], group__tag_id=self.kwargs["tag_id"],
+        )
+        try:
+            result = delete_or_archive_competency_criterion(criterion.id, request.user)
+        except (CompetencyCriterion.DoesNotExist, Tag.DoesNotExist) as exc:
+            # The criterion, or its competency tag, was removed between the lookup above and the API call.
+            raise NotFound() from exc
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages) from exc
+        except IntegrityError as exc:
+            # ProtectedError is a subclass. A learner's grade write won the race, and a retry archives the criterion.
+            raise CompetencyCriteriaConflict(
+                _("A learner's progress was recorded against this criterion during the delete. Retry the DELETE.")
+            ) from exc
+        return Response({"id": result.id, "archived": result.archived}, status=status.HTTP_200_OK)
+
+
+class CompetencyBlockedCoursesView(generics.GenericAPIView):
+    """
+    GET-only. List the courses where a competency can't get a new criterion, paginated.
+
+    Along any ancestor-descendant line of the taxonomy, a course may hold live criteria for one
+    competency only. So once an ancestor or descendant of this competency has a live criterion in a
+    course, this competency can't get one in it.
+
+    ``GET api/cbe/v1/competencies/<tag_id>/blocked-courses/`` returns those courses sorted by
+    course key. ``course_keys`` (comma-separated, supplied once, at most 100) narrows it; a blank
+    value returns an empty page. A key's branch and version are ignored, and each row carries the
+    plain key. The result is an authoring hint: the create-criterion endpoint still enforces the
+    rule.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this response shape may change
+    without a deprecation cycle.
+    """
+
+    authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
+    permission_classes = [IsAuthenticated, CompetencyReadPermission]
+    pagination_class = CompetencyBlockedCoursesPagination
+
+    def get(self, request, tag_id):
+        """Return one page of the competency's blocked courses."""
+        try:
+            tag = resolve_competency_tag(tag_id)
+        except Tag.DoesNotExist as exc:
+            raise NotFound(str(exc)) from exc
+        self.check_object_permissions(request, tag)
+        if len(request.query_params.getlist("course_keys")) > 1:
+            raise DRFValidationError({"course_keys": _("Supply course_keys once, as a comma-separated list.")})
+        query_params = CompetencyCriteriaQueryParamsSerializer(data=request.query_params.dict())
+        query_params.is_valid(raise_exception=True)
+        rows = get_blocked_courses(tag, course_keys=query_params.validated_data.get("course_keys"))
+        page = self.paginate_queryset(rows)
+        return self.get_paginated_response(BlockedCourseSerializer(page, many=True).data)

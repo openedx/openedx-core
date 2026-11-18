@@ -22,6 +22,7 @@ from openedx_content.applets.publishing.models import (
     DraftSideEffect,
     LearningPackage,
     PublishableEntity,
+    PublishableEntityVersionDependency,
     PublishLog,
     PublishLogRecord,
 )
@@ -433,6 +434,57 @@ class DraftTestCase(TestCase):
             # The DraftChangeLog (changes2) was created and then deleted.
             assert changes2.pk is None  # type: ignore[union-attr]
             assert DraftChangeLog.objects.count() == 1
+
+    def test_has_unpublished_changes(self) -> None:
+        """
+        Draft.has_unpublished_changes() covers every draft/published state and
+        agrees with DraftQuerySet.with_unpublished_changes().
+        """
+        def make_entity(ref: str) -> PublishableEntity:
+            entity = publishing_api.create_publishable_entity(
+                self.learning_package_1.id, ref, created=self.now, created_by=None,
+            )
+            publishing_api.create_publishable_entity_version(
+                entity.id, version_num=1, title=ref, created=self.now, created_by=None,
+            )
+            return entity
+
+        never_published = make_entity("never_published")
+        same_version = make_entity("same_version")
+        newer_draft = make_entity("newer_draft")
+        unpublished_delete = make_entity("unpublished_delete")
+        published_delete = make_entity("published_delete")
+        deleted_before_publish = make_entity("deleted_before_publish")
+
+        publishing_api.publish_from_drafts(
+            self.learning_package_1.id,
+            Draft.objects.filter(entity__in=[same_version, newer_draft, unpublished_delete, published_delete]),
+        )
+        publishing_api.create_publishable_entity_version(
+            newer_draft.id, version_num=2, title="v2", created=self.now, created_by=None,
+        )
+        publishing_api.soft_delete_draft(unpublished_delete.id)
+        publishing_api.soft_delete_draft(published_delete.id)
+        publishing_api.publish_from_drafts(self.learning_package_1.id, Draft.objects.filter(entity=published_delete))
+        publishing_api.soft_delete_draft(deleted_before_publish.id)
+
+        expected: dict[PublishableEntity.ID, bool] = {
+            never_published.id: True,  # draft v1, no Published row
+            same_version.id: False,  # draft v1, published v1
+            newer_draft.id: True,  # draft v2, published v1
+            unpublished_delete.id: True,  # draft None, published v1
+            published_delete.id: False,  # draft None, published None (the delete was published)
+            deleted_before_publish.id: False,  # draft None, no Published row
+        }
+        drafts = list(Draft.objects.filter(entity__in=expected).select_related("entity__published"))
+        assert len(drafts) == len(expected)
+        with self.assertNumQueries(0):  # select_related("entity__published") is all it needs
+            assert {draft.entity_id: draft.has_unpublished_changes() for draft in drafts} == expected
+
+        # The queryset version must agree:
+        assert set(
+            Draft.objects.filter(entity__in=expected).with_unpublished_changes().values_list("entity_id", flat=True)
+        ) == {entity_id for entity_id, changed in expected.items() if changed}
 
     def test_get_entities_with_unpublished_changes(self) -> None:
         """Test fetching entities with unpublished changes after soft deletes."""
@@ -2577,6 +2629,140 @@ class CrossEntityValidationTestCase(TransactionTestCase):
                 created_by=None,
                 dependencies=[entity_in_lp2.id],
             )
+
+    def test_set_version_dependencies_rejects_cross_package_dependencies(self) -> None:
+        """
+        set_version_dependencies() should also reject dependencies that are
+        from a different LearningPackage, so it can't be used to bypass the
+        check in create_publishable_entity_version().
+        """
+        entity_in_lp1 = self._create_entity_with_deps("set_deps_entity_in_lp1")
+        entity_in_lp2 = publishing_api.create_publishable_entity(
+            self.learning_package_2.id,
+            "set_deps_dep_in_lp2",
+            created=self.now,
+            created_by=None,
+        )
+        version = entity_in_lp1.versions.get()
+
+        with pytest.raises(ValidationError, match="Dependencies must be from the same learning package"):
+            publishing_api.set_version_dependencies(version.id, [entity_in_lp2.id])
+        assert not version.dependencies.exists()
+
+    def _create_entity_with_deps(self, ref: str, dependencies: list | None = None) -> PublishableEntity:
+        """Create an entity with a v1 draft that has ``dependencies``."""
+        entity = publishing_api.create_publishable_entity(
+            self.learning_package_1.id, ref, created=self.now, created_by=None,
+        )
+        publishing_api.create_publishable_entity_version(
+            entity.id,
+            version_num=1,
+            title=f"{ref} v1",
+            created=self.now,
+            created_by=None,
+            dependencies=dependencies,
+        )
+        return entity
+
+    def _create_next_version(self, entity: PublishableEntity, dependencies: list) -> None:
+        """Create the next draft version of ``entity`` with ``dependencies``."""
+        publishing_api.create_publishable_entity_version(
+            entity.id,
+            version_num=entity.versions.count() + 1,
+            title=f"{entity.entity_ref} next",
+            created=self.now,
+            created_by=None,
+            dependencies=dependencies,
+        )
+
+    def test_dependencies_reject_self_reference(self) -> None:
+        """
+        An entity version cannot depend on its own entity.
+        """
+        entity = self._create_entity_with_deps("self_ref")
+        with pytest.raises(ValidationError, match="dependency cycle"):
+            self._create_next_version(entity, [entity.id])
+
+    def test_dependencies_reject_draft_cycle(self) -> None:
+        """
+        A -> B -> C (via draft versions); making C depend on A is a cycle.
+        """
+        c = self._create_entity_with_deps("cycle_c")
+        b = self._create_entity_with_deps("cycle_b", [c.id])
+        a = self._create_entity_with_deps("cycle_a", [b.id])
+        with pytest.raises(ValidationError, match="dependency cycle"):
+            self._create_next_version(c, [a.id])
+
+        # Nothing was written for the rejected version (it was rolled back).
+        assert c.versions.count() == 1
+
+    def test_dependencies_reject_published_cycle(self) -> None:
+        """
+        Cycles through published versions are rejected even if the current
+        drafts no longer contain the relationship.
+        """
+        b = self._create_entity_with_deps("pub_cycle_b")
+        a = self._create_entity_with_deps("pub_cycle_a", [b.id])
+        publishing_api.publish_all_drafts(self.learning_package_1.id)
+
+        # Remove the A -> B dependency in draft only; published A still depends on B.
+        self._create_next_version(a, [])
+        with pytest.raises(ValidationError, match="dependency cycle"):
+            self._create_next_version(b, [a.id])
+
+    def test_dependencies_allow_dags(self) -> None:
+        """
+        Shared dependencies (diamonds) are fine, as is reversing an edge once
+        the old one is gone from both draft and published versions.
+        """
+        d = self._create_entity_with_deps("dag_d")
+        b = self._create_entity_with_deps("dag_b", [d.id])
+        c = self._create_entity_with_deps("dag_c", [d.id])
+        a = self._create_entity_with_deps("dag_a", [b.id, c.id])
+        assert a.versions.get().dependencies.count() == 2
+
+        # B no longer depends on D (never published), so D may depend on B.
+        self._create_next_version(b, [])
+        self._create_next_version(d, [b.id])
+
+    def test_publish_dependency_crawl_stops_at_cycle(self) -> None:
+        """
+        The publish dependency crawl must end if a cycle exists anyway.
+
+        The cycle check can't catch everything (e.g. two concurrent edits that
+        each close half of a cycle), so the crawl has to cope with one. The
+        entities beyond the cycle still have to be found, each one only once.
+        """
+        d = self._create_entity_with_deps("crawl_d")
+        c = self._create_entity_with_deps("crawl_c", [d.id])
+        b = self._create_entity_with_deps("crawl_b", [c.id])
+        a = self._create_entity_with_deps("crawl_a", [b.id])
+        z = self._create_entity_with_deps("crawl_z", [a.id])
+        # Close the A -> B -> C -> A cycle directly, bypassing the cycle check
+        # the way two racing transactions could.
+        PublishableEntityVersionDependency.objects.create(
+            referring_version=c.versions.get(),
+            referenced_entity=a,
+        )
+
+        def crawl_layers(entity: PublishableEntity) -> list[list[PublishableEntity.ID]]:
+            direct_drafts = list(Draft.objects.filter(entity=entity).select_related("entity__published__version"))
+            layers = publishing_api._get_dependencies_with_unpublished_changes(  # pylint: disable=protected-access
+                direct_drafts
+            )
+            return [[draft.entity_id for draft in layer] for layer in layers]
+
+        # Starting inside the cycle: A was directly requested, so reaching it
+        # again from C doesn't make it a dependency of itself. The queries are:
+        # the direct Draft, one per layer, and one that finds D has no
+        # dependencies.
+        with self.assertNumQueries(5):
+            assert crawl_layers(a) == [[b.id], [c.id], [d.id]]
+
+        # Starting outside the cycle: A is a dependency the first time we
+        # reach it, and isn't crawled again when C leads back to it.
+        with self.assertNumQueries(6):
+            assert crawl_layers(z) == [[a.id], [b.id], [c.id], [d.id]]
 
     def test_publish_functions_rejected_inside_bulk_draft_changes_for(self) -> None:
         """

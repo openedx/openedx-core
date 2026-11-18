@@ -155,6 +155,14 @@ Decision
    - Points to one ``oel_tagging_objecttag`` association.
    - Uses one ``CompetencyRuleProfile`` by default, with optional per-criterion overrides.
 
+   No ancestor or descendant of a given competency tag may hold live criteria in the same course
+   as the given competency tag. CBE takes as given that a learner who demonstrates every
+   sub-competency has demonstrated the parent competency. If a course could hold authored
+   criteria at more than one level of the same competency hierarchy, it would be undefined
+   whether that given or the authored criteria decide the parent's status, and which takes
+   precedence. There is also no use case for it: nobody authors criteria for a competency and
+   its ancestors in the same course, because doing so only adds complexity and confusion.
+
    This new database table will have the following columns:
 
    1. ``id``: unique primary key
@@ -311,7 +319,7 @@ Decision
 
    - If no related row exists in ``StudentCompetencyCriteriaStatus`` (the leaf-level learner status table, Decision 6) for a competency definition, delete behaves as it does today: a hard delete that cascades through competency metadata tables.
    - Once a related row exists in ``StudentCompetencyCriteriaStatus``, deletion of the associated competency definition row still succeeds, but as an archive (soft delete) instead of a hard delete: the row is hidden from authoring and new associations but remains queryable, so existing learner status rows stay resolvable. This archive-vs-hard-delete rule applies to ``oel_tagging_tag``, ``oel_tagging_taxonomy``, ``CompetencyTaxonomy``, ``oel_tagging_objecttag``, ``CompetencyCriteriaGroup``, and ``CompetencyCriteria``; see :ref:`openedx-learning-adr-0003` Decision 3 for ``oel_tagging_objecttag``'s own archive rule and traceability exception.
-   - ``StudentCompetencyCriteriaStatus`` is what determines whether a record is protected. ``StudentCompetencyCriteriaGroupStatus`` and ``StudentCompetencyStatus`` are roll-up tables derived from it (Decision 6) and are not independently checked for this purpose: :ref:`openedx-learning-adr-0004` writes the leaf table synchronously with the grade but rolls the two roll-up tables up later via an asynchronous task, which can lag behind the leaf or, per that ADR's Decision 5, need manual recovery. Checking only the roll-up tables could therefore miss real learner progress that has not rolled up yet.
+   - ``StudentCompetencyCriteriaStatus`` is what determines whether a record is protected. ``StudentCompetencyCriteriaGroupStatus`` and ``StudentCompetencyStatus`` are roll-up tables derived from it (Decision 6) and are never relied on alone for this purpose: :ref:`openedx-learning-adr-0004` writes the leaf table synchronously with the grade but rolls the two roll-up tables up later via an asynchronous task, which can lag behind the leaf or, per that ADR's Decision 5, need manual recovery. Checking only the roll-up tables could therefore miss real learner progress that has not rolled up yet.
    - Direct deletion of a ``CompetencyRuleProfile`` is never a hard delete; retirement is always archive-only, via a normal update to its ``archived`` column (Decision 3). However, if a taxonomy or course that is associated with a taxonomy- or course-scoped profile is deleted, then this profile will be deleted along with it.
    - For MVP, archiving a ``CompetencyCriteriaGroup`` or a ``CompetencyCriteria`` row is permanent, with one exception: an archived root ``CompetencyCriteriaGroup`` is reactivated when a new criterion is added for its competency (Decision 2). ``oel_tagging_objecttag`` follows :ref:`openedx-learning-adr-0003` Decision 3 instead.
 
@@ -490,3 +498,12 @@ Changelog
   supersedes the ordered, short-circuited evaluation the earlier text described. Decision 6's update flow now continues past the root group to the
   competency's own status row and up through parent competencies, and states what a
   competency with no criteria tree of its own receives.
+
+2026-11-04:
+
+* Clarified Decision 7: the roll-up tables are never relied on alone to protect a record.
+
+2026-11-06:
+
+* Decision 4 states that no ancestor or descendant of a competency tag may hold live criteria
+  in the same course as that tag, and why.

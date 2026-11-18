@@ -5,7 +5,7 @@ Tagging app base data models
 from __future__ import annotations
 
 import re
-from typing import List, Self, cast
+from typing import Self, cast
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -24,7 +24,7 @@ from .utils import RESERVED_TAG_CHARS, tag_external_id_candidate
 TAXONOMY_MAX_DEPTH = 5
 
 # Ancestry of a given tag; the Tag.value fields of a given tag and its parents, starting from the root.
-Lineage = List[str]
+Lineage = list[str]
 
 
 class Tag(models.Model):
@@ -83,6 +83,10 @@ class Tag(models.Model):
             " Used for depth-first tree ordering and descendant prefix matching."
             " Set automatically by save(); do not set manually."
         ),
+    )
+    archived = models.BooleanField(
+        default=False,
+        help_text=_("Hides this tag from active use by default, without removing it."),
     )
 
     class Meta:
@@ -309,6 +313,13 @@ class Taxonomy(models.Model):
         help_text=_(
             "Indicates that the tags in this taxonomy are maintained by the system or an external integration;"
             " taxonomy admins will not be permitted to add, edit, or delete its tags."
+        ),
+    )
+    archived = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Hides this taxonomy from active use by default, without removing it."
+            " Unlike disabling it with 'enabled', archiving marks the taxonomy as retired."
         ),
     )
 
@@ -576,7 +587,7 @@ class Taxonomy(models.Model):
         tag_to_update.save()
         return tag_to_update
 
-    def delete_tags(self, tags: List[str], with_subtags: bool = False):
+    def delete_tags(self, tags: list[str], with_subtags: bool = False):
         """
         Delete the Taxonomy Tags provided. If any of them have children and
         the `with_subtags` is not set to `True` it will fail, otherwise
@@ -722,6 +733,17 @@ class ObjectTag(models.Model):
             "User-facing value used for this tag, stored in case tag is null, e.g if taxonomy is free text, or if it"
             " becomes null (e.g. if the Tag is deleted)."
             " If the tag field is set, then tag.value takes precedence over this field."
+        ),
+    )
+    archived = models.BooleanField(
+        default=False,
+        help_text=_("Hides this association from active use by default, without removing it."),
+    )
+    deletion_locked = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Set when something outside the tagging app depends on this association;"
+            " a delete archives it instead of removing it."
         ),
     )
 
@@ -896,6 +918,8 @@ class ObjectTag(models.Model):
         self.taxonomy = object_tag.taxonomy
         self.object_id = object_tag.object_id
         self.is_copied = object_tag.is_copied
+        self.archived = object_tag.archived
+        self.deletion_locked = object_tag.deletion_locked
         self._value = object_tag._value  # pylint: disable=protected-access
         self._export_id = object_tag._export_id  # pylint: disable=protected-access
         return self

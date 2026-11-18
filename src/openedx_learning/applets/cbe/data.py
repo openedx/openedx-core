@@ -36,3 +36,35 @@ class GradedObjectScore:
         # NaN and Infinity, actually raise the documented ValueError.
         if not self.fraction.is_finite() or not 0 <= self.fraction <= 1:
             raise ValueError(f"fraction must be finite and between 0 and 1 inclusive, not {self.fraction!r}")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CriterionDeletionResult:
+    """
+    The outcome of removing a CompetencyCriterion: whether its row was hard-deleted or archived.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle.
+    """
+
+    id: int
+    archived: bool
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupDeletionResult:
+    """
+    The outcome of removing a CompetencyCriteriaGroup subtree: hard-deleted or archived, with counts.
+
+    The counts cover the target subtree only: ``cascaded_group_count`` counts the target's descendant
+    groups, not the target itself and not the ancestors the removal cascaded to, and
+    ``cascaded_criteria_count`` is the number of criteria in the subtree.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
+    deprecation cycle.
+    """
+
+    id: int
+    archived: bool
+    cascaded_group_count: int
+    cascaded_criteria_count: int

@@ -17,17 +17,19 @@ from opaque_keys.edx.keys import CourseKey
 from organizations.models import Organization
 from rules.permissions import permissions as rule_permissions
 
-from openedx_catalog.models import CatalogCourse, CourseRun
+from openedx_catalog.models import CourseRun
 from openedx_learning.api import (
+    BlockedCourse,
     CompetencyCriteriaGroupArchivedError,
     CompetencyCriterionArchivedError,
     associate_competency_criterion,
     bulk_update_competency_criteria,
     create_competency_criterion,
     create_competency_taxonomy,
+    get_blocked_courses,
     get_competency_criteria_tree,
     get_competency_rule_profiles,
-    get_courses_with_relative_criteria,
+    get_courses_with_live_criteria,
     is_competency_taxonomy,
     resolve_supplied_leaf_group,
     select_competency_taxonomies,
@@ -48,6 +50,8 @@ from openedx_learning.models import (
     StudentCompetencyStatus,
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
+
+from .utils import make_course_run, make_leaf_criterion, make_skill_family, make_tag, usage_key
 
 pytestmark = pytest.mark.django_db
 
@@ -99,33 +103,11 @@ def test_create_competency_taxonomy_defaults() -> None:
     assert result.export_id
 
 
-def make_course_run(organization: Organization, course_code: str, run_code: str) -> CourseRun:
-    """Create a CourseRun distinct from the `course_run` fixture, for the same-tag-different-course tests."""
-    catalog_course = CatalogCourse.objects.create(org=organization, course_code=course_code)
-    return CourseRun.objects.create(catalog_course=catalog_course, run_code=run_code)
-
-
-def usage_key(course_run: CourseRun, block_id: str) -> str:
-    """Build a gradeable-subsection-shaped usage key string under `course_run`."""
+def course_key(course_run: CourseRun) -> CourseKey:
+    """Return `course_run`'s course key, narrowed for mypy; a saved CourseRun always has one."""
     key = course_run.course_key
     assert key is not None
-    return f"block-v1:{key.org}+{key.course}+{key.run}+type@sequential+block@{block_id}"
-
-
-def make_tag(taxonomy: CompetencyTaxonomy, value: str, parent: Tag | None = None) -> Tag:
-    """Create a Tag on `taxonomy`, optionally under `parent`, for taxonomy-hierarchy tests."""
-    return Tag.objects.create(taxonomy=taxonomy, value=value, parent=parent)
-
-
-def make_leaf_criterion(
-    tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile, block_id: str,
-) -> CompetencyCriterion:
-    """
-    Create a leaf group and one live CompetencyCriterion for `tag` in `course_run`.
-    """
-    leaf = _create_leaf_group(tag, course_run)
-    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, block_id), taxonomy=tag.taxonomy, tag=tag)
-    return CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+    return key
 
 
 def test_is_competency_taxonomy() -> None:
@@ -359,6 +341,59 @@ def test_course_level_group_unique_constraint_rejects_a_second_group_for_the_sam
         CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
 
 
+def test_create_leaf_group_reactivates_an_archived_root_and_adds_a_course_level_group_for_a_new_course(
+    tag: Tag, course_run: CourseRun, organization: Organization
+) -> None:
+    """
+    An archived root, left behind once its only course-level group (course X) was archived, is reactivated.
+
+    A call for course Y reuses that same root, adds a Y course-level group and a leaf under it,
+    and leaves the archived X course-level group alone.
+    """
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, archived=True)
+    archived_course_level = CompetencyCriteriaGroup.objects.create(
+        tag=tag, course=course_run, parent=root, archived=True,
+    )
+    # `.history` is a runtime descriptor mypy cannot type, so query the historical model directly.
+    historical_group = apps.get_model("openedx_learning", "HistoricalCompetencyCriteriaGroup")
+
+    leaf = _create_leaf_group(tag, other_course_run)
+
+    root.refresh_from_db()
+    archived_course_level.refresh_from_db()
+    assert root.archived is False
+    assert historical_group.objects.filter(id=root.pk).latest("history_date", "history_id").archived is False
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, parent__isnull=True).count() == 1
+    assert leaf.parent is not None
+    assert leaf.parent.course_id == other_course_run.id
+    assert leaf.parent.parent_id == root.id
+    assert archived_course_level.archived is True
+
+
+def test_create_leaf_group_adds_a_course_level_group_beside_an_archived_one(
+    tag: Tag, course_run: CourseRun, organization: Organization
+) -> None:
+    """With an active root, an archived course-level group for course X does not block course Y."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    archived_course_level = _create_leaf_group(tag, course_run).parent
+    assert archived_course_level is not None
+    root = archived_course_level.parent
+    assert root is not None
+    archived_course_level.archived = True
+    archived_course_level.save()
+
+    leaf = _create_leaf_group(tag, other_course_run)
+
+    assert leaf.parent is not None
+    assert leaf.parent.course_id == other_course_run.id
+    assert leaf.parent.parent_id == root.id
+    root.refresh_from_db()
+    assert root.archived is False
+    archived_course_level.refresh_from_db()
+    assert archived_course_level.archived is True
+
+
 # ==============================================================================================
 # resolve_supplied_leaf_group
 # ==============================================================================================
@@ -413,6 +448,51 @@ def test_resolve_supplied_leaf_group_rejects_a_group_for_a_different_course(
     leaf = _create_leaf_group(tag, other_course_run)
     with pytest.raises(ValidationError, match="group_id"):
         resolve_supplied_leaf_group(leaf.id, tag, course_run)
+
+
+def test_resolve_supplied_leaf_group_rejects_an_archived_leaf(tag: Tag, course_run: CourseRun) -> None:
+    """The leaf's course-level group and root are active; the leaf's own archived flag is what rejects it."""
+    leaf = _create_leaf_group(tag, course_run)
+    leaf.archived = True
+    leaf.save()
+
+    with pytest.raises(ValidationError) as exc_info:
+        resolve_supplied_leaf_group(leaf.id, tag, course_run)
+
+    assert "archived" in str(exc_info.value.message_dict["group_id"])
+
+
+def test_resolve_supplied_leaf_group_rejects_an_active_leaf_under_an_archived_course_level_group(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    An active leaf under an archived course-level group is rejected, keyed ``group_id``.
+
+    Only rows written outside the API produce this state. The check mirrors
+    ``get_courses_with_live_criteria()``, which also treats such a leaf as archived.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    assert leaf.parent is not None
+    leaf.parent.archived = True
+    leaf.parent.save()
+
+    with pytest.raises(ValidationError) as exc_info:
+        resolve_supplied_leaf_group(leaf.id, tag, course_run)
+
+    assert "archived" in str(exc_info.value.message_dict["group_id"])
+
+
+def test_resolve_supplied_leaf_group_still_resolves_an_active_leaf_beside_an_archived_one(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """Both leaves share one active course-level group."""
+    archived_leaf = _create_leaf_group(tag, course_run)
+    archived_leaf.archived = True
+    archived_leaf.save()
+    active_leaf = _create_leaf_group(tag, course_run)
+
+    assert archived_leaf.parent_id == active_leaf.parent_id
+    assert resolve_supplied_leaf_group(active_leaf.id, tag, course_run) == active_leaf
 
 
 # ==============================================================================================
@@ -547,6 +627,148 @@ def test_associate_competency_criterion_rolls_back_newly_created_groups_when_cri
         associate_competency_criterion(tag_id=tag.id, object_id=object_id)
 
     assert not CompetencyCriteriaGroup.objects.filter(tag=tag).exists()
+
+
+def test_associate_competency_criterion_rolls_back_root_reactivation_when_the_course_level_group_is_archived(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    Rejecting the archived course-level group leaves the archived root archived and creates no group or criterion.
+
+    Scenario 3 of #717. Together with the whole-branch test below, this guards the ``transaction.atomic()``
+    wrapper: without it the root reactivation commits even though the request is rejected.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, archived=True)
+    course_level = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root, archived=True)
+    group_count = CompetencyCriteriaGroup.objects.count()
+    criterion_count = CompetencyCriterion.objects.count()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
+
+    assert "archived" in str(exc_info.value.message_dict["object_id"])
+    assert f"group {course_level.id}" in str(exc_info.value.message_dict["object_id"])
+    root.refresh_from_db()
+    assert root.archived is True
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+    assert CompetencyCriterion.objects.count() == criterion_count
+
+
+def test_associate_competency_criterion_archived_criterion_blocks_re_association_while_a_sibling_keeps_the_group_alive(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    An archived criterion for the content blocks a derive-path re-add even while the course-level group is active.
+
+    The setup mirrors the archive cascade: the first criterion and its own leaf are archived, but the
+    course-level group stays active because the sibling's leaf is still live. With no ``group_id``, the archived
+    criterion blocks anywhere under the competency, and the error says the association was archived.
+    """
+    first = associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
+    associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p2"))
+    first.archived = True
+    first.save()
+    first.group.archived = True
+    first.group.save()
+    group_count = CompetencyCriteriaGroup.objects.count()
+    criterion_count = CompetencyCriterion.objects.count()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=usage_key(course_run, "p1"))
+
+    assert "previously associated" in str(exc_info.value.message_dict["object_id"])
+    assert "archived" in str(exc_info.value.message_dict["object_id"])
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+    assert CompetencyCriterion.objects.count() == criterion_count
+
+
+def test_associate_competency_criterion_active_match_keeps_the_plain_duplicate_message_beside_an_archived_one(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    When an active and an archived criterion both match the content, the plain duplicate message applies.
+
+    The archived-state message is reserved for the case where every matching criterion is archived.
+    """
+    object_id = usage_key(course_run, "p1")
+    archived = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    active = associate_competency_criterion(
+        tag_id=tag.id, object_id=object_id, group_id=_create_leaf_group(tag, course_run).id,
+    )
+    archived.archived = True
+    archived.save()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    with pytest.raises(ValidationError) as group_exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id, group_id=active.group_id)
+
+    assert "previously" not in str(exc_info.value.message_dict["object_id"])
+    assert "previously" not in str(group_exc_info.value.message_dict["group_id"])
+
+
+def test_associate_competency_criterion_archived_criterion_blocks_re_add_before_the_branch_state_is_consulted(
+    tag: Tag, course_run: CourseRun
+) -> None:
+    """
+    An archived criterion blocks the re-add before the archived branch is checked.
+
+    Scenario 3 of #717 with the archive cascade's full result: the criterion, its leaf, the course-level
+    group, and the root are all archived. The duplicate check runs first and refuses the request with the
+    archived-duplicate message keyed ``object_id``, not the archived-course-level-group message, and the root
+    is not reactivated.
+    """
+    object_id = usage_key(course_run, "p1")
+    first = associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+    leaf = first.group
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+    for instance in (first, leaf, course_level, root):
+        instance.archived = True
+        instance.save()
+    criterion_count = CompetencyCriterion.objects.count()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=tag.id, object_id=object_id)
+
+    assert "previously associated" in str(exc_info.value.message_dict["object_id"])
+    root.refresh_from_db()
+    assert root.archived is True
+    assert CompetencyCriterion.objects.count() == criterion_count
+
+
+def test_associate_competency_criterion_rolls_back_root_reactivation_when_the_dominance_check_rejects(
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    A request rejected by the hierarchy-dominance check after the root was reactivated rolls back everything.
+
+    ``create_competency_criterion()`` runs the check after ``_create_leaf_group()``, so by then the archived
+    root is active again and the course-level group and leaf exist. The rejection must leave the root archived
+    and create no group or criterion for the competency.
+    """
+    parent = make_tag(competency_taxonomy, "Ancestor Skill")
+    child = make_tag(competency_taxonomy, "Descendant Skill", parent=parent)
+    make_leaf_criterion(parent, course_run, default_rule_profile, "p1")
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=child, parent=None, archived=True)
+    CompetencyCriteriaGroup.objects.create(tag=child, course=other_course_run, parent=root, archived=True)
+    group_count = CompetencyCriteriaGroup.objects.count()
+    criterion_count = CompetencyCriterion.objects.count()
+
+    with pytest.raises(ValidationError) as exc_info:
+        associate_competency_criterion(tag_id=child.id, object_id=usage_key(course_run, "p2"))
+
+    assert "tag_id" in exc_info.value.message_dict
+    root.refresh_from_db()
+    assert root.archived is True
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+    assert CompetencyCriterion.objects.count() == criterion_count
 
 
 # ==============================================================================================
@@ -1038,6 +1260,64 @@ def test_bulk_update_rolls_back_every_criterion_if_one_save_fails(
 
     monkeypatch.undo()
     assert len(saves) == 2
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_saves_in_primary_key_order_and_returns_request_order(
+    monkeypatch: pytest.MonkeyPatch,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    default_rule_profile: CompetencyRuleProfile,
+    user,
+) -> None:
+    """Each save takes a row lock, so the saves run in ascending pk order however the ids were requested."""
+    c1, c2 = batch
+    c3 = make_criterion(leaf, "p3", rule_profile=default_rule_profile)
+    original_save = CompetencyCriterion.save
+    saves: list[int] = []
+
+    def _record_save(self, *args, **kwargs) -> None:
+        saves.append(self.pk)
+        original_save(self, *args, **kwargs)
+
+    monkeypatch.setattr(CompetencyCriterion, "save", _record_save)
+
+    result = bulk_update_competency_criteria([c3.id, c1.id, c2.id], leaf.id, user=user, **NEW_RULE)
+
+    assert saves == [c1.id, c2.id, c3.id]
+    assert [criterion.id for criterion in result] == [c3.id, c1.id, c2.id]
+
+
+def test_bulk_update_checks_archived_state_under_the_tag_lock(
+    run_when_tag_lock_is_taken,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+) -> None:
+    """A group archived while the update waits for the Tag lock refuses the batch, so the check reads after the lock."""
+    run_when_tag_lock_is_taken(lambda: CompetencyCriteriaGroup.objects.filter(pk=leaf.pk).update(archived=True))
+    before = snapshot(batch)
+
+    with pytest.raises(CompetencyCriterionArchivedError, match=f"group {leaf.id}"):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
+    assert snapshot(batch) == before
+
+
+def test_bulk_update_reads_the_criteria_under_the_tag_lock(
+    run_when_tag_lock_is_taken,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+    leaf: CompetencyCriteriaGroup,
+    user,
+) -> None:
+    """A criterion archived while the update waits for the Tag lock refuses the batch, so the criteria read after it."""
+    archived = batch[1]
+    run_when_tag_lock_is_taken(lambda: CompetencyCriterion.objects.filter(pk=archived.pk).update(archived=True))
+    before = snapshot(batch)
+
+    with pytest.raises(CompetencyCriterionArchivedError, match=rf"criteria cannot be edited: {archived.id}\."):
+        bulk_update_competency_criteria([c.id for c in batch], leaf.id, user=user, **NEW_RULE)
+
     assert snapshot(batch) == before
 
 
@@ -1749,47 +2029,50 @@ def test_get_competency_criteria_tree_scoped_keeps_every_group_above_any_course(
     assert {g.id for g in empty.groups} == {root.id, mid.id}
 
 
-def test_get_courses_with_relative_criteria_single_match(
+def test_get_courses_with_live_criteria_single_match(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A single tag with a live criterion in a course is returned, mapped to that tag."""
     relative = make_tag(competency_taxonomy, "Relative Skill")
     make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
 
-    assert get_courses_with_relative_criteria([relative.id]) == {course_run: relative}
+    assert get_courses_with_live_criteria([relative.id]) == {course_run: relative}
 
 
-def test_get_courses_with_relative_criteria_ties_break_on_the_lowest_tag_id(
+def test_get_courses_with_live_criteria_ties_break_on_the_lowest_tag_id(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
-    """When two of the given tags both have a live criterion in the same course, the lower id tag wins."""
+    """
+    When two of the given tags both have a live criterion in the same course, the lower id tag wins,
+    even when its criterion was created later.
+    """
     first = make_tag(competency_taxonomy, "First Relative")
     second = make_tag(competency_taxonomy, "Second Relative")
     assert first.id < second.id
-    make_leaf_criterion(first, course_run, default_rule_profile, "p1")
     make_leaf_criterion(second, course_run, default_rule_profile, "p2")
+    make_leaf_criterion(first, course_run, default_rule_profile, "p1")
 
-    result = get_courses_with_relative_criteria([second.id, first.id])
+    result = get_courses_with_live_criteria([second.id, first.id])
 
     assert result == {course_run: first}
 
 
-def test_get_courses_with_relative_criteria_empty_input_yields_an_empty_result() -> None:
+def test_get_courses_with_live_criteria_empty_input_yields_an_empty_result() -> None:
     """An empty tag_ids collection yields an empty result, not an error."""
-    assert not get_courses_with_relative_criteria([])
+    assert not get_courses_with_live_criteria([])
 
 
-def test_get_courses_with_relative_criteria_excludes_a_group_with_no_live_criterion(
+def test_get_courses_with_live_criteria_excludes_a_group_with_no_live_criterion(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun,
 ) -> None:
     """A CompetencyCriteriaGroup for a relative tag with no attached criterion is not a conflict."""
     relative = make_tag(competency_taxonomy, "Empty Relative")
     _create_leaf_group(relative, course_run)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_ignores_an_archived_criterion(
+def test_get_courses_with_live_criteria_ignores_an_archived_criterion(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """An archived criterion is gone for authoring, so it blocks nothing."""
@@ -1797,10 +2080,10 @@ def test_get_courses_with_relative_criteria_ignores_an_archived_criterion(
     criterion = make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
     CompetencyCriterion.objects.filter(pk=criterion.pk).update(archived=True)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archived_leaf_group(
+def test_get_courses_with_live_criteria_ignores_a_criterion_under_an_archived_leaf_group(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A live criterion under an archived leaf group blocks nothing."""
@@ -1808,10 +2091,10 @@ def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archive
     criterion = make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
     CompetencyCriteriaGroup.objects.filter(pk=criterion.group_id).update(archived=True)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archived_course_level_group(
+def test_get_courses_with_live_criteria_ignores_a_criterion_under_an_archived_course_level_group(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A live criterion under an archived course-level group blocks nothing."""
@@ -1821,10 +2104,10 @@ def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archive
     assert course_level_id is not None
     CompetencyCriteriaGroup.objects.filter(pk=course_level_id).update(archived=True)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archived_root_group(
+def test_get_courses_with_live_criteria_ignores_a_criterion_under_an_archived_root_group(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A live criterion under an archived root group blocks nothing."""
@@ -1836,10 +2119,10 @@ def test_get_courses_with_relative_criteria_ignores_a_criterion_under_an_archive
     assert root_id is not None
     CompetencyCriteriaGroup.objects.filter(pk=root_id).update(archived=True)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
-def test_get_courses_with_relative_criteria_counts_a_course_with_one_live_and_one_archived_criterion(
+def test_get_courses_with_live_criteria_counts_a_course_with_one_live_and_one_archived_criterion(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """Archiving one of a tag's two criteria in a course leaves the course blocked by the other."""
@@ -1848,7 +2131,7 @@ def test_get_courses_with_relative_criteria_counts_a_course_with_one_live_and_on
     make_leaf_criterion(relative, course_run, default_rule_profile, "p2")
     CompetencyCriterion.objects.filter(pk=archived.pk).update(archived=True)
 
-    assert get_courses_with_relative_criteria([relative.id]) == {course_run: relative}
+    assert get_courses_with_live_criteria([relative.id]) == {course_run: relative}
 
 
 def test_validate_containment_rejects_an_ancestor_conflict(
@@ -1908,7 +2191,7 @@ def test_validate_containment_allows_a_tag_with_no_relatives(tag: Tag, course_ru
     cbe_api._validate_containment(group, course_run)  # pylint: disable=protected-access  # Must not raise.
 
 
-def test_get_courses_with_relative_criteria_narrows_to_the_given_course(
+def test_get_courses_with_live_criteria_narrows_to_the_given_course(
     competency_taxonomy: CompetencyTaxonomy,
     course_run: CourseRun,
     organization: Organization,
@@ -1920,10 +2203,30 @@ def test_get_courses_with_relative_criteria_narrows_to_the_given_course(
     make_leaf_criterion(relative, course_run, default_rule_profile, "p1")
     make_leaf_criterion(relative, other_course_run, default_rule_profile, "p1")
 
-    assert get_courses_with_relative_criteria([relative.id], course=course_run) == {course_run: relative}
+    assert get_courses_with_live_criteria([relative.id], course=course_run) == {course_run: relative}
 
 
-def test_get_courses_with_relative_criteria_ignores_a_criterion_outside_a_leaf(
+def test_get_courses_with_live_criteria_narrows_to_the_given_course_keys(
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """With ``course_keys`` given, only those courses' conflicts come back, though another course has one too."""
+    relative = make_tag(competency_taxonomy, "Relative Skill")
+    course_y = make_course_run(organization, "Python200", "Fall2026")
+    course_z = make_course_run(organization, "Python300", "Fall2026")
+    for course in (course_run, course_y, course_z):
+        make_leaf_criterion(relative, course, default_rule_profile, "p1")
+
+    result = get_courses_with_live_criteria(
+        [relative.id], course_keys=[course_key(course_run), course_key(course_y)],
+    )
+
+    assert result == {course_run: relative, course_y: relative}
+
+
+def test_get_courses_with_live_criteria_ignores_a_criterion_outside_a_leaf(
     competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
 ) -> None:
     """A criterion on a group nested below a leaf, e.g. made through the admin, is skipped rather than crashing."""
@@ -1935,7 +2238,7 @@ def test_get_courses_with_relative_criteria_ignores_a_criterion_outside_a_leaf(
     )
     CompetencyCriterion.objects.create(group=nested, object_tag=object_tag, rule_profile=default_rule_profile)
 
-    assert not get_courses_with_relative_criteria([relative.id])
+    assert not get_courses_with_live_criteria([relative.id])
 
 
 def test_create_competency_criterion_uses_the_callers_course_run(
@@ -1950,6 +2253,89 @@ def test_create_competency_criterion_uses_the_callers_course_run(
     criterion = cbe_api.create_competency_criterion(group, usage_key(course_run, "p1"), course_run=course_run)
 
     assert criterion.group_id == group.id
+
+
+def test_create_competency_criterion_takes_the_tag_lock_itself(
+    run_when_tag_lock_is_taken, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    A caller outside associate_competency_criterion() is still serialized with a delete of the competency's
+    criteria: the lock is taken before anything else, so a tag deleted while the call waits for it is seen.
+    """
+    group = _create_leaf_group(tag, course_run)
+    run_when_tag_lock_is_taken(lambda: Tag.objects.filter(pk=tag.pk).delete())
+
+    with pytest.raises(Tag.DoesNotExist):
+        cbe_api.create_competency_criterion(group, usage_key(course_run, "p1"), course_run=course_run)
+
+
+def test_create_competency_criterion_writes_only_its_own_object_tag(
+    tag: Tag, course_run: CourseRun, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """
+    Creating a criterion for one competency inserts that competency's ObjectTag and nothing else, so
+    it cannot undo a concurrent create or delete of a sibling competency's ObjectTag on the same object.
+    """
+    sibling_tag = make_tag(competency_taxonomy, "Sibling Skill")
+    object_id = usage_key(course_run, "p1")
+    sibling = ObjectTag.objects.create(object_id=object_id, taxonomy=competency_taxonomy, tag=sibling_tag)
+    group = _create_leaf_group(tag, course_run)
+
+    with CaptureQueriesContext(connection) as queries:
+        criterion = cbe_api.create_competency_criterion(group, object_id, course_run=course_run)
+
+    quoted_table = re.escape(connection.ops.quote_name("oel_tagging_objecttag"))
+    object_tag_writes = [
+        query["sql"] for query in queries.captured_queries
+        if re.match(rf"(INSERT INTO|UPDATE|DELETE FROM) {quoted_table}", query["sql"])
+    ]
+    assert len(object_tag_writes) == 1
+    assert object_tag_writes[0].startswith("INSERT")
+    assert criterion.object_tag.tag_id == tag.id
+    assert ObjectTag.objects.get(id=sibling.id).tag_id == sibling_tag.id
+
+
+def test_create_competency_criterion_does_not_resurrect_a_sibling_object_tag_deleted_mid_create(
+    tag: Tag, course_run: CourseRun, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """
+    A sibling competency's ObjectTag deleted by a concurrent request, right after this create first
+    reads ObjectTags, stays deleted; the create adds only its own competency's tag.
+    """
+    sibling_tag = make_tag(competency_taxonomy, "Sibling Skill")
+    object_id = usage_key(course_run, "p1")
+    sibling = ObjectTag.objects.create(object_id=object_id, taxonomy=competency_taxonomy, tag=sibling_tag)
+    group = _create_leaf_group(tag, course_run)
+    raced = False
+    quoted_table = connection.ops.quote_name("oel_tagging_objecttag")
+
+    def _delete_sibling_after_first_object_tag_query(execute, sql, params, many, context):
+        nonlocal raced
+        result = execute(sql, params, many, context)
+        if not raced and quoted_table in sql:
+            raced = True
+            ObjectTag.objects.filter(pk=sibling.pk).delete()
+        return result
+
+    with connection.execute_wrapper(_delete_sibling_after_first_object_tag_query):
+        cbe_api.create_competency_criterion(group, object_id, course_run=course_run)
+
+    assert raced
+    assert list(ObjectTag.objects.filter(object_id=object_id).values_list("tag_id", flat=True)) == [tag.id]
+
+
+def test_create_competency_criterion_reuses_an_existing_object_tag_for_the_same_competency(
+    tag: Tag, course_run: CourseRun, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """An ObjectTag already tying the object to this competency is reused rather than duplicated."""
+    object_id = usage_key(course_run, "p1")
+    existing = ObjectTag.objects.create(object_id=object_id, taxonomy=competency_taxonomy, tag=tag)
+    group = _create_leaf_group(tag, course_run)
+
+    criterion = cbe_api.create_competency_criterion(group, object_id, course_run=course_run)
+
+    assert criterion.object_tag_id == existing.id
+    assert ObjectTag.objects.filter(object_id=object_id).count() == 1
 
 
 def test_associate_competency_criterion_creates_the_course_runs_cbe_row(
@@ -2237,6 +2623,19 @@ def test_update_raises_does_not_exist_for_an_unknown_group(user) -> None:
         update_competency_criteria_group(999999, logic_operator=LogicOperator.AND, user=user)
 
 
+def test_group_update_re_reads_the_group_under_the_tag_lock(
+    run_when_tag_lock_is_taken, leaf: CompetencyCriteriaGroup, user,
+) -> None:
+    """A group archived while the update waits for the Tag lock is refused, not written onto."""
+    run_when_tag_lock_is_taken(lambda: CompetencyCriteriaGroup.objects.filter(pk=leaf.pk).update(archived=True))
+
+    with pytest.raises(CompetencyCriteriaGroupArchivedError):
+        update_competency_criteria_group(leaf.id, logic_operator=LogicOperator.AND, user=user)
+
+    leaf.refresh_from_db()
+    assert leaf.logic_operator == LogicOperator.OR
+
+
 @pytest.mark.parametrize("level", ["course-level", "leaf"])
 def test_update_checks_permission_against_the_groups_course(  # pylint: disable=too-many-positional-arguments
     level: str,
@@ -2302,3 +2701,88 @@ def test_update_never_reads_or_writes_learner_status(
             pass
 
     assert not [q for q in queries.captured_queries if "studentcompetency" in q["sql"].lower()]
+
+
+# ==============================================================================================
+# get_blocked_courses
+# ==============================================================================================
+
+
+def test_get_blocked_courses_ignores_a_sibling_claim(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A sibling is neither ancestor nor descendant, so its criterion blocks nothing."""
+    _, _, inference, analysis = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(analysis, course_run, default_rule_profile, "p1")
+
+    assert not get_blocked_courses(inference)
+
+
+def test_get_blocked_courses_ignores_a_claim_on_the_tag_itself(
+    competency_taxonomy: CompetencyTaxonomy, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A criterion on the queried tag itself is not a conflict, so it blocks nothing."""
+    _, _, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(inference, course_run, default_rule_profile, "p1")
+
+    assert get_blocked_courses(inference) == []
+
+
+def test_get_blocked_courses_is_empty_for_a_tag_with_no_relatives(tag: Tag) -> None:
+    """A root tag with no children has no relatives to conflict with."""
+    assert get_blocked_courses(tag) == []
+
+
+@pytest.mark.parametrize(
+    "claimants_and_queried",
+    [
+        pytest.param(((1,), 2), id="ancestor claim"),
+        pytest.param(((2,), 1), id="descendant claim"),
+        pytest.param(((0,), 2), id="grandparent claim"),
+        pytest.param(((2,), 0), id="grandchild claim"),
+        pytest.param(((1, 0), 2), id="two ancestor claims"),
+        pytest.param(((2, 1), 0), id="two descendant claims"),
+    ],
+)
+def test_get_blocked_courses_and_create_competency_criterion_agree_on_a_conflict(
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+    claimants_and_queried: tuple[tuple[int, ...], int],
+) -> None:
+    """
+    A course the read reports as blocked for a tag is one the write rejects, and both name the same
+    tag: the lowest-id one when several ancestors or descendants have a criterion in the course.
+    """
+    family = make_skill_family(competency_taxonomy)
+    claimant_indexes, queried_index = claimants_and_queried
+    claimants = [family[index] for index in claimant_indexes]
+    queried = family[queried_index]
+    for position, claimant in enumerate(claimants):
+        make_leaf_criterion(claimant, course_run, default_rule_profile, f"p{position}")
+    named = min(claimants, key=lambda claimant: claimant.id)
+
+    assert get_blocked_courses(queried) == [
+        BlockedCourse(
+            course_key=course_key(course_run), conflicting_tag_id=named.id, conflicting_tag_value=named.value,
+        ),
+    ]
+    group = _create_leaf_group(queried, course_run)
+    with pytest.raises(ValidationError) as exc_info:
+        create_competency_criterion(group, usage_key(course_run, "new"), course_run=course_run)
+    message = str(exc_info.value.message_dict["tag_id"])
+    assert [claimant.value for claimant in claimants if f"'{claimant.value}'" in message] == [named.value]
+
+
+def test_get_blocked_courses_sorts_rows_by_course_key(
+    competency_taxonomy: CompetencyTaxonomy, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Rows come back in course key order, not in the order the courses were created."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    for course_code in ("C300", "A100", "B200"):
+        course = make_course_run(organization, course_code, "Run1")
+        make_leaf_criterion(critical_thinking, course, default_rule_profile, "p1")
+
+    keys = [str(row.course_key) for row in get_blocked_courses(inference)]
+
+    assert keys == [f"course-v1:Org1+{course_code}+Run1" for course_code in ("A100", "B200", "C300")]

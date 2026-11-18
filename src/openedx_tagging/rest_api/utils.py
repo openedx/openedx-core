@@ -1,8 +1,8 @@
 """
 Utilities for the API
 """
-from typing import Optional, Type
 
+from django.db import models
 from edx_rest_framework_extensions.auth.jwt.authentication import JwtAuthentication  # type: ignore[import]
 from edx_rest_framework_extensions.auth.session.authentication import (  # type: ignore[import]
     SessionAuthenticationAllowInactiveUser,
@@ -39,25 +39,27 @@ class UserPermissionsHelper:
         raise NotImplementedError  # pragma: no cover
 
     @property
-    def _model(self) -> Type:
+    def _model(self) -> type[models.Model]:
         """
         Returns the model used when checking permissions.
         """
         raise NotImplementedError  # pragma: no cover
 
     @property
-    def app_label(self) -> Type:
+    def app_label(self) -> str:
         """
         Returns the app_label for the model used when checking permissions.
         """
         return self._model._meta.app_label
 
     @property
-    def model_name(self) -> Type:
+    def model_name(self) -> str:
         """
         Returns the name of the model used when checking permissions.
         """
-        return self._model._meta.model_name
+        model_name = self._model._meta.model_name
+        assert model_name is not None  # Always set for concrete models; the stubs type it as optional
+        return model_name
 
     def _get_permission_name(self, action: str) -> str:
         """
@@ -66,7 +68,7 @@ class UserPermissionsHelper:
         assert action in ("add", "view", "change", "delete")
         return f'{self.app_label}.{action}_{self.model_name}'
 
-    def _can(self, perm_name: str, instance=None) -> Optional[bool]:
+    def _can(self, perm_name: str, instance=None) -> bool | None:
         """
         Does the current `request.user` have the given `perm` on the `instance` object?
 
@@ -78,7 +80,7 @@ class UserPermissionsHelper:
         assert request and request.user
         return request.user.has_perm(perm_name, instance)
 
-    def get_can_add(self, instance=None) -> Optional[bool]:
+    def get_can_add(self, instance=None) -> bool | None:
         """
         Returns True if the current user is allowed to add new instances.
 
@@ -88,21 +90,21 @@ class UserPermissionsHelper:
         perm_name = self._get_permission_name('add')
         return self._can(perm_name, instance)
 
-    def get_can_view(self, instance) -> Optional[bool]:
+    def get_can_view(self, instance) -> bool | None:
         """
         Returns True if the current user is allowed to view/see this instance.
         """
         perm_name = self._get_permission_name('view')
         return self._can(perm_name, instance)
 
-    def get_can_change(self, instance) -> Optional[bool]:
+    def get_can_change(self, instance) -> bool | None:
         """
         Returns True if the current user is allowed to edit/change this instance.
         """
         perm_name = self._get_permission_name('change')
         return self._can(perm_name, instance)
 
-    def get_can_delete(self, instance) -> Optional[bool]:
+    def get_can_delete(self, instance) -> bool | None:
         """
         Returns True if the current user is allowed to delete this instance.
         """
