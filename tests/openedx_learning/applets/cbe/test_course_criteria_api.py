@@ -10,6 +10,7 @@ from typing import NamedTuple
 
 import pytest
 import rules
+from django.db.models.signals import post_init
 from opaque_keys.edx.keys import CourseKey
 from organizations.models import Organization
 from rules.permissions import permissions as rule_permissions
@@ -792,7 +793,7 @@ def test_query_count_stays_fixed_as_the_course_grows(
 
 
 @pytest.mark.parametrize("other_run_count", [1, 5])
-def test_query_count_does_not_grow_with_other_course_runs_using_the_same_competency(
+def test_other_course_runs_using_the_same_competency_add_no_query_and_no_rows(
     other_run_count: int,
     *,
     course_run: CourseRun,
@@ -801,19 +802,28 @@ def test_query_count_does_not_grow_with_other_course_runs_using_the_same_compete
     default_rule_profile: CompetencyRuleProfile,
     django_assert_num_queries,
 ) -> None:
-    """Branches that other course runs hang under the same root are not read, so they cost no extra query."""
-    _make_branch(tag, course_run, default_rule_profile, ["s1"])
+    """Branches that other course runs hang under the same root are never loaded, so they cost no query and no row."""
+    branch = _make_branch(tag, course_run, default_rule_profile, ["s1"])
     for index in range(other_run_count):
         other_run = make_course_run(organization, f"Other{index}", "Fall2026")
         other = _make_branch(tag, other_run, default_rule_profile, [f"o{index}"])
         nested = CompetencyCriteriaGroup.objects.create(tag=tag, parent=other.leaf)
         _add_criterion(nested, tag, other_run, f"n{index}", default_rule_profile)
     key = _course_key(course_run)
+    loaded_group_ids: list[int] = []
 
-    with django_assert_num_queries(QUERY_COUNT_FOR_ONE_BOTTOM_TIER_LEVEL):
-        result = get_course_competency_criteria(key)
+    def _record_loaded_group(instance, **kwargs) -> None:
+        loaded_group_ids.append(instance.pk)
+
+    post_init.connect(_record_loaded_group, sender=CompetencyCriteriaGroup)
+    try:
+        with django_assert_num_queries(QUERY_COUNT_FOR_ONE_BOTTOM_TIER_LEVEL):
+            result = get_course_competency_criteria(key)
+    finally:
+        post_init.disconnect(_record_loaded_group, sender=CompetencyCriteriaGroup)
 
     assert len(result.criteria) == 1
+    assert sorted(loaded_group_ids) == sorted([branch.root.pk, branch.course_level.pk, branch.leaf.pk])
 
 
 def test_each_extra_level_of_nesting_adds_one_query(
