@@ -104,11 +104,11 @@ class TaxonomySerializer(UserPermissionsSerializerMixin, serializers.ModelSerial
         """
         Return the "tags_count" annotation if present.
 
-        Or just count the taxonomy's tags.
+        Or just count the taxonomy's unarchived tags.
         """
         if hasattr(instance, 'tags_count'):
             return instance.tags_count
-        return instance.tag_set.count()
+        return instance.tag_set.unarchived().count()
 
     def get_can_tag_object(self, instance) -> bool | None:
         """

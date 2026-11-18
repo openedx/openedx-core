@@ -13,10 +13,11 @@ are stored in this app.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from enum import Enum
 from typing import Any, Counter, cast
 
-from django.db import models, transaction
+from django.db import models, router, transaction
 from django.db.models import F, QuerySet, Value
 from django.db.models.functions import Coalesce, Concat, Lower
 from django.utils.text import slugify
@@ -27,6 +28,7 @@ from .models import ObjectTag, Tag, Taxonomy
 
 # Export this as part of the API
 TagDoesNotExist = Tag.DoesNotExist
+ObjectTagDoesNotExist = ObjectTag.DoesNotExist
 
 # Maximum number of tags allowed on any one object
 OBJECT_MAX_TAGS = 100
@@ -82,28 +84,28 @@ def create_taxonomy(  # pylint: disable=too-many-positional-arguments
 
 def get_taxonomy(taxonomy_id: int) -> Taxonomy | None:
     """
-    Returns the Taxonomy which has the given ID, or None if not found.
+    Returns the Taxonomy which has the given ID, or None if not found or archived.
     """
-    return Taxonomy.objects.filter(pk=taxonomy_id).first()
+    return Taxonomy.objects.unarchived().filter(pk=taxonomy_id).first()
 
 
 def get_taxonomy_by_export_id(taxonomy_export_id: str) -> Taxonomy | None:
     """
-    Returns the Taxonomy which has the given export ID, or None if not found.
+    Returns the Taxonomy which has the given export ID, or None if not found or archived.
     """
-    return Taxonomy.objects.filter(export_id=taxonomy_export_id).first()
+    return Taxonomy.objects.unarchived().filter(export_id=taxonomy_export_id).first()
 
 
 def get_taxonomies(enabled=True) -> QuerySet[Taxonomy]:
     """
-    Returns a queryset containing the enabled taxonomies, sorted by name.
+    Returns a queryset containing the enabled, unarchived taxonomies, sorted by name.
 
     We return a QuerySet here for ease of use with Django Rest Framework and other query-based use cases.
 
     If you want the disabled taxonomies, pass enabled=False.
     If you want all taxonomies (both enabled and disabled), pass enabled=None.
     """
-    queryset = Taxonomy.objects.order_by("name", "id")
+    queryset = Taxonomy.objects.unarchived().order_by("name", "id")
     if enabled is None:
         return queryset.all()
     return queryset.filter(enabled=enabled)
@@ -111,7 +113,7 @@ def get_taxonomies(enabled=True) -> QuerySet[Taxonomy]:
 
 def get_tags(taxonomy: Taxonomy) -> TagDataQuerySet:
     """
-    Returns a QuerySet of all the tags in the given taxonomy.
+    Returns a QuerySet of all the unarchived tags in the given taxonomy.
 
     Note that if the taxonomy is dynamic or free-text, only tags that have
     already been applied to some object will be returned.
@@ -146,7 +148,7 @@ def search_tags(
         # Fetch tags that the object already has to exclude them from the result.
         # Note: this adds a fair bit of complexity. In the future, maybe we can just do this filtering on the frontend?
         excluded_values = list(
-            taxonomy.objecttag_set.filter(object_id=exclude_object_id).values_list(
+            taxonomy.objecttag_set.unarchived().filter(object_id=exclude_object_id).values_list(
                 "_value", flat=True
             )
         )
@@ -162,7 +164,9 @@ def get_children_tags(
     parent_tag_value: str,
 ) -> TagDataQuerySet:
     """
-    Returns a QuerySet of children tags for the given parent tag.
+    Returns a QuerySet of unarchived children tags for the given parent tag.
+
+    Raises Tag.DoesNotExist if the parent tag does not exist, or Tag.IsArchived if it is archived.
 
     Note that if the taxonomy allows free-text tags, then the returned list will be empty.
     """
@@ -220,11 +224,14 @@ def get_object_tags(
     """
     Returns a Queryset of object tags for a given object.
 
+    Archived object tags are excluded, as are those whose tag or taxonomy is archived.
+
     Pass taxonomy_id to limit the returned object_tags to a specific taxonomy.
     """
     filters = {"taxonomy_id": taxonomy_id} if taxonomy_id else {}
     base_qs = (
         ObjectTag.objects
+        .unarchived()
         .filter(object_id=object_id, **filters)
         .exclude(taxonomy__enabled=False)  # Exclude if the whole taxonomy is disabled
     )
@@ -258,14 +265,15 @@ def get_object_tag_counts(object_id_pattern: str, count_implicit=False) -> dict[
     "course-v1:foo+bar+baz@*", or a list of "comma,separated,IDs", return a
     dict of matching object IDs and how many tags each object has.
 
-    Deleted tags and disabled taxonomies are excluded from the counts, even if
+    Deleted tags, disabled taxonomies, and archived object tags (including those
+    whose tag or taxonomy is archived) are excluded from the counts, even if
     ObjectTag data about them is present.
 
     count_implicit: if True, this means to count all ancestor tags (implicit
     tags) of the explict tags that are associated with the object.
     """
     # Note: in the future we may add an option to exclude system taxonomies from the count.
-    qs: Any = ObjectTag.objects
+    qs: Any = ObjectTag.objects.unarchived()
     if object_id_pattern.endswith("*"):
         qs = qs.filter(object_id__startswith=object_id_pattern[0:len(object_id_pattern) - 1])
     elif "*" in object_id_pattern:
@@ -309,6 +317,8 @@ def get_object_tag_counts(object_id_pattern: str, count_implicit=False) -> dict[
 def delete_object_tags(object_id: str):
     """
     Delete all ObjectTag entries for a given object.
+
+    Locked associations (``deletion_locked=True``) are archived instead of deleted.
     """
     tags = ObjectTag.objects.filter(object_id=object_id)
 
@@ -323,12 +333,15 @@ def _check_new_tag_count(
 ) -> None:
     """
     Checks if the new count of tags for the object is equal or less than OBJECT_MAX_TAGS
+
+    Archived associations don't count toward the limit.
     """
     # Exclude to avoid counting the tags that are going to be updated
+    active_tags = ObjectTag.objects.unarchived().filter(object_id=object_id)
     if taxonomy:
-        current_count = ObjectTag.objects.filter(object_id=object_id).exclude(taxonomy_id=taxonomy.id).count()
+        current_count = active_tags.exclude(taxonomy_id=taxonomy.id).count()
     else:
-        current_count = ObjectTag.objects.filter(object_id=object_id).exclude(_export_id=taxonomy_export_id).count()
+        current_count = active_tags.exclude(_export_id=taxonomy_export_id).count()
 
     _check_object_tag_limit(current_count, new_tag_count, object_id)
 
@@ -372,6 +385,70 @@ def _get_current_tags(
     return current_tags
 
 
+def _pop_current_tag(
+    current_tags: list[ObjectTag],
+    unarchive_pks: list[int],
+    updated_tags: list[ObjectTag],
+    value: str,
+    tag_id: int | None = None,
+) -> bool:
+    """
+    Find the existing association for a re-applied tag, so it can be reused instead of recreated.
+
+    Matches on ``tag_id`` when one is given. Otherwise matches an association with no tag whose value equals
+    ``value`` under the database's collation for ``_value``, so it agrees with the unique constraint. If several
+    match, which only the no-taxonomy path allows, it prefers an exact spelling, then a locked one, then the lowest
+    pk. The match is removed from ``current_tags``, added to ``unarchive_pks`` if it is archived, and added to
+    ``updated_tags`` if its stored value differs from ``value``.
+
+    :return: ``True`` if an existing association matched, ``False`` if the caller needs to create one.
+    """
+    if tag_id is not None:
+        matches = [t for t in current_tags if t.tag_id == tag_id]
+    else:
+        candidates = [t for t in current_tags if t.tag_id is None]
+        # An identical spelling is equal under any collation, so only ask the database when there isn't one.
+        matches = [t for t in candidates if t.value == value]
+        if not matches and candidates:
+            equal_pks = set(
+                ObjectTag.objects.using(router.db_for_write(ObjectTag))
+                .filter(pk__in=[t.pk for t in candidates], _value=value)
+                .values_list("pk", flat=True)
+            )
+            matches = [t for t in candidates if t.pk in equal_pks]
+    if not matches:
+        return False
+    # Only value matches can be ambiguous, and they have no tag, so .value doesn't query for one.
+    object_tag = matches[0] if tag_id is not None else min(
+        matches, key=lambda t: (t.value != value, not t.deletion_locked, t.pk)
+    )
+    current_tags.remove(object_tag)
+    if object_tag.archived:
+        unarchive_pks.append(object_tag.pk)
+        # Also clear it in memory, so a later save() of this instance can't write archived=True back.
+        object_tag.archived = False
+    if object_tag._value != value:  # pylint: disable=protected-access
+        # The ObjectTag's cached '_value' is out of sync with the Tag or the casing, so update it:
+        object_tag._value = value  # pylint: disable=protected-access
+        updated_tags.append(object_tag)
+    return True
+
+
+def _save_object_tags(removed: list[ObjectTag], unarchive_pks: list[int], updated: list[ObjectTag]) -> None:
+    """
+    Apply the changes that :func:`tag_object` worked out, all in one transaction to avoid partial updates.
+    """
+    with transaction.atomic():
+        # Remove first to reduce the chances of UNIQUE constraint edge cases. Locked associations get archived.
+        if removed:
+            ObjectTag.objects.filter(pk__in=[object_tag.pk for object_tag in removed]).delete()
+        if unarchive_pks:
+            ObjectTag.objects.filter(pk__in=unarchive_pks).update(archived=False)
+        for object_tag in updated:
+            object_tag.full_clean()  # Run validation
+            object_tag.save()
+
+
 def tag_object(
     object_id: str,
     taxonomy: Taxonomy | None,
@@ -393,6 +470,9 @@ def tag_object(
     taxonomy_export_id: You can create object tags without taxonomy using this param
     and `taxonomy` as None. You need to use the taxonomy.export_id, so you can resync
     this object tag if the taxonomy is created in the future.
+
+    Re-applying a tag whose association is archived un-archives that same row and leaves ``deletion_locked``
+    unchanged. Omitted associations that are locked (``deletion_locked=True``) are archived instead of deleted.
     """
     if not isinstance(tags, list):
         raise ValueError(_("Tags must be a list, not {type}.").format(type=type(tags).__name__))
@@ -410,14 +490,11 @@ def tag_object(
         taxonomy_export_id
     )
 
-    updated_tags = []
+    updated_tags: list[ObjectTag] = []
+    unarchive_pks: list[int] = []
     if taxonomy and taxonomy.allow_free_text:
         for tag_value in tags:
-            object_tag_index = next((i for (i, t) in enumerate(current_tags) if t.value == tag_value), -1)
-            if object_tag_index >= 0:
-                # This tag is already applied.
-                object_tag = current_tags.pop(object_tag_index)
-            else:
+            if not _pop_current_tag(current_tags, unarchive_pks, updated_tags, value=tag_value):
                 object_tag = ObjectTag(taxonomy=taxonomy, object_id=object_id, _value=tag_value)
                 updated_tags.append(object_tag)
     else:
@@ -435,26 +512,22 @@ def tag_object(
 
             if tag:
                 # Tag exists in the taxonomy
-                object_tag_index = next((i for (i, t) in enumerate(current_tags) if t.tag_id == tag.id), -1)
-                if object_tag_index >= 0:
-                    # This tag is already applied.
-                    object_tag = current_tags.pop(object_tag_index)
-                    if object_tag._value != tag.value:  # pylint: disable=protected-access
-                        # The ObjectTag's cached '_value' is out of sync with the Tag, so update it:
-                        object_tag._value = tag.value  # pylint: disable=protected-access
-                        updated_tags.append(object_tag)
-                else:
+                # If this tag is already applied, the helper also fixes the row's cached '_value' if it's out of sync.
+                if not _pop_current_tag(current_tags, unarchive_pks, updated_tags, value=tag.value, tag_id=tag.id):
                     # We are newly applying this tag:
                     object_tag = ObjectTag(taxonomy=taxonomy, object_id=object_id, tag=tag)
                     updated_tags.append(object_tag)
             elif taxonomy:
                 # Tag doesn't exist in the taxonomy and `create_invalid` is True
-                object_tag = ObjectTag(taxonomy=taxonomy, object_id=object_id, _value=tag_value)
-                updated_tags.append(object_tag)
+                if not _pop_current_tag(current_tags, unarchive_pks, updated_tags, value=tag_value):
+                    object_tag = ObjectTag(taxonomy=taxonomy, object_id=object_id, _value=tag_value)
+                    updated_tags.append(object_tag)
             else:
                 # Taxonomy is None (also tag doesn't exist)
-                if taxonomy_export_id:
-                    # This will always be true, since it is verified at the beginning of the function.
+                if taxonomy_export_id and not _pop_current_tag(
+                    current_tags, unarchive_pks, updated_tags, value=tag_value
+                ):
+                    # `taxonomy_export_id` will always be true, since it is verified at the beginning of the function.
                     # This condition is placed by the type checks.
                     object_tag = ObjectTag(
                         taxonomy=None,
@@ -464,15 +537,7 @@ def tag_object(
                     )
                     updated_tags.append(object_tag)
 
-    # Save all updated tags at once to avoid partial updates
-    with transaction.atomic():
-        # delete any omitted existing tags. We do this first to reduce chances of UNIQUE constraint edge cases
-        for old_tag in current_tags:
-            old_tag.delete()
-        # add the new tags:
-        for object_tag in updated_tags:
-            object_tag.full_clean()  # Run validation
-            object_tag.save()
+    _save_object_tags(current_tags, unarchive_pks, updated_tags)
 
 
 def add_tag_to_object(object_id: str, tag: Tag) -> ObjectTag:
@@ -576,6 +641,9 @@ def copy_tags(source_object_id: str, dest_object_id: str):
     previous copied tags of the dest object.
     If there are not-copied tags that also are in 'source_object_id',
     then they become copied.
+
+    Locked copied tags (``deletion_locked=True``) are archived instead of deleted. An archived destination
+    tag that the source still has is un-archived.
     """
     source_object_tags = get_object_tags(
         source_object_id,
@@ -591,12 +659,20 @@ def copy_tags(source_object_id: str, dest_object_id: str):
 
         # Copy an create object_tags in destination
         for object_tag in source_object_tags:
+            lookup: dict[str, Any] = {
+                "object_id": dest_object_id,
+                "taxonomy_id": cast(int, object_tag.taxonomy_id),
+            }
+            if object_tag.tag_id:
+                # Match closed tags by id, since the destination's cached _value can be stale.
+                lookup["tag_id"] = object_tag.tag_id
+            else:
+                # Free-text associations all have a null tag_id, so match on the value, as the unique constraint does.
+                lookup["_value"] = object_tag.value
             ObjectTag.objects.update_or_create(
-                object_id=dest_object_id,
-                taxonomy_id=cast(int, object_tag.taxonomy_id),
-                tag_id=cast(int, object_tag.tag_id),
-                defaults={"is_copied": True},
-                # Note: _value and _export_id are set automatically
+                **lookup,
+                defaults={"is_copied": True, "archived": False},
+                # Note: _value (for closed tags) and _export_id are set automatically
             )
 
 
@@ -605,6 +681,79 @@ def unmark_copied_tags(object_id: str) -> None:
     Update copied object tags on the given object to mark them as "not copied".
     """
     ObjectTag.objects.filter(object_id=object_id).update(is_copied=False)
+
+
+def _extract_object_tag_ids(object_tag_ids: int | Iterable[int]) -> set[int]:
+    """
+    Return ``object_tag_ids`` as a set, raising TypeError for anything that is not an int or an iterable of ints.
+    """
+    if isinstance(object_tag_ids, (str, bytes)) or not isinstance(object_tag_ids, (int, Iterable)):
+        raise TypeError(f"ObjectTag ids must be ints, got {object_tag_ids!r} ({type(object_tag_ids).__name__})")
+    ids = {object_tag_ids} if isinstance(object_tag_ids, int) else set(object_tag_ids)
+    for object_tag_id in ids:
+        if isinstance(object_tag_id, bool) or not isinstance(object_tag_id, int):
+            raise TypeError(f"ObjectTag ids must be ints, got {object_tag_id!r} ({type(object_tag_id).__name__})")
+    return ids
+
+
+def lock_object_tags_for_deletion(object_tag_ids: int | Iterable[int]) -> None:
+    """
+    Lock the given ObjectTags against deletion.
+
+    A locked association is archived rather than deleted, because a learner competency status depends on it.
+    Locks are permanent; there is no unlock.
+
+    :param object_tag_ids: One ObjectTag primary key, or an iterable of them.
+    :raises TypeError: If any id is not an int. Strings, bytes, and bools are not coerced.
+    :raises ObjectTagDoesNotExist: If any id does not resolve to an ObjectTag, or is deleted while this function
+        runs.
+    """
+    ids = _extract_object_tag_ids(object_tag_ids)
+    if not ids:
+        return
+    locked_by_id = dict(ObjectTag.objects.filter(pk__in=ids).values_list("pk", "deletion_locked"))
+    missing = ids - locked_by_id.keys()
+    if missing:
+        raise ObjectTag.DoesNotExist(f"ObjectTag ids not found: {sorted(missing)}")
+    unlocked = [object_tag_id for object_tag_id, locked in locked_by_id.items() if not locked]
+    if unlocked:
+        with transaction.atomic():
+            updated = ObjectTag.objects.filter(pk__in=unlocked, deletion_locked=False).update(deletion_locked=True)
+            if updated != len(unlocked):
+                # A shortfall means a row was deleted, or another caller locked it first. Only the former is an error.
+                surviving = set(ObjectTag.objects.filter(pk__in=unlocked).values_list("pk", flat=True))
+                deleted = set(unlocked) - surviving
+                if deleted:
+                    raise ObjectTag.DoesNotExist(
+                        f"ObjectTag ids deleted before they could be locked: {sorted(deleted)}"
+                    )
+
+
+def get_tags_locked_for_deletion(tag_ids: Iterable[int]) -> set[int]:
+    """
+    Return the subset of ``tag_ids`` that have at least one deletion-locked association.
+
+    Archived associations count: a locked association keeps protecting its tag after it is archived.
+
+    :param tag_ids: The tag ids to check. Unknown ids are omitted from the result.
+    """
+    ids = set(tag_ids)
+    locked = ObjectTag.objects.filter(tag_id__in=ids, deletion_locked=True)
+    return set(locked.values_list("tag_id", flat=True).distinct())
+
+
+def is_taxonomy_locked_for_deletion(taxonomy_id: int | None) -> bool:
+    """
+    Return whether any association in the taxonomy is deletion-locked.
+
+    Archived associations count: a locked association keeps protecting its taxonomy after it is archived.
+
+    :param taxonomy_id: The taxonomy id to check. ``None`` returns ``False``, so that associations left behind by a
+        deleted taxonomy, whose ``taxonomy_id`` is NULL, are not mistaken for a locked one.
+    """
+    if taxonomy_id is None:
+        return False
+    return ObjectTag.objects.filter(taxonomy_id=taxonomy_id, deletion_locked=True).exists()
 
 
 def add_usage_counts(taxonomy: Taxonomy, tag_data: TagDataQuerySet) -> TagDataQuerySet:
@@ -627,13 +776,15 @@ def add_usage_counts(taxonomy: Taxonomy, tag_data: TagDataQuerySet) -> TagDataQu
     parent tag, "Natural Science" is only applied to it once,
     because no tag can be applied to the same object twice.
 
+    Archived object tags, and those whose tag or taxonomy is archived, are not counted.
+
     For performance reasons, we call this function with the list result of the
     QuerySet so we can then add the counts in-memory rather than annotate to a
     QuerySet which would require a very expensive annotation to join the
     in-memory data to the original QuerySet.
     """
 
-    object_tags = taxonomy.objecttag_set.values_list("object_id", "tag__lineage")
+    object_tags = taxonomy.objecttag_set.unarchived().values_list("object_id", "tag__lineage")
     tag_counts: Counter[str] = Counter()
     object_tag_lineage_seen: defaultdict[str, set] = defaultdict(set)
 
