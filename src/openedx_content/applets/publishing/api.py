@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from functools import partial
-from typing import ContextManager, Optional, cast
+from typing import ContextManager, cast
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
@@ -700,7 +700,7 @@ def get_draft_version(
     if isinstance(publishable_entity_or_id, PublishableEntity):
         # Fetches the draft version for a given PublishableEntity.
         # Gracefully handles cases where no draft is present.
-        draft: Optional[Draft] = getattr(publishable_entity_or_id, "draft", None)
+        draft: Draft | None = getattr(publishable_entity_or_id, "draft", None)
         if draft is None:
             return None
         return draft.version
@@ -730,7 +730,7 @@ def get_published_version(
     if isinstance(publishable_entity_or_id, PublishableEntity):
         # Fetches the published version for a given PublishableEntity.
         # Gracefully handles cases where no published version is present.
-        published: Optional[Published] = getattr(publishable_entity_or_id, "published", None)
+        published: Published | None = getattr(publishable_entity_or_id, "published", None)
         if published is None:
             return None
         return published.version

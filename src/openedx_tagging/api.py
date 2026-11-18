@@ -12,9 +12,9 @@ are stored in this app.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from enum import Enum
-from typing import Any, Counter, cast
+from typing import Any, cast
 
 from django.db import models, transaction
 from django.db.models import F, QuerySet, Value

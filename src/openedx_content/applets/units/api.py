@@ -3,9 +3,9 @@
 This module provides functions to manage units.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
 
 from ..components.models import Component, ComponentVersion
 from ..containers import api as containers_api

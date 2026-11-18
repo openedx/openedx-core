@@ -6,9 +6,9 @@ bulk_draft_changes_for instead (which will invoke this internally).
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Callable
 
 from django.db.transaction import Atomic
 

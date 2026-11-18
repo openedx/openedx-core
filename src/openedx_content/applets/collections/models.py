@@ -175,7 +175,7 @@ class Collection(models.Model):
         ],
     )
 
-    entities: models.ManyToManyField[PublishableEntity, "CollectionPublishableEntity"] = models.ManyToManyField(
+    entities: models.ManyToManyField[PublishableEntity, CollectionPublishableEntity] = models.ManyToManyField(
         PublishableEntity,
         through="CollectionPublishableEntity",
         related_name="collections",

@@ -4,10 +4,11 @@ Public API for Competency-Based Education (CBE).
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Iterable, Sequence, cast
+from typing import Any, cast
 
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
 from django.db import IntegrityError, connection, transaction

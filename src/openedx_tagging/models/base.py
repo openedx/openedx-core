@@ -5,7 +5,7 @@ Tagging app base data models
 from __future__ import annotations
 
 import re
-from typing import List, Self, cast
+from typing import Self, cast
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -24,7 +24,7 @@ from .utils import RESERVED_TAG_CHARS, tag_external_id_candidate
 TAXONOMY_MAX_DEPTH = 5
 
 # Ancestry of a given tag; the Tag.value fields of a given tag and its parents, starting from the root.
-Lineage = List[str]
+Lineage = list[str]
 
 
 class Tag(models.Model):
@@ -587,7 +587,7 @@ class Taxonomy(models.Model):
         tag_to_update.save()
         return tag_to_update
 
-    def delete_tags(self, tags: List[str], with_subtags: bool = False):
+    def delete_tags(self, tags: list[str], with_subtags: bool = False):
         """
         Delete the Taxonomy Tags provided. If any of them have children and
         the `with_subtags` is not set to `True` it will fail, otherwise

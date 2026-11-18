@@ -3,7 +3,7 @@ API Serializers for taxonomies
 """
 from __future__ import annotations
 
-from typing import Any, Type
+from typing import Any
 from urllib.parse import urlencode
 
 from rest_framework import serializers
@@ -52,7 +52,7 @@ class UserPermissionsSerializerMixin(UserPermissionsHelper):
     * Requires the current request to be passed into the serializer context (override _request to change).
     """
     @property
-    def _model(self) -> Type:
+    def _model(self) -> type:
         """
         Returns the model that is being serialized
         """
@@ -314,7 +314,7 @@ class TagDataSerializer(UserPermissionsSerializerMixin, serializers.Serializer):
         return None
 
     @property
-    def _model(self) -> Type:
+    def _model(self) -> type:
         """
         Returns the model used when checking permissions.
         """
