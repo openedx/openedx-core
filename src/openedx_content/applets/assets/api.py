@@ -242,11 +242,27 @@ def create_asset_and_version(
             if overwrite_deleted:
                 asset = Asset.objects.get(learning_package_id=learning_package_id, path=path)
                 if asset.versioning.draft is None:
+                    # There is a deleted or placeholder asset that we will restore and create a new version of.
+
+                    # Determine the version number now to avoid a race condition (where v1 is deleted and two users
+                    # simultaneously upload a new version - we want one to work and one to error, not both to work
+                    # and v3 to replace v2 immediately.)
+                    next_version = asset.versioning.latest.version_num + 1 if asset.versioning.latest else 1
+
                     # Reset 'allow_scripts' to False unless specified, and update permissions iff specified:
                     update_asset(asset, permissions=permissions, allow_scripts=allow_scripts)
-                    asset_version = create_next_asset_version(
-                        asset, title=title, created=created, created_by=created_by, media=media
-                    )
+                    try:
+                        asset_version = create_asset_version(
+                            asset,
+                            version_num=next_version,
+                            created=created,
+                            created_by=created_by,
+                            title=title,
+                            media=media,
+                        )
+                    except IntegrityError as exc:
+                        # race condition - someone else is (re-)creating an asset with this path simultaneously
+                        raise AssetAlreadyExists(path) from exc
                     asset.refresh_from_db()
                     return (asset, asset_version)
             raise
