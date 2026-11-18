@@ -3,8 +3,13 @@ import pytest
 from django.apps import apps
 
 from openedx_catalog.models import CourseRun
-from openedx_learning.models import CompetencyCriteriaGroup, CompetencyTaxonomy
-from openedx_tagging.models import Tag
+from openedx_learning.models import (
+    CompetencyCriteriaGroup,
+    CompetencyCriterion,
+    CompetencyRuleProfile,
+    CompetencyTaxonomy,
+)
+from openedx_tagging.models import ObjectTag, Tag
 
 pytestmark = pytest.mark.django_db
 
@@ -74,6 +79,34 @@ def test_deleting_a_course_run_also_deletes_its_course_scoped_criteria_groups(
 
     assert not CompetencyCriteriaGroup.objects.filter(pk__in=group_pks).exists()
     assert CompetencyCriteriaGroup.objects.filter(pk=root.pk).exists()
+
+
+def test_deleting_a_course_run_keeps_a_group_moved_out_of_its_subtree_behind_save(
+    tag: Tag,
+    course_run: CourseRun,
+    object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    `subtree_course` is a SET_NULL foreign key, so deleting a course run never deletes a group
+    through it. A leaf moved to the root by a write that skips save() keeps its stale
+    `subtree_course`; after the delete it and its criterion survive, with `subtree_course` null.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    course_level_group = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+    leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level_group)
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile
+    )
+    assert leaf.subtree_course_id == course_run.id
+    CompetencyCriteriaGroup.objects.filter(pk=leaf.pk).update(parent=root)
+
+    course_run.delete()
+
+    leaf.refresh_from_db()
+    assert leaf.parent_id == root.pk
+    assert leaf.subtree_course_id is None
+    assert CompetencyCriterion.objects.filter(pk=criterion.pk).exists()
 
 
 def test_deleting_a_group_at_depth_also_deletes_every_descendant_group(tag: Tag) -> None:
