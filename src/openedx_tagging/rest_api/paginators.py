@@ -2,7 +2,6 @@
 Paginators uses by the REST API
 """
 
-from typing import Type
 
 from edx_rest_framework_extensions.paginators import DefaultPagination  # type: ignore[import]
 from rest_framework.request import Request
@@ -47,7 +46,7 @@ class TaxonomyPagination(CanAddPermissionMixin, DefaultPagination):
     max_page_size = 500
 
     @property
-    def _model(self) -> Type:
+    def _model(self) -> type:
         """
         Returns the model that is being paginated.
         """
@@ -61,7 +60,7 @@ class TagPermissionsMixin(CanAddPermissionMixin):
     """
 
     @property
-    def _model(self) -> Type:
+    def _model(self) -> type:
         """
         Returns the model that is being paginated.
         """

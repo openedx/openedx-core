@@ -3,10 +3,9 @@ Data models used by openedx-tagging
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 
 from django.db.models import QuerySet
-from typing_extensions import NotRequired, TypeAlias
 
 
 class TagData(TypedDict):
@@ -31,9 +30,9 @@ class TagData(TypedDict):
 
 if TYPE_CHECKING:
     from django_stubs_ext import ValuesQuerySet
-    TagDataQuerySet: TypeAlias = ValuesQuerySet[Any, TagData]
+    type TagDataQuerySet = ValuesQuerySet[Any, TagData]
     # The following works better for pyright (provides proper VS Code autocompletions),
     # but I can't find any way to specify different types for pyright vs mypy :/
-    # TagDataQuerySet: TypeAlias = QuerySet[TagData]
+    # type TagDataQuerySet = QuerySet[TagData]
 else:
     TagDataQuerySet = QuerySet[TagData]

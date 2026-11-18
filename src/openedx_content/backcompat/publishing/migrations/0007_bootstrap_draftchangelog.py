@@ -78,7 +78,7 @@ def bootstrap_draft_change_logs(apps, schema_editor):
 
 
 def delete_draft_change_logs(apps, schema_editor):
-    logger.info(f"Deleting all DraftChangeLogs (reverse migration)")
+    logger.info("Deleting all DraftChangeLogs (reverse migration)")
     DraftChangeLog = apps.get_model("oel_publishing", "DraftChangeLog")
     DraftChangeLog.objects.all().delete()
 

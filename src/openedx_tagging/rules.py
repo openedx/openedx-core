@@ -3,7 +3,7 @@ Django rules-based permissions for tagging
 """
 from __future__ import annotations
 
-from typing import Callable, Union
+from collections.abc import Callable
 
 import django.contrib.auth.models
 import rules
@@ -11,9 +11,7 @@ from attrs import define
 
 from .models import Tag, Taxonomy
 
-UserType = Union[
-    django.contrib.auth.models.User, django.contrib.auth.models.AnonymousUser
-]
+type UserType = django.contrib.auth.models.User | django.contrib.auth.models.AnonymousUser
 
 
 # Global staff are taxonomy admins.

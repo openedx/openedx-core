@@ -2,6 +2,7 @@
 This module provides functionality to create a zip file containing the learning package data,
 including a TOML representation of the learning package and its entities.
 """
+
 import hashlib
 import time
 import tomllib
@@ -11,7 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import Any, List, Literal, Optional, Tuple
+from typing import Any, Literal
 
 from django.contrib.auth.models import User as UserType  # pylint: disable=imported-auth-user
 from django.db import transaction
@@ -216,10 +217,8 @@ class LearningPackageZipper:
         )
 
     def get_versions_to_write(
-            self, entity: PublishableEntity
-        ) -> Tuple[List[PublishableEntityVersion],
-                   Optional[PublishableEntityVersion],
-                   Optional[PublishableEntityVersion]]:
+        self, entity: PublishableEntity
+    ) -> tuple[list[PublishableEntityVersion], PublishableEntityVersion | None, PublishableEntityVersion | None]:
         """
         Get the versions of a publishable entity that should be written to the zip file.
         It retrieves both draft and published versions.
@@ -230,8 +229,8 @@ class LearningPackageZipper:
             - draft_version: The current draft version, if any.
             - published_version: The current published version, if any.
         """
-        draft_version: Optional[PublishableEntityVersion] = publishing_api.get_draft_version(entity)
-        published_version: Optional[PublishableEntityVersion] = publishing_api.get_published_version(entity)
+        draft_version: PublishableEntityVersion | None = publishing_api.get_draft_version(entity)
+        published_version: PublishableEntityVersion | None = publishing_api.get_published_version(entity)
 
         versions_to_write = [draft_version] if draft_version else []
 
@@ -264,7 +263,7 @@ class LearningPackageZipper:
         self.entities_filenames_already_created.add(slugify_name)
         return filename
 
-    def get_latest_modified(self, versions_to_check: List[PublishableEntityVersion]) -> datetime:
+    def get_latest_modified(self, versions_to_check: list[PublishableEntityVersion]) -> datetime:
         """
         Get the latest modification timestamp among the learning package and its entities.
         """
@@ -417,6 +416,7 @@ class RestoreLearningPackageData:
     """
     Data about the restored learning package.
     """
+
     id: int  # The ID of the restored learning package
     package_ref: str  # The package_ref of the restored learning package (may be different if staged)
     archive_package_ref: str  # The original package_ref from the archive
@@ -436,6 +436,7 @@ class BackupMetadata:
     """
     Metadata about the backup operation.
     """
+
     format_version: int
     created_at: str
     created_by: str | None = None
@@ -448,6 +449,7 @@ class RestoreResult:
     """
     Result of the restore operation.
     """
+
     status: Literal["success", "error"]
     log_file_error: StringIO | None = None
     lp_restored_data: RestoreLearningPackageData | None = None
@@ -598,7 +600,7 @@ class LearningPackageUnzipper:
             components_validated,
             containers_validated,
             collections_validated,
-            component_static_files=organized_files["component_static_files"]
+            component_static_files=organized_files["component_static_files"],
         )
 
         num_containers = sum(
@@ -634,7 +636,7 @@ class LearningPackageUnzipper:
         )
         return asdict(result)
 
-    def check_mandatory_files(self) -> Tuple[list[dict[str, Any]], dict[str, Any]]:
+    def check_mandatory_files(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """
         Check for the presence of mandatory files in the zip archive.
         So far, the only mandatory file is package.toml.
@@ -755,7 +757,7 @@ class LearningPackageUnzipper:
         containers: dict[str, Any],
         collections: dict[str, Any],
         *,
-        component_static_files: dict[str, List[str]]
+        component_static_files: dict[str, list[str]],
     ) -> LearningPackage:
         """Persist all validated entities in two phases: published then drafts."""
 
@@ -800,7 +802,7 @@ class LearningPackageUnzipper:
                 collection_code=collection.collection_code,
                 entities_qset=publishing_api.get_publishable_entities(learning_package.id).filter(
                     entity_ref__in=entities
-                )
+                ),
             )
 
     def _save_components(self, learning_package, components, component_static_files):
@@ -825,7 +827,7 @@ class LearningPackageUnzipper:
                 media_to_replace=media_to_replace,
                 force_version_num=valid_published.pop("version_num", None),
                 created_by=self.user_id,
-                **valid_published
+                **valid_published,
             )
 
     def _save_container(
@@ -917,7 +919,7 @@ class LearningPackageUnzipper:
                 # Use case: published v1 had files A, B; draft v2 only has file A
                 ignore_previous_media=True,
                 created_by=self.user_id,
-                **valid_draft
+                **valid_draft,
             )
 
         def _process_draft_containers(
@@ -983,7 +985,7 @@ class LearningPackageUnzipper:
             num_version: int,
             entity_ref: str,
             component_type: ComponentType,
-            static_files_map: dict[str, List[str]]
+            static_files_map: dict[str, list[str]]
     ) -> dict[str, bytes | int]:
         """Resolve static file paths into their binary media content."""
         resolved_files: dict[str, bytes | int] = {}
@@ -1086,7 +1088,7 @@ class LearningPackageUnzipper:
                     organized["components"].append(path)
                     component_toml_str = self._read_file_from_zip(path)
                     component_toml = tomllib.loads(component_toml_str)
-                    entity_ref = component_toml['entity']['key']
+                    entity_ref = component_toml["entity"]["key"]
                     comp_path = path.removesuffix(".toml")
 
                     # This maps the root path of a component, e.g."entities/xblock.v1/html/my_component_a822bb"
@@ -1100,7 +1102,7 @@ class LearningPackageUnzipper:
                     # Example: entities/xblock.v1/html/my_component_a822bb/component_versions/v1/static/...
 
                     # e.g. 'entities/xblock.v1/html/my_component_a822bb'
-                    component_root_path = '/'.join(Path(path).parts[0:4])
+                    component_root_path = "/".join(Path(path).parts[0:4])
 
                     try:
                         component_ref = comp_paths_to_refs[component_root_path]
@@ -1127,8 +1129,8 @@ class LearningPackageUnzipper:
     def _get_versions_to_write(
         self,
         version_data: list[dict[str, Any]],
-        entity_data: dict[str, Any]
-    ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+        entity_data: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """Return the draft and published versions to write, based on entity data."""
         draft_num = entity_data.get("draft", {}).get("version_num")
         published_num = entity_data.get("published", {}).get("version_num")

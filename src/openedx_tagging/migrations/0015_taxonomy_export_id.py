@@ -21,7 +21,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # Create the field allowing null 
+        # Create the field allowing null
         migrations.AddField(
             model_name='taxonomy',
             name='export_id',

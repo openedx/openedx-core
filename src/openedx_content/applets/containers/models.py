@@ -160,7 +160,7 @@ class ContainerType(models.Model):
             ),
         ]
 
-    def __str__(self) -> str:  # pylint: disable=invalid-str-returned
+    def __str__(self) -> str:
         return self.type_code
 
 
