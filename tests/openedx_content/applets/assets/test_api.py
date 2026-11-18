@@ -165,7 +165,7 @@ def test_path_case_sensitive(lp: LearningPackage) -> None:
 
 
 @pytest.mark.parametrize(
-    "path, valid",
+    ("path", "valid"),
     [
         # ✅ Valid:
         ("image.jpg", True),
@@ -217,7 +217,7 @@ def test_valid_invalid_paths(path: str, valid: bool, lp: LearningPackage) -> Non
 
 
 @pytest.mark.parametrize(
-    "permissions, valid",
+    ("permissions", "valid"),
     [
         (api.AssetPermissions.PUBLIC, True),
         (api.AssetPermissions.LOCKED, True),
