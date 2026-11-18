@@ -202,6 +202,7 @@ def test_path_case_sensitive(lp: LearningPackage) -> None:
 )
 def test_valid_invalid_paths(path: str, valid: bool, lp: LearningPackage) -> None:
     """Test validation of filenames"""
+    assert api.is_valid_asset_path(path) is valid
 
     def create():
         return api.create_asset(lp.id, path=path, created=now, created_by=None)

@@ -46,6 +46,7 @@ __all__ = [
     "get_asset_by_path",
     "get_assets",
     "get_missing_asset_dependencies",
+    "is_valid_asset_path",
     "update_asset",
 ]
 
@@ -71,6 +72,18 @@ class AssetAlreadyExists(ValidationError):
     def __init__(self, path: str):
         self.path = path
         super().__init__(f'Asset with path "{path}" already exists.')
+
+
+def is_valid_asset_path(path: str) -> bool:
+    """
+    Check if ``path`` is a valid ``Asset.path``, e.g. ``"image.png"`` or
+    ``"images/photo.png"``.
+
+    Paths must not be empty or longer than ``ASSET_PATH_MAX_LENGTH``, and must
+    not contain control characters, backslashes, a leading or trailing slash,
+    empty segments (``//``), or ``.`` or ``..`` segments.
+    """
+    return len(path) <= ASSET_PATH_MAX_LENGTH and PATH_RE.fullmatch(path) is not None
 
 
 def create_asset(
@@ -103,7 +116,7 @@ def create_asset(
     # Do some quick checks now in python. These are similar to what `Asset.validate_constraints()`` would run for us,
     # but it wraps each check in a savepoint, so adds a lot of queries. The DB constraints remain as a backstop against
     # things like `Asset.objects.update(...)`, which bypass all other validation.
-    if len(path) > ASSET_PATH_MAX_LENGTH or not PATH_RE.fullmatch(path):
+    if not is_valid_asset_path(path):
         raise ValidationError(INVALID_PATH_MSG)
     if permissions not in AssetPermissions.values:
         raise RuntimeError("Invalid permissions enum value.")  # This is a coding error, not a user input error
