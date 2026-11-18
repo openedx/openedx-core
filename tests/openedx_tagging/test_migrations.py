@@ -15,6 +15,9 @@ MIGRATE_TO = ("oel_tagging", "0022_tag_external_id_not_null")
 MIGRATE_0023_FROM = ("oel_tagging", "0022_tag_external_id_not_null")
 MIGRATE_0023_TO = ("oel_tagging", "0023_archived_and_deletion_locked")
 
+MIGRATE_0024_FROM = MIGRATE_0023_TO
+MIGRATE_0024_TO = ("oel_tagging", "0024_rename_deletion_locked_should_archive_instead_delete")
+
 
 @pytest.mark.django_db
 def test_backfill_generates_missing_external_ids(migrator) -> None:
@@ -132,3 +135,52 @@ def test_archived_and_deletion_locked_default_to_false_for_existing_rows(migrato
     assert new_tag.archived is False
     assert new_object_tag.archived is False
     assert new_object_tag.deletion_locked is False
+
+
+def _create_object_tags_for_rename(apps) -> tuple[int, int]:
+    """
+    Create one ObjectTag with deletion_locked=True and one with False on the 0023 schema.
+    """
+    Taxonomy = apps.get_model("oel_tagging", "Taxonomy")
+    Tag = apps.get_model("oel_tagging", "Tag")
+    ObjectTag = apps.get_model("oel_tagging", "ObjectTag")
+
+    taxonomy = Taxonomy.objects.create(name="Rename Test", export_id="rename_test")
+    tag = Tag.objects.create(
+        taxonomy=taxonomy, value="Rename Tag", external_id="rename-tag", depth=0, lineage="Rename Tag\t",
+    )
+    locked = ObjectTag.objects.create(object_id="object:id:locked", taxonomy=taxonomy, tag=tag, deletion_locked=True)
+    unlocked = ObjectTag.objects.create(object_id="object:id:unlocked", taxonomy=taxonomy, tag=tag)
+    return locked.pk, unlocked.pk
+
+
+@pytest.mark.django_db
+def test_rename_to_should_archive_instead_delete_keeps_values(migrator) -> None:
+    """
+    0024 renames deletion_locked to should_archive_instead_delete without changing any row's value.
+    """
+    old_state = migrator.apply_initial_migration(MIGRATE_0024_FROM)
+    locked_pk, unlocked_pk = _create_object_tags_for_rename(old_state.apps)
+
+    new_state = migrator.apply_tested_migration(MIGRATE_0024_TO)
+    NewObjectTag = new_state.apps.get_model("oel_tagging", "ObjectTag")
+
+    assert NewObjectTag.objects.get(pk=locked_pk).should_archive_instead_delete is True
+    assert NewObjectTag.objects.get(pk=unlocked_pk).should_archive_instead_delete is False
+    assert not hasattr(NewObjectTag.objects.get(pk=locked_pk), "deletion_locked")
+
+
+@pytest.mark.django_db
+def test_reverse_rename_restores_deletion_locked_values(migrator) -> None:
+    """
+    Migrating back from 0024 to 0023 restores the deletion_locked column with the same values.
+    """
+    old_state = migrator.apply_initial_migration(MIGRATE_0024_FROM)
+    locked_pk, unlocked_pk = _create_object_tags_for_rename(old_state.apps)
+
+    migrator.apply_tested_migration(MIGRATE_0024_TO)
+    reverted_state = migrator.apply_tested_migration(MIGRATE_0024_FROM)
+    RevertedObjectTag = reverted_state.apps.get_model("oel_tagging", "ObjectTag")
+
+    assert RevertedObjectTag.objects.get(pk=locked_pk).deletion_locked is True
+    assert RevertedObjectTag.objects.get(pk=unlocked_pk).deletion_locked is False

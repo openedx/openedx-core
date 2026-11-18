@@ -615,10 +615,10 @@ class TestObjectTag(TestTagTaxonomyMixin, TestCase):
 
     def test_copying_a_tag_via_casting_copies_field_values(self) -> None:
         self.object_tag.archived = True
-        self.object_tag.deletion_locked = True
+        self.object_tag.should_archive_instead_delete = True
         copy_tag = ObjectTagTestSubclass.cast(self.object_tag)
         assert copy_tag.archived is True
-        assert copy_tag.deletion_locked is True
+        assert copy_tag.should_archive_instead_delete is True
 
     def test_object_tag_export_id(self):
         # ObjectTag's export_id defaults to its taxonomy's export_id

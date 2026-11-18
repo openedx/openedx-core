@@ -739,7 +739,7 @@ class ObjectTag(models.Model):
         default=False,
         help_text=_("Hides this association from active use by default, without removing it."),
     )
-    deletion_locked = models.BooleanField(
+    should_archive_instead_delete = models.BooleanField(
         default=False,
         help_text=_(
             "Set when something outside the tagging app depends on this association;"
@@ -919,7 +919,7 @@ class ObjectTag(models.Model):
         self.object_id = object_tag.object_id
         self.is_copied = object_tag.is_copied
         self.archived = object_tag.archived
-        self.deletion_locked = object_tag.deletion_locked
+        self.should_archive_instead_delete = object_tag.should_archive_instead_delete
         self._value = object_tag._value  # pylint: disable=protected-access
         self._export_id = object_tag._export_id  # pylint: disable=protected-access
         return self
