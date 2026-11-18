@@ -56,3 +56,9 @@ rules.add_perm(
     "openedx_learning.view_competencyruleprofile",
     rules.is_authenticated & can_view_competency_rule_profile,
 )
+
+# The permission name is a contract with openedx-platform, which replaces it with ``rules.set_perm`` to
+# allow only enrolled learners and course staff. Renaming it here silently removes that override, and
+# every signed-in user could then read every course's criteria. The object checked against is the
+# course run's CourseKey.
+rules.add_perm("openedx_learning.view_course_competency_criteria", rules.is_authenticated)

@@ -68,3 +68,90 @@ class GroupDeletionResult:
     archived: bool
     cascaded_group_count: int
     cascaded_criteria_count: int
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CourseCriteriaTaxonomy:
+    """
+    A competency taxonomy that has at least one competency with criteria in a course run.
+
+    UNSTABLE: see :func:`openedx_learning.applets.cbe.api.get_course_competency_criteria`.
+    """
+
+    id: int
+    name: str
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CourseCriteriaCompetency:
+    """
+    A competency (a Tag of a competency taxonomy) that has criteria in a course run.
+
+    ``id`` is the Tag id. ``lineage`` holds the tag values from the taxonomy's top level down to the
+    competency itself, so a top-level competency's lineage is a single entry.
+
+    UNSTABLE: see :func:`openedx_learning.applets.cbe.api.get_course_competency_criteria`.
+    """
+
+    id: int
+    name: str
+    external_id: str | None
+    lineage: list[str]
+    taxonomy_id: int
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CourseCriteriaGroup:
+    """
+    One CompetencyCriteriaGroup of a competency's criteria tree in a course run.
+
+    ``competency_id`` is the id of the group's tag, which every group of a competency's tree shares.
+    ``parent_id`` is None only for the root group. ``logic_operator`` is the stored value: ``"AND"``,
+    ``"OR"``, or None.
+
+    UNSTABLE: see :func:`openedx_learning.applets.cbe.api.get_course_competency_criteria`.
+    """
+
+    id: int
+    competency_id: int
+    parent_id: int | None
+    name: str
+    logic_operator: str | None
+    ordering: int
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CourseCriteriaCriterion:
+    """
+    One CompetencyCriterion of a course run.
+
+    ``usage_key`` is the object id of the criterion's ObjectTag. ``rule_type`` and ``rule_payload`` are
+    the effective rule: the rule profile's when the criterion has one, its own override otherwise.
+
+    UNSTABLE: see :func:`openedx_learning.applets.cbe.api.get_course_competency_criteria`.
+    """
+
+    id: int
+    group_id: int
+    usage_key: str
+    rule_type: str
+    rule_payload: dict
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CourseCompetencyCriteria:
+    """
+    The competency criteria of one course run, as four flat lists that reference each other by id.
+
+    Every ``parent_id``, ``competency_id``, ``group_id`` and ``taxonomy_id`` in one list names an
+    item in the list it refers to. See :func:`openedx_learning.applets.cbe.api.get_course_competency_criteria`.
+
+    UNSTABLE: becomes stable once the learner Progress tab frontends
+    (https://github.com/openedx/openedx-core/issues/734 and https://github.com/openedx/openedx-core/issues/839)
+    ship and the learner status endpoints reuse the same shape.
+    """
+
+    taxonomies: list[CourseCriteriaTaxonomy]
+    competencies: list[CourseCriteriaCompetency]
+    groups: list[CourseCriteriaGroup]
+    criteria: list[CourseCriteriaCriterion]

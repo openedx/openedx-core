@@ -31,3 +31,18 @@ class CompetencyBlockedCoursesPagination(DefaultPagination):
 
     page_size = 100
     max_page_size = 500
+
+
+class CourseCompetencyCriteriaPagination(DefaultPagination):
+    """
+    Page size for the competencies of a course run's criteria.
+
+    Pinned here rather than inherited from the consuming project's DEFAULT_PAGINATION_CLASS: this
+    is a published library, so the page size is part of its REST contract instead of varying by
+    deployment. One page is a slice of competencies, with the taxonomies, groups and criteria that
+    belong to them, so the view builds the page body itself rather than using this class's
+    ``results`` envelope.
+    """
+
+    page_size = 100
+    max_page_size = 500
