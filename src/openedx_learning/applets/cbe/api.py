@@ -506,7 +506,7 @@ def get_course_competency_criteria(course_key: CourseKey) -> LearnerCourseCriter
             LearnerCriterion(
                 id=criterion.id,
                 group_id=criterion.group_id,
-                usage_key=criterion.object_tag.object_id,
+                object_id=criterion.object_tag.object_id,
                 rule_type=rule_type,
                 rule_payload=rule_payload,
             )
@@ -530,7 +530,7 @@ def get_course_competency_criteria(course_key: CourseKey) -> LearnerCourseCriter
         groups=[
             LearnerCriteriaGroup(
                 id=group.id,
-                competency_id=competency_id,
+                tag_id=competency_id,
                 parent_id=group.parent_id,
                 name=group.name,
                 logic_operator=group.logic_operator,

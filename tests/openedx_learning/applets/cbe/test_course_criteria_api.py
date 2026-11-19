@@ -143,7 +143,7 @@ def _assert_references_resolve(result) -> None:
     competency_ids = {competency.id for competency in result.competencies}
     taxonomy_ids = {taxonomy.id for taxonomy in result.taxonomies}
     assert all(group.parent_id is None or group.parent_id in group_ids for group in result.groups)
-    assert all(group.competency_id in competency_ids for group in result.groups)
+    assert all(group.tag_id in competency_ids for group in result.groups)
     assert all(criterion.group_id in group_ids for criterion in result.criteria)
     assert all(competency.taxonomy_id in taxonomy_ids for competency in result.competencies)
 
@@ -185,7 +185,7 @@ def test_full_reassembly_returns_every_array_with_exact_fields(
         groups=[
             LearnerCriteriaGroup(
                 id=branch.root.id,
-                competency_id=tag.id,
+                tag_id=tag.id,
                 parent_id=None,
                 name="Writing Poetry (root)",
                 logic_operator=None,
@@ -193,7 +193,7 @@ def test_full_reassembly_returns_every_array_with_exact_fields(
             ),
             LearnerCriteriaGroup(
                 id=branch.course_level.id,
-                competency_id=tag.id,
+                tag_id=tag.id,
                 parent_id=branch.root.id,
                 name=branch.course_level.name,
                 logic_operator=None,
@@ -201,7 +201,7 @@ def test_full_reassembly_returns_every_array_with_exact_fields(
             ),
             LearnerCriteriaGroup(
                 id=branch.leaf.id,
-                competency_id=tag.id,
+                tag_id=tag.id,
                 parent_id=branch.course_level.id,
                 name="",
                 logic_operator="OR",
@@ -212,7 +212,7 @@ def test_full_reassembly_returns_every_array_with_exact_fields(
             LearnerCriterion(
                 id=criterion.id,
                 group_id=branch.leaf.id,
-                usage_key=usage_key(course_run, block_id),
+                object_id=usage_key(course_run, block_id),
                 rule_type="Grade",
                 rule_payload=default_rule_profile.rule_payload,
             )
@@ -280,11 +280,11 @@ def test_competency_taxonomies_are_listed_and_other_taxonomies_are_not(
     assert {competency.name: competency.taxonomy_id for competency in result.competencies} == {
         "Writing Poetry": competency_taxonomy.id, "Ledger Keeping": taxonomy_b.id,
     }
-    assert {group.id: group.competency_id for group in result.groups} == {
+    assert {group.id: group.tag_id for group in result.groups} == {
         branch_a.root.id: tag_a.id, branch_a.course_level.id: tag_a.id, branch_a.leaf.id: tag_a.id,
         branch_b.root.id: tag_b.id, branch_b.course_level.id: tag_b.id, branch_b.leaf.id: tag_b.id,
     }
-    assert sorted(criterion.usage_key for criterion in result.criteria) == [
+    assert sorted(criterion.object_id for criterion in result.criteria) == [
         usage_key(course_run, "s1"), usage_key(course_run, "s2"),
     ]
 
@@ -492,7 +492,7 @@ def test_bottom_tier_group_with_a_tag_other_than_the_roots_is_returned_with_its_
 
     assert odd_group.id in _ids(result.groups)
     assert _ids(result.criteria) == [branch.criteria[0].id, odd_criterion.id]
-    assert {group.competency_id for group in result.groups} == {tag.id}
+    assert {group.tag_id for group in result.groups} == {tag.id}
     _assert_references_resolve(result)
 
 

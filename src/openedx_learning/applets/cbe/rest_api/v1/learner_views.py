@@ -49,15 +49,15 @@ class LearnerCourseCriteriaView(generics.GenericAPIView):
                  "lineage": ["Problem Solving", "Problem Definition", "Root Cause Analysis"], "taxonomy_id": 3}
             ],
             "groups": [
-                {"id": 40, "competency_id": 12, "parent_id": null, "name": "Root Cause Analysis",
+                {"id": 40, "tag_id": 12, "parent_id": null, "name": "Root Cause Analysis",
                  "logic_operator": "AND", "ordering": 0},
-                {"id": 41, "competency_id": 12, "parent_id": 40, "name": "Python 100",
+                {"id": 41, "tag_id": 12, "parent_id": 40, "name": "Python 100",
                  "logic_operator": "OR", "ordering": 0},
-                {"id": 42, "competency_id": 12, "parent_id": 41, "name": "Week 1 quiz",
+                {"id": 42, "tag_id": 12, "parent_id": 41, "name": "Week 1 quiz",
                  "logic_operator": null, "ordering": 0}
             ],
             "criteria": [
-                {"id": 7, "group_id": 42, "usage_key": "block-v1:Org1+Python100+Fall2026+type@sequential+block@s1",
+                {"id": 7, "group_id": 42, "object_id": "block-v1:Org1+Python100+Fall2026+type@sequential+block@s1",
                  "rule_type": "Grade", "rule_payload": {"op": "gte", "value": 0.75, "scale": "percent"}}
             ]
         }
@@ -108,7 +108,7 @@ class LearnerCourseCriteriaView(generics.GenericAPIView):
         )
         competency_ids = {competency.id for competency in competencies}
         taxonomy_ids = {competency.taxonomy_id for competency in competencies}
-        groups = [group for group in result.groups if group.competency_id in competency_ids]
+        groups = [group for group in result.groups if group.tag_id in competency_ids]
         group_ids = {group.id for group in groups}
         page_result = replace(
             result,

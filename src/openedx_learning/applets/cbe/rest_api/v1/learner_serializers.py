@@ -56,7 +56,7 @@ class LearnerCriteriaGroupSerializer(_ReadOnlySerializer):
     """
 
     id = serializers.IntegerField(read_only=True)
-    competency_id = serializers.IntegerField(read_only=True)
+    tag_id = serializers.IntegerField(read_only=True)
     parent_id = serializers.IntegerField(read_only=True)
     name = serializers.CharField(read_only=True)
     logic_operator = serializers.CharField(read_only=True)
@@ -74,7 +74,7 @@ class LearnerCriterionSerializer(_ReadOnlySerializer):
 
     id = serializers.IntegerField(read_only=True)
     group_id = serializers.IntegerField(read_only=True)
-    usage_key = serializers.CharField(read_only=True)
+    object_id = serializers.CharField(read_only=True)
     rule_type = serializers.CharField(read_only=True)
     rule_payload = serializers.JSONField(read_only=True)
 

@@ -105,7 +105,7 @@ class LearnerCriteriaGroup:
     """
     One CompetencyCriteriaGroup of a competency's criteria tree in a course run.
 
-    ``competency_id`` is the id of the competency the group's tree belongs to: the tag of its course-level group.
+    ``tag_id`` is the id of the competency the group's tree belongs to: the tag of its course-level group.
     ``parent_id`` is None only for the root group. ``logic_operator`` is the stored value: ``"AND"``,
     ``"OR"``, or None.
 
@@ -113,7 +113,7 @@ class LearnerCriteriaGroup:
     """
 
     id: int
-    competency_id: int
+    tag_id: int
     parent_id: int | None
     name: str
     logic_operator: str | None
@@ -125,15 +125,16 @@ class LearnerCriterion:
     """
     One CompetencyCriterion of a course run.
 
-    ``usage_key`` is the object id of the criterion's ObjectTag. ``rule_type`` and ``rule_payload`` are
-    the effective rule: the rule profile's when the criterion has one, its own override otherwise.
+    ``object_id`` is the ``object_id`` of the criterion's ObjectTag, which the authoring API requires to be a
+    usage key. ``rule_type`` and ``rule_payload`` are the effective rule: the rule profile's when the criterion
+    has one, its own override otherwise.
 
     UNSTABLE: see :func:`openedx_learning.applets.cbe.api.get_course_competency_criteria`.
     """
 
     id: int
     group_id: int
-    usage_key: str
+    object_id: str
     rule_type: str
     rule_payload: dict
 
@@ -143,7 +144,7 @@ class LearnerCourseCriteria:
     """
     The competency criteria of one course run, as four flat lists that reference each other by id.
 
-    Every ``parent_id``, ``competency_id``, ``group_id`` and ``taxonomy_id`` in one list names an
+    Every ``parent_id``, ``tag_id``, ``group_id`` and ``taxonomy_id`` in one list names an
     item in the list it refers to.
 
     UNSTABLE: see :func:`openedx_learning.applets.cbe.api.get_course_competency_criteria`.

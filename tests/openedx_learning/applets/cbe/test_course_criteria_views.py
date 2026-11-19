@@ -108,7 +108,7 @@ def test_signed_in_user_without_enrollment_or_staff_status_gets_the_full_result(
     body = response.json()
     assert [competency["name"] for competency in body["competencies"]] == ["Writing Poetry"]
     assert len(body["groups"]) == 3
-    assert [(c["id"], c["usage_key"]) for c in body["criteria"]] == [(criterion.id, usage_key(course_run, "s1"))]
+    assert [(c["id"], c["object_id"]) for c in body["criteria"]] == [(criterion.id, usage_key(course_run, "s1"))]
 
 
 def test_permission_is_checked_by_name_against_the_normalized_course_key(
@@ -234,10 +234,10 @@ def test_response_has_exactly_the_four_arrays_with_exact_item_fields(
         {"id", "name", "external_id", "lineage", "taxonomy_id"},
     ]
     assert {frozenset(item) for item in body["groups"]} == {
-        frozenset({"id", "competency_id", "parent_id", "name", "logic_operator", "ordering"}),
+        frozenset({"id", "tag_id", "parent_id", "name", "logic_operator", "ordering"}),
     }
     assert [set(item) for item in body["criteria"]] == [
-        {"id", "group_id", "usage_key", "rule_type", "rule_payload"},
+        {"id", "group_id", "object_id", "rule_type", "rule_payload"},
     ]
     assert body["competencies"][0]["lineage"] == ["Writing Poetry"]
     assert body["criteria"][0]["rule_type"] == default_rule_profile.rule_type
@@ -277,7 +277,7 @@ def test_page_size_pages_by_competency_and_carries_each_competencys_groups_and_c
     assert set(first) == {"taxonomies", "competencies", "groups", "criteria"} | PAGINATION_KEYS
     assert [competency["id"] for competency in first["competencies"]] == [tags[0].id, tags[1].id]
     assert [taxonomy["id"] for taxonomy in first["taxonomies"]] == [competency_taxonomy.id]
-    assert {group["competency_id"] for group in first["groups"]} == {tags[0].id, tags[1].id}
+    assert {group["tag_id"] for group in first["groups"]} == {tags[0].id, tags[1].id}
     assert len(first["groups"]) == 6
     first_group_ids = {group["id"] for group in first["groups"]}
     assert all(group["parent_id"] is None or group["parent_id"] in first_group_ids for group in first["groups"])
