@@ -704,6 +704,7 @@ def _publish_from_drafts(
         # the ENTITIES_PUBLISHED event see.
         drafts_to_publish: dict[int, Draft] = {}  # entity_id -> Draft, in publish order
         publish_log_records: list[PublishLogRecord] = []
+        skipped_direct_entity_ids: list[PublishableEntity.ID] = []
         for group in all_draft_groups:
             for draft in group:
                 # Skip duplicates that we might get from expanding dependencies.
@@ -718,6 +719,7 @@ def _publish_from_drafts(
                 # Dependencies were already filtered by _get_dependencies_with_unpublished_changes(), so this only
                 # skips direct Drafts. It doesn't need any queries, because entity__published__version is pre-loaded.
                 if skip_unchanged and not draft.has_unpublished_changes():
+                    skipped_direct_entity_ids.append(draft.entity_id)
                     continue
 
                 try:
@@ -772,6 +774,13 @@ def _publish_from_drafts(
             )
 
         _create_side_effects_for_change_log(publish_log)
+        if skipped_direct_entity_ids and publish_log_records:
+            # An unchanged entity that was explicitly requested (e.g. a Unit
+            # whose only change is in a child Component) may still have picked
+            # up a side-effect record above. That record defaults to
+            # direct=False, but the user asked to publish this entity, so mark
+            # it as direct.
+            publish_log.records.filter(entity_id__in=skipped_direct_entity_ids).update(direct=True)
         _emit_event_for_change_log(publish_log, timestamp=published_at, user_id=published_by)
 
     return publish_log

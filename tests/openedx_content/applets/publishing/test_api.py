@@ -1186,11 +1186,9 @@ class PublishLogTestCase(TestCase):
 
         assert publishing_api.get_published_version(component.id) == component_v2
         records = publish_log.records.order_by("pk")
-        assert [
-            (r.entity_id, r.old_version_id, r.new_version_id, r.direct) for r in records
-        ] == [
+        assert [(r.entity_id, r.old_version_id, r.new_version_id, r.direct) for r in records] == [
             (component.id, component_v1.id, component_v2.id, False),  # dependency
-            (unit.id, unit_v1.id, unit_v1.id, False),  # side effect
+            (unit.id, unit_v1.id, unit_v1.id, True),  # side effect, unchanged, directly requested
         ]
 
     def test_publish_entities_unchanged_container_without_dependencies(self) -> None:
