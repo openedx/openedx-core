@@ -100,7 +100,7 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         self.taxonomy.refresh_from_db()
         tags_before = list(Tag.objects.filter(taxonomy=self.taxonomy).values_list("pk", "value"))
 
-        with self.assertRaisesRegex(ValueError, "archived"):
+        with self.assertRaisesRegex(ValueError, "This taxonomy is archived and cannot be edited."):
             import_export_api.import_tags(self.taxonomy, self.file, self.parser_format, replace=True)
 
         assert list(Tag.objects.filter(taxonomy=self.taxonomy).values_list("pk", "value")) == tags_before

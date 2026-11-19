@@ -82,7 +82,7 @@ def import_tags(
     """
     if taxonomy.archived:
         raise ValueError(
-            _("import_tags() doesn't work for archived taxonomies. They cannot be modified.")
+            _("This taxonomy is archived and cannot be edited.")
         )
 
     global_start_time = time.time()

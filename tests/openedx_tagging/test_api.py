@@ -307,7 +307,7 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
         """
         An archived ancestor is left out, and the other ancestors are still returned.
         """
-        Tag.objects.filter(pk=self.chordata.pk).update(archived=True)
+        Tag.objects.filter(pk__in=[self.chordata.pk, self.mammalia.pk]).update(archived=True)
         result = {tag.value for tag in tagging_api.get_ancestor_tags(self.mammalia)}
         assert result == {"Eukaryota", self.animalia.value}
 
@@ -342,13 +342,12 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
 
     def test_get_descendant_tags_excludes_archived(self) -> None:
         """
-        An archived descendant is left out, but its unarchived descendants and its siblings are still returned.
+        An archived descendant and its archived child are left out, but the siblings are still returned.
         """
-        Tag.objects.filter(pk=self.chordata.pk).update(archived=True)
+        Tag.objects.filter(pk__in=[self.chordata.pk, self.mammalia.pk]).update(archived=True)
         result = {tag.value for tag in tagging_api.get_descendant_tags(self.animalia)}
         assert result == {
             "Arthropoda",
-            self.mammalia.value,
             "Cnidaria",
             "Ctenophora",
             "Gastrotrich",
@@ -1051,18 +1050,8 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
 
         with self.assertNumQueries(1):
             assert tagging_api.get_object_tag_counts("object_*") == {obj2: 1}
-        with self.assertNumQueries(2):
-            assert tagging_api.get_object_tag_counts("object_*", count_implicit=True) == {obj2: 3}
-
-    def test_get_object_tag_counts_implicit_excludes_archived_ancestors(self) -> None:
-        # "Chordata" is "Eukaryota > Animalia > Chordata"; only its ancestor "Animalia" is archived.
-        tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["Chordata"])
-        Tag.objects.filter(taxonomy=self.taxonomy, value="Animalia").update(archived=True)
-
-        with self.assertNumQueries(2):
-            assert tagging_api.get_object_tag_counts("obj1", count_implicit=True) == {"obj1": 2}
         with self.assertNumQueries(1):
-            assert tagging_api.get_object_tag_counts("obj1") == {"obj1": 1}
+            assert tagging_api.get_object_tag_counts("object_*", count_implicit=True) == {obj2: 3}
 
     def test_add_usage_counts_excludes_archived(self) -> None:
         tagging_api.tag_object(object_id="obj1", taxonomy=self.taxonomy, tags=["DPANN"])

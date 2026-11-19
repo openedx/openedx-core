@@ -274,8 +274,7 @@ def get_object_tag_counts(object_id_pattern: str, count_implicit=False) -> dict[
     ObjectTag data about them is present.
 
     count_implicit: if True, this means to count all ancestor tags (implicit
-    tags) of the explict tags that are associated with the object. Archived
-    ancestors are not counted.
+    tags) of the explict tags that are associated with the object.
     """
     # Note: in the future we may add an option to exclude system taxonomies from the count.
     qs: Any = ObjectTag.objects.unarchived()
@@ -295,19 +294,9 @@ def get_object_tag_counts(object_id_pattern: str, count_implicit=False) -> dict[
         # Every prefix of that path (at each \t boundary) uniquely identifies one tag in the chain,
         # so collecting prefixes into a set naturally deduplicates shared ancestors across multiple
         # tags on the same object.
-        qs = qs.annotate(sort_key=F("tag__lineage")).values("object_id", "sort_key", "taxonomy_id")
-        rows = list(qs)
-        # Every ancestor is a prefix of its descendants' lineages, so archived ancestors would be counted unless their
-        # paths are left out. Look them up with one query rather than one per row.
-        closed_taxonomy_ids = {row["taxonomy_id"] for row in rows if row["sort_key"] is not None}
-        archived_lineages: set[tuple[int, str]] = set()
-        if closed_taxonomy_ids:
-            archived_lineages = set(
-                Tag.objects.filter(archived=True, taxonomy_id__in=closed_taxonomy_ids)
-                .values_list("taxonomy_id", "lineage")
-            )
+        qs = qs.annotate(sort_key=F("tag__lineage")).values("object_id", "sort_key")
         result: dict = {}
-        for row in rows:
+        for row in qs:
             object_id = row["object_id"]
             if object_id not in result:
                 result[object_id] = {"free_text": 0, "paths": set()}
@@ -319,9 +308,7 @@ def get_object_tag_counts(object_id_pattern: str, count_implicit=False) -> dict[
                 # Add the sort_key prefix for each ancestor level
                 parts = sort_key.rstrip("\t").split("\t")
                 for i in range(1, len(parts) + 1):
-                    prefix = "\t".join(parts[:i])
-                    if (row["taxonomy_id"], prefix + "\t") not in archived_lineages:
-                        result[object_id]["paths"].add(prefix)
+                    result[object_id]["paths"].add("\t".join(parts[:i]))
         return {
             object_id: data["free_text"] + len(data["paths"])
             for object_id, data in result.items()

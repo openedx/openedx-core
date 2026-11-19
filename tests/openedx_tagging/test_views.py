@@ -1385,7 +1385,7 @@ class TestObjectTagCountsViewSet(TestTagTaxonomyMixin, APITestCase):
                 "course07-unit02-problem03": 3,
                 "course07-unit02-problem03.3": 2,
             }
-        with self.assertNumQueries(2):
+        with self.assertNumQueries(1):
             assert check(object_id_pattern="course07-unit02-*", count_implicit=True) == {
                 "course07-unit02-problem01": 1,
                 "course07-unit02-problem02.2": 2,
@@ -3689,7 +3689,7 @@ class TestImportTagsView(ImportTaxonomyMixin, APITestCase):
             file = self._get_file([{"id": "tag_1", "value": "Tag 1"}], "json")
             response = self.client.put(url.format(pk=self.taxonomy.id), {"file": file}, format="multipart")
             assert response.status_code == status.HTTP_400_BAD_REQUEST
-            assert "archived" in str(response.data)
+            assert "This taxonomy is archived and cannot be edited." in str(response.data)
             assert set(self.taxonomy.tag_set.values_list("value", flat=True)) == {"Old tag 1", "Old tag 2"}
 
     def test_import_no_file(self) -> None:
