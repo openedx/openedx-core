@@ -511,7 +511,8 @@ def publish_entities(
     If an entity ID is specified explicitly but neither it nor its dependencies
     have any unpublished changes, it will not be included in the resulting
     ``PublishLogRecord`` nor the ``ENTITIES_PUBLISHED`` event; if you want that
-    behavior, use the more low-level ``publish_from_drafts()`` API method.
+    behavior, for example to trigger post-publish tasks on ALL the entities,
+    use the more low-level ``publish_from_drafts()`` API method.
 
     Raises ``ValidationError`` if any of the entities belong to a different
     learning package.
@@ -619,7 +620,9 @@ def publish_from_drafts(
     Drafts without unpublished changes are NOT skipped, so if you pass them in
     the queryset, their entities will still be included in the resulting
     ``PublishLogRecord`` and ``ENTITIES_PUBLISHED`` event, even though this was
-    essentially a no-op.
+    essentially a no-op. This could be useful, for example if a user wishes to
+    "re-publish" an entity in order to trigger some of the tasks that happen
+    when an entity is published (re-compute grades etc).
     """
     return _publish_from_drafts(
         learning_package_id,
