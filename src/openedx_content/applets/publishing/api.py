@@ -7,6 +7,7 @@ are stored in this app.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from functools import partial
@@ -61,6 +62,7 @@ __all__ = [
     "get_entities_with_unpublished_changes",
     "get_entities_with_unpublished_deletes",
     "publish_all_drafts",
+    "publish_entities",
     "publish_from_drafts",
     "get_draft_version",
     "get_published_version",
@@ -482,6 +484,48 @@ def publish_all_drafts(
     )
     return publish_from_drafts(
         learning_package_id, draft_qset, message, published_at, published_by
+    )
+
+
+def publish_entities(
+    learning_package_id: LearningPackage.ID,
+    /,
+    entity_ids: Iterable[PublishableEntity.ID],
+    message: str = "",
+    published_at: datetime | None = None,
+    published_by: int | None = None,  # User.id
+    *,
+    publish_dependencies: bool = True,
+) -> PublishLog:
+    """
+    Publish the current drafts of the given entities.
+
+    This includes soft deletes: if an entity's draft has been deleted (e.g.
+    with ``soft_delete_draft()``), publishing it deletes the published version
+    too. Entities without unpublished changes are skipped.
+
+    By default, this also publishes all dependencies (e.g. unpinned children)
+    of the given entities, like ``publish_from_drafts()``.
+
+    Raises ``ValidationError`` if any of the entities belong to a different
+    learning package.
+    """
+    # Unlike get_all_drafts(), this includes Drafts with a NULL version (soft
+    # deletes), which is what lets us publish deletions. Order by primary key
+    # so that the resulting PublishLogRecords come out in a consistent order.
+    draft_qset = (
+        Draft.objects
+             .filter(entity_id__in=list(entity_ids))
+             .with_unpublished_changes()
+             .order_by("pk")
+    )
+    return publish_from_drafts(
+        learning_package_id,
+        draft_qset,
+        message,
+        published_at,
+        published_by,
+        publish_dependencies=publish_dependencies,
     )
 
 

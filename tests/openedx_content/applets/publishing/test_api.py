@@ -1043,6 +1043,73 @@ class PublishLogTestCase(TestCase):
         )
         assert publish_log.records.get(entity=entity).direct is True
 
+    def _create_entity_with_version(self, learning_package: LearningPackage, ref: str) -> PublishableEntity:
+        """Create an entity with one (draft) version."""
+        entity = publishing_api.create_publishable_entity(
+            learning_package.id, ref, created=self.now, created_by=None,
+        )
+        publishing_api.create_publishable_entity_version(
+            entity.id, version_num=1, title=f"{ref} v1", created=self.now, created_by=None,
+        )
+        return entity
+
+    def test_publish_entities(self) -> None:
+        """publish_entities() publishes only the given entities."""
+        entity_1 = self._create_entity_with_version(self.learning_package_1, "entity_1")
+        entity_2 = self._create_entity_with_version(self.learning_package_1, "entity_2")
+        published_by = User.objects.create(username="publisher")
+
+        publish_log = publishing_api.publish_entities(
+            self.learning_package_1.id, [entity_1.id], message="Publish one", published_by=published_by.id,
+        )
+
+        assert publish_log.message == "Publish one"
+        assert publish_log.published_by == published_by
+        assert [record.entity_id for record in publish_log.records.all()] == [entity_1.id]
+        assert publish_log.records.get().direct is True
+        assert publishing_api.get_published_version(entity_1.id) == publishing_api.get_draft_version(entity_1.id)
+        assert publishing_api.get_published_version(entity_2.id) is None
+
+    def test_publish_entities_soft_delete(self) -> None:
+        """
+        publish_entities() publishes soft deletes.
+
+        These can't be published with publish_from_drafts(get_all_drafts(...)),
+        because get_all_drafts() excludes Drafts that have been soft deleted.
+        """
+        entity = self._create_entity_with_version(self.learning_package_1, "entity")
+        entity_v1 = publishing_api.get_draft_version(entity.id)
+        publishing_api.publish_entities(self.learning_package_1.id, [entity.id])
+        publishing_api.soft_delete_draft(entity.id)
+        assert not publishing_api.get_all_drafts(self.learning_package_1.id).filter(entity=entity).exists()
+
+        publish_log = publishing_api.publish_entities(self.learning_package_1.id, [entity.id])
+
+        record = publish_log.records.get()
+        assert record.entity_id == entity.id
+        assert record.old_version == entity_v1
+        assert record.new_version is None
+        assert publishing_api.get_published_version(entity.id) is None
+
+    def test_publish_entities_skips_unchanged(self) -> None:
+        """Entities without unpublished changes don't get a PublishLogRecord."""
+        entity_1 = self._create_entity_with_version(self.learning_package_1, "entity_1")
+        entity_2 = self._create_entity_with_version(self.learning_package_1, "entity_2")
+        publishing_api.publish_entities(self.learning_package_1.id, [entity_1.id])
+
+        publish_log = publishing_api.publish_entities(self.learning_package_1.id, [entity_1.id, entity_2.id])
+
+        assert [record.entity_id for record in publish_log.records.all()] == [entity_2.id]
+        publish_log = publishing_api.publish_entities(self.learning_package_1.id, [entity_1.id, entity_2.id])
+        assert publish_log.records.count() == 0
+
+    def test_publish_entities_other_learning_package(self) -> None:
+        """publish_entities() rejects entities from another learning package."""
+        entity = self._create_entity_with_version(self.learning_package_2, "entity")
+        with pytest.raises(ValidationError, match="expected learning package"):
+            publishing_api.publish_entities(self.learning_package_1.id, [entity.id])
+        assert publishing_api.get_published_version(entity.id) is None
+
     def test_publish_mix_of_new_and_already_published(self) -> None:
         """
         Publishing never-published and already-published entities together.
