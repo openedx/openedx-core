@@ -302,6 +302,12 @@ class TagImportPlan:
         in the taxonomy is archived, otherwise one more per chunk of rows, plus up to four lookups per row
         in a chunk that matched.
         """
+        # The comparison has to happen in the DB. The actions find the tag a row changes with a DB
+        # lookup, so a Python comparison that misses a match the collation makes (MySQL also folds
+        # accents and trailing spaces) would let that row rename or re-parent the archived tag.
+        # Rows in a matched chunk are then looked up one at a time, because the DB returns the
+        # stored tag, not the row that matched it. That costs up to four queries per row in such
+        # a chunk, about what building the actions for a clean import already costs per row.
         archived_subtree = self.taxonomy.tag_set.in_archived_subtree()
         if not archived_subtree.exists():
             return False

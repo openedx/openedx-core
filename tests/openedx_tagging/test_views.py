@@ -2211,14 +2211,6 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         ]
         assert not self.small_taxonomy.tag_set.filter(value="New Tag").exists()
 
-    def test_create_tag_with_unarchived_duplicate_value_keeps_message(self):
-        self.client.force_authenticate(user=self.staff)
-
-        response = self.client.post(self.small_taxonomy_url, {"tag": "Archaea"}, format="json")
-
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
-        assert response.data == {"tag": ['Tag value "Archaea" already exists in this taxonomy.']}
-
     def test_update_tag_to_archived_value_returns_archived_message(self):
         self.client.force_authenticate(user=self.staff)
         Tag.objects.filter(taxonomy=self.small_taxonomy, value="Archaea").update(archived=True)
@@ -2337,6 +2329,7 @@ class TestTaxonomyTagsView(TestTaxonomyViewMixin):
         )
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data == {"tag": [f'Tag value "{new_tag_value}" already exists in this taxonomy.']}
 
     def test_update_tag_in_taxonomy_while_loggedout(self):
         updated_tag_value = "Updated Tag"

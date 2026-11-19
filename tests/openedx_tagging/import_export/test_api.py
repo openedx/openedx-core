@@ -1095,7 +1095,7 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
         )
         assert result
 
-    def _snapshot(self, taxonomy: Taxonomy) -> set[tuple]:
+    def _tag_rows(self, taxonomy: Taxonomy) -> set[tuple]:
         return set(taxonomy.tag_set.values_list("external_id", "value", "parent__external_id", "archived"))
 
     def _json_file(self, tags: list[dict]) -> BytesIO:
@@ -1103,7 +1103,7 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_import_archived_value_changes_nothing(self) -> None:
         Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_3").update(archived=True)
-        before = self._snapshot(self.taxonomy)
+        before = self._tag_rows(self.taxonomy)
         file = self._json_file([
             {"id": "tag_50", "value": "Fifty"},
             {"id": "tag_51", "value": "Tag 3"},
@@ -1115,21 +1115,22 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
         assert not result
         assert "belongs to an archived tag" in import_export_api.get_last_import_log(self.taxonomy)
-        assert self._snapshot(self.taxonomy) == before
+        assert self._tag_rows(self.taxonomy) == before
 
     def test_import_archived_id_does_not_revive_tag(self) -> None:
         Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_3").update(archived=True)
-        before = self._snapshot(self.taxonomy)
+        before = self._tag_rows(self.taxonomy)
         file = self._json_file([{"id": "tag_3", "value": "Revived Tag 3"}, {"id": "tag_50", "value": "Fifty"}])
 
         result, _task, _plan = import_export_api.import_tags(self.taxonomy, file, self.parser_format)
 
         assert not result
         assert "Row 1's id (tag_3) belongs to an archived tag" in import_export_api.get_last_import_log(self.taxonomy)
-        assert self._snapshot(self.taxonomy) == before
+        assert self._tag_rows(self.taxonomy) == before
 
     def test_replace_import_promotes_archived_child_of_deleted_tag(self) -> None:
-        # The alternative is the delete cascading to the archived child.
+        # Interim behavior until the import's deletes follow the archive-or-delete rule (#895).
+        # The alternative today is the delete cascading to the archived child.
         Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_4").update(archived=True)
         file = self._json_file([
             {"id": "tag_1", "value": "Tag 1"},

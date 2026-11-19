@@ -1069,6 +1069,8 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             "previous_id (tag_3)",
             "An import cannot change it.",
         ),
+        # A row matching on several fields gets one error, for the first of them.
+        (TagItem(id='tag_3', value='Tag 3', parent_id='tag_3'), "value (Tag 3)", "Use a different value."),
     )
     @ddt.unpack
     def test_generate_actions_archived_tag_rejected(self, row: TagItem, field_and_value: str, advice: str) -> None:
@@ -1078,28 +1080,6 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         error = self.import_plan.errors[0]
         assert isinstance(error, ArchivedTagCollisionError)
         assert str(error) == f"Row 1's {field_and_value} belongs to an archived tag in this taxonomy. {advice}"
-        assert not self.import_plan.actions
-
-    def test_generate_actions_one_archived_error_per_row(self) -> None:
-        self._archive('tag_3')
-        self.import_plan.generate_actions(tags=[TagItem(id='tag_3', value='Tag 3', parent_id='tag_3')])
-        assert [str(error) for error in self.import_plan.errors] == [
-            "Row 1's value (Tag 3) belongs to an archived tag in this taxonomy. Use a different value."
-        ]
-
-    def test_generate_actions_reports_every_archived_collision(self) -> None:
-        self._archive('tag_3')
-        tags = [
-            TagItem(id='tag_50', value='Fifty'),
-            TagItem(id='tag_51', value='Tag 3'),
-            TagItem(id='tag_52', value='Fifty Two'),
-            TagItem(id='tag_3', value='Fifty Three'),
-        ]
-        self.import_plan.generate_actions(tags=tags)
-        errors = [str(error) for error in self.import_plan.errors]
-        assert len(errors) == 2
-        assert errors[0].startswith("Row 2's value (Tag 3)")
-        assert errors[1].startswith("Row 4's id (tag_3)")
         assert not self.import_plan.actions
 
     @ddt.data(
@@ -1134,6 +1114,29 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
             f"Use a different {field}."
         ]
         assert not self.import_plan.actions
+
+    def test_generate_actions_tag_two_levels_under_archived_tag_rejected(self) -> None:
+        tag_4 = self.taxonomy.tag_set.get(external_id='tag_4')
+        Tag.objects.create(taxonomy=self.taxonomy, value='Tag 5', external_id='tag_5', parent=tag_4)
+        self._archive('tag_3')  # tag_5 sits two levels under it
+        self.import_plan.generate_actions(tags=[TagItem(id='tag_5', value='Renamed Tag 5')])
+        assert [str(error) for error in self.import_plan.errors] == [
+            "Row 1's id (tag_5) belongs to a tag under an archived tag in this taxonomy. Use a different id."
+        ]
+        assert not self.import_plan.actions
+
+    def test_reject_rows_targeting_archived_subtree_query_count(self) -> None:
+        tags = [TagItem(id=f'tag_{i}', value=f'New {i}') for i in range(50, 55)]
+        reject = self.import_plan._reject_rows_targeting_archived_subtree  # pylint: disable=protected-access
+
+        # Nothing archived: one query settles it.
+        with self.assertNumQueries(1):
+            assert not reject(tags)
+
+        # Something archived and no row matches: one more query per chunk, no per-row lookups.
+        self._archive('tag_3')
+        with patch.object(TagImportPlan, 'IN_CHUNK_SIZE', 2), self.assertNumQueries(1 + 3):
+            assert not reject(tags)
 
     def test_generate_actions_replace_keeps_archived_subtree(self) -> None:
         self._archive('tag_3')

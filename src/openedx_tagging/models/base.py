@@ -674,7 +674,7 @@ class Taxonomy(models.Model):
             # belong to taxonomy
             parent = self.tag_set.get(value__iexact=parent_tag_value)
             # The lineage holds the values of the parent and its ancestors, so this also finds an archived ancestor.
-            archived = self.tag_set.filter(archived=True, value__in=parent.lineage.split("\t")[:-1]).first()
+            archived = self.tag_set.filter(archived=True, value__in=parent.get_lineage()).first()
             if archived:
                 raise ValueError(f"Cannot add a tag under the archived tag '{archived.value}'.")
 
