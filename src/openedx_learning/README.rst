@@ -23,6 +23,14 @@ registered permissions. If either ``rules`` setting is missing, the API answers 
 caller who is not a superuser, and nothing in the logs says why. Superusers pass every
 ``has_perm`` check regardless, so testing as one hides the problem.
 
+A host that serves learners, such as the LMS, also includes ``openedx_learning.learner_urls``,
+which serves the learner routes under ``<prefix>cbe/v1/``. A host that serves only learners
+includes it instead of ``openedx_learning.urls``. The learner permission
+``openedx_learning.view_course_competency_criteria`` admits any signed-in user by default, so a
+host must override it with ``rules.set_perm`` before exposing the route, for example to admit
+only learners with an active enrollment and course staff. The response lists the
+usage keys of every subsection with criteria, including hidden and unreleased ones.
+
 .. code-block:: python
 
     # settings
@@ -39,4 +47,5 @@ caller who is not a superuser, and nothing in the logs says why. Superusers pass
     # urls.py: serves the CBE API under api/cbe/v1/
     urlpatterns = [
         path("api/", include("openedx_learning.urls")),
+        path("api/", include("openedx_learning.learner_urls")),
     ]
