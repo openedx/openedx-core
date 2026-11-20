@@ -9,7 +9,7 @@ from typing import ClassVar, Self, cast
 
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models
-from django.db.models import F, Value
+from django.db.models import F, Q, Value
 from django.db.models.functions import Concat, Length, Replace, Substr
 from django.utils.functional import cached_property
 from django.utils.translation import gettext_lazy as _
@@ -55,6 +55,19 @@ class TagQuerySet(models.QuerySet["Tag"]):
         The taxonomy condition is an exclude because the taxonomy is nullable, so tags without one are kept.
         """
         return self.filter(archived=False).exclude(taxonomy__archived=True)
+
+    def in_archived_subtree(self) -> Self:
+        """
+        Return only tags that are archived or that sit under an archived tag.
+
+        Such a tag still holds its value and external_id, but is no longer part of its taxonomy.
+        """
+        # Depth is capped, so a fixed number of ancestor joins covers every tag, and the
+        # query stays the same size however many tags are archived.
+        condition = Q(archived=True)
+        for depth in range(1, TAXONOMY_MAX_DEPTH + 1):
+            condition |= Q(**{"__".join(["parent"] * depth) + "__archived": True})
+        return self.filter(condition)
 
 
 class ObjectTagQuerySet(models.QuerySet["ObjectTag"]):
@@ -617,7 +630,8 @@ class Taxonomy(models.Model):
         exists in the Taxonomy, an exception is raised, otherwise the newly
         created Tag is returned
 
-        Raises ValueError if the taxonomy is archived, or if `parent_tag_value` is an archived tag.
+        Raises ValueError if the taxonomy is archived, or if `parent_tag_value` is an archived tag or under one.
+        A value or `external_id` held by an archived tag is refused with its own message.
         """
         if self.allow_free_text:
             raise ValueError(
@@ -634,10 +648,24 @@ class Taxonomy(models.Model):
                 "add_tag() doesn't work for archived taxonomies. They cannot be modified."
             )
 
-        if self.tag_set.filter(value__iexact=tag_value).exists():
+        # Tag.clean strips both before saving, so compare what would be saved.
+        tag_value = tag_value.strip()
+        external_id = external_id.strip() if external_id else external_id
+        existing = self.tag_set.filter(value__iexact=tag_value).first()
+        if existing and existing.archived:
+            raise ValueError(
+                f"Tag value '{tag_value}' belongs to an archived tag in this taxonomy. Use a different value."
+            )
+        if existing:
             raise ValueError(f"Tag with value '{tag_value}' already exists for taxonomy.")
 
-        if external_id and self.validate_external_id(external_id):
+        existing = self.tag_set.filter(external_id__iexact=external_id).first() if external_id else None
+        if existing and existing.archived:
+            raise ValueError(
+                f"Tag external_id '{external_id}' belongs to an archived tag in this taxonomy. "
+                "Use a different external_id."
+            )
+        if existing:
             raise ValueError(f"Tag with external_id '{external_id}' already exists for taxonomy.")
 
         parent = None
@@ -645,8 +673,10 @@ class Taxonomy(models.Model):
             # Get parent tag from taxonomy, raises Tag.DoesNotExist if doesn't
             # belong to taxonomy
             parent = self.tag_set.get(value__iexact=parent_tag_value)
-            if parent.archived:
-                raise ValueError(f"Cannot add a tag under the archived tag '{parent.value}'.")
+            # The lineage holds the values of the parent and its ancestors, so this also finds an archived ancestor.
+            archived = self.tag_set.filter(archived=True, value__in=parent.get_lineage()).first()
+            if archived:
+                raise ValueError(f"Cannot add a tag under the archived tag '{archived.value}'.")
 
         tag = Tag.objects.create(
             taxonomy=self, value=tag_value, parent=parent, external_id=external_id
