@@ -59,4 +59,5 @@ rules.add_perm(
 
 # The permission name is a contract: openedx-platform overrides it with ``rules.set_perm`` to admit enrolled
 # learners and course staff, so renaming it drops that override. The object is the course run's plain CourseKey.
-rules.add_perm("openedx_learning.view_course_competency_criteria", rules.is_authenticated)
+if not rules.perm_exists("openedx_learning.view_course_competency_criteria"):
+    rules.add_perm("openedx_learning.view_course_competency_criteria", rules.is_authenticated)
