@@ -29,7 +29,7 @@ from ...api import (
     update_tag_in_taxonomy,
 )
 from ...data import TagDataQuerySet
-from ...import_export.api import export_tags, import_tags
+from ...import_export.api import ImportValidator, export_tags, import_tags
 from ...import_export.parsers import ParserFormat
 from ...models import Tag, Taxonomy
 from ...rules import ObjectTagPermissionItem
@@ -333,6 +333,15 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
             export_id=validated_data.get("taxonomy_export_id"),
         )
 
+    def _get_import_validators(self, _taxonomy: Taxonomy) -> list[ImportValidator]:
+        """
+        Return extra validators to run on the plan when importing tags into an existing taxonomy.
+
+        Subclasses outside this repository override this method by name, so renaming it silently disables their
+        override.
+        """
+        return []
+
     @action(detail=False, url_path="import", methods=["post"])
     def create_import(self, request: Request, **_kwargs) -> Response:
         """
@@ -373,7 +382,9 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
 
         taxonomy = self.get_object()
         try:
-            import_success, task, _plan = import_tags(taxonomy, file, parser_format, replace=True)
+            import_success, task, _plan = import_tags(
+                taxonomy, file, parser_format, replace=True, validators=self._get_import_validators(taxonomy),
+            )
 
             if import_success:
                 serializer = self.get_serializer(taxonomy)
@@ -399,7 +410,10 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
 
         taxonomy = self.get_object()
         try:
-            import_success, task, plan = import_tags(taxonomy, file, parser_format, replace=True, plan_only=True)
+            import_success, task, plan = import_tags(
+                taxonomy, file, parser_format, replace=True, plan_only=True,
+                validators=self._get_import_validators(taxonomy),
+            )
 
             if import_success:
                 serializer = TaxonomyImportPlanResponseSerializer({"task": task, "plan": plan})

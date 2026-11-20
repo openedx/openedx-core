@@ -8,7 +8,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from django.core.exceptions import NON_FIELD_ERRORS, PermissionDenied, ValidationError
 from django.db import IntegrityError, connection, transaction
@@ -22,6 +22,7 @@ from openedx_catalog.api import get_course_run, get_course_run_ids
 from openedx_catalog.models_api import CourseRun
 from openedx_tagging import api as tagging_api
 from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags
+from openedx_tagging.import_export.api import TagImportError
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 from openedx_tagging.rules import ObjectTagPermissionItem, UserType
 
@@ -40,6 +41,9 @@ from .models import (
 from .rollup import roll_up_competency_statuses
 from .rule_payloads import evaluate_rule
 from .statuses import raise_status
+
+if TYPE_CHECKING:
+    from openedx_tagging.import_export.api import FinalTag, TagImportPlan
 
 __all__ = [
     "BlockedCourse",
@@ -66,6 +70,7 @@ __all__ = [
     "roll_up_competency_statuses",
     "select_competency_taxonomies",
     "update_competency_criteria_group",
+    "validate_tag_import_dominance",
 ]
 
 log = logging.getLogger(__name__)
@@ -374,6 +379,22 @@ def resolve_supplied_leaf_group(group_id: int, tag: Tag, course_run: CourseRun) 
     return group
 
 
+def _leaf_groups_with_live_criteria() -> QuerySet[CompetencyCriteriaGroup]:
+    """
+    Return the leaf groups that hold a live CompetencyCriterion in a course run.
+
+    The criterion-creation check and the import check share this so they cannot disagree about which criteria are live.
+    """
+    return CompetencyCriteriaGroup.objects.filter(
+        archived=False,
+        parent__archived=False,
+        parent__parent__archived=False,
+        # Only a leaf's parent carries a course, so this skips criteria misplaced on other groups.
+        parent__course__isnull=False,
+        criteria__archived=False,
+    )
+
+
 def get_courses_with_live_criteria(
     tag_ids: Iterable[int], course: CourseRun | None = None, *, course_keys: Iterable[CourseKey] | None = None,
 ) -> dict[CourseRun, Tag]:
@@ -387,15 +408,7 @@ def get_courses_with_live_criteria(
     narrowed by ``course`` and by ``course_keys``, each when given. Archived criteria and criteria
     under an archived group are ignored.
     """
-    groups: QuerySet[CompetencyCriteriaGroup, CompetencyCriteriaGroup] = CompetencyCriteriaGroup.objects.filter(
-        tag_id__in=tag_ids,
-        archived=False,
-        parent__archived=False,
-        parent__parent__archived=False,
-        # Only a leaf's parent carries a course, so this skips criteria misplaced on other groups.
-        parent__course__isnull=False,
-        criteria__archived=False,
-    )
+    groups = _leaf_groups_with_live_criteria().filter(tag_id__in=tag_ids)
     if course is not None:
         groups = groups.filter(parent__course=course)
     if course_keys is not None:
@@ -406,6 +419,114 @@ def get_courses_with_live_criteria(
         assert group.parent.course is not None, f"CompetencyCriteriaGroup {group.id}'s parent has no course"
         result.setdefault(group.parent.course, group.tag)
     return result
+
+
+def _ancestor_keys_after_import(plan: TagImportPlan, key: str) -> list[str] | None:
+    """
+    Return the keys of ``key``'s ancestors in ``plan.final_tree``, nearest first, or None if ``key`` is on a cycle.
+    """
+    ancestors: list[str] = []
+    visited = {key}
+    parent = plan.final_tree[key].parent_key
+    # A parent missing from the final tree ends the walk: the import reports that parent as unknown, or deletes it
+    # and makes the child a root.
+    while parent is not None and parent in plan.final_tree:
+        if parent in visited:
+            return None if parent == key else ancestors
+        visited.add(parent)
+        ancestors.append(parent)
+        parent = plan.final_tree[parent].parent_key
+    return ancestors
+
+
+def _criteria_conflict_error(descendant: FinalTag, ancestor: FinalTag, course_key: str) -> TagImportError:
+    """
+    Return the import error for ``descendant`` and its ``ancestor`` both holding criteria in ``course_key``.
+    """
+    message = _(
+        'Competency "{descendant_value}" ({descendant_id}) and its ancestor "{ancestor_value}" '
+        "({ancestor_id}) both have criteria in course {course_key}. Change the file so that "
+        '"{ancestor_value}" is not an ancestor of "{descendant_value}", or archive or remove the '
+        "criteria of one of the two competencies in that course first."
+    ).format(
+        descendant_value=descendant.value,
+        descendant_id=descendant.external_id,
+        ancestor_value=ancestor.value,
+        ancestor_id=ancestor.external_id,
+        course_key=course_key,
+    )
+    if descendant.row is not None:
+        message = _("Row {row}: {message}").format(row=descendant.row, message=message)
+    return TagImportError(message)
+
+
+def _course_keys_by_tag_id(taxonomy_id: int) -> dict[int, set[str]]:
+    """
+    Map each tag id in the taxonomy to the keys of the course runs where that tag holds live criteria.
+    """
+    course_keys_by_tag_id: dict[int, set[str]] = {}
+    groups = _leaf_groups_with_live_criteria().filter(tag__taxonomy_id=taxonomy_id)
+    for tag_id, course_key in groups.values_list("tag_id", "parent__course__course_key").distinct():
+        course_keys_by_tag_id.setdefault(tag_id, set()).add(str(course_key))
+    return course_keys_by_tag_id
+
+
+def _tags_with_criteria_in_file_order(
+    plan: TagImportPlan, course_keys_by_tag_id: dict[int, set[str]],
+) -> dict[str, tuple[FinalTag, set[str]]]:
+    """
+    Map each final-tree key whose tag holds criteria to that tag and its course keys.
+
+    Tags named in the file come first, in row order, and the other tags follow, ordered by key.
+    """
+    # A created tag has no pk and a deleted tag is not in the tree, so neither can form a pair.
+    tags_with_criteria = {
+        key: (tag, course_keys_by_tag_id[tag.pk])
+        for key, tag in plan.final_tree.items()
+        if tag.pk is not None and tag.pk in course_keys_by_tag_id
+    }
+    return {
+        key: tags_with_criteria[key]
+        for key in sorted(
+            tags_with_criteria,
+            key=lambda k: (tags_with_criteria[k][0].row is None, tags_with_criteria[k][0].row or 0, k),
+        )
+    }
+
+
+def _conflicts_with_ancestors(
+    plan: TagImportPlan, key: str, tags_with_criteria: dict[str, tuple[FinalTag, set[str]]],
+) -> list[TagImportError]:
+    """
+    Return an error for each course run where the tag at ``key`` and one of its ancestors both hold live criteria.
+    """
+    descendant, descendant_courses = tags_with_criteria[key]
+    errors: list[TagImportError] = []
+    for ancestor_key in _ancestor_keys_after_import(plan, key) or []:
+        if ancestor_key in tags_with_criteria:
+            ancestor, ancestor_courses = tags_with_criteria[ancestor_key]
+            errors.extend(
+                _criteria_conflict_error(descendant, ancestor, course_key)
+                for course_key in sorted(descendant_courses & ancestor_courses)
+            )
+    return errors
+
+
+def validate_tag_import_dominance(plan: TagImportPlan) -> list[TagImportError]:
+    """
+    Return an error for each ancestor and descendant pair that both hold live criteria in the same course run.
+
+    Pairs are taken from ``plan.final_tree``, the tag tree as the import would leave it. ``plan`` must have run
+    ``generate_actions()``. A criterion created after this function's query and before the import commits is caught
+    neither here nor by the creation check, which reads the stored tree; the next re-import rejects the resulting pair.
+
+    UNSTABLE: reads tagging's ``TagImportPlan.final_tree``, whose shape may change.
+    """
+    tags_with_criteria = _tags_with_criteria_in_file_order(plan, _course_keys_by_tag_id(plan.taxonomy.pk))
+    errors: list[TagImportError] = []
+    for key in tags_with_criteria:
+        errors.extend(_conflicts_with_ancestors(plan, key, tags_with_criteria))
+    return errors
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

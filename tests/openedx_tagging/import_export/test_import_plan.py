@@ -7,7 +7,7 @@ from django.test.testcases import TestCase
 
 from openedx_tagging.import_export.actions import CreateTag
 from openedx_tagging.import_export.exceptions import TagImportError
-from openedx_tagging.import_export.import_plan import TagImportPlan, TagItem
+from openedx_tagging.import_export.import_plan import FinalTag, TagImportPlan, TagItem
 from openedx_tagging.models import Tag, TagImportTask, Taxonomy
 
 from .test_actions import TestImportActionMixin
@@ -1053,3 +1053,38 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         error = str(self.import_plan.errors[0])
         self.assertIn("tag_1", error)
         self.assertIn("file rows 1, 3", error)
+
+    def _final_tree_taxonomy(self):
+        """Create a taxonomy with tags a, b (child of a) and c."""
+        taxonomy = Taxonomy.objects.create(name="Final tree")
+        a = Tag.objects.create(taxonomy=taxonomy, external_id="a", value="A")
+        b = Tag.objects.create(taxonomy=taxonomy, external_id="b", value="B", parent=a)
+        c = Tag.objects.create(taxonomy=taxonomy, external_id="c", value="C")
+        return taxonomy, a, b, c
+
+    def test_final_tree_covers_rows_and_omitted_tags(self):
+        taxonomy, a, b, c = self._final_tree_taxonomy()
+        plan = TagImportPlan(taxonomy)
+        plan.generate_actions([
+            TagItem(id="a", value="A2", index=1),
+            TagItem(id="D", value="D", index=2, parent_id="a"),
+            TagItem(id="b2", value="B", index=3, parent_id="d", previous_id="b"),
+        ], replace=False)
+        assert plan.final_tree == {
+            "a": FinalTag("a", "A2", a.pk, None, 1),
+            "d": FinalTag("D", "D", None, "a", 2),
+            "b2": FinalTag("b2", "B", b.pk, "d", 3),
+            "c": FinalTag("c", "C", c.pk, None, None),
+        }
+
+    def test_final_tree_leaves_out_tags_the_import_deletes(self):
+        taxonomy, _a, _b, _c = self._final_tree_taxonomy()
+        plan = TagImportPlan(taxonomy)
+        plan.generate_actions([TagItem(id="a", value="A", index=1)], replace=True)
+        assert set(plan.final_tree) == {"a"}
+
+    def test_final_tree_omitted_child_follows_renamed_parent(self):
+        taxonomy, _a, b, _c = self._final_tree_taxonomy()
+        plan = TagImportPlan(taxonomy)
+        plan.generate_actions([TagItem(id="a2", value="A", index=1, previous_id="a")], replace=False)
+        assert plan.final_tree["b"] == FinalTag("b", "B", b.pk, "a2", None)

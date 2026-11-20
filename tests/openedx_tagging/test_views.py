@@ -18,9 +18,11 @@ from rest_framework.test import APITestCase
 
 from openedx_tagging import api
 from openedx_tagging.import_export import api as import_export_api
+from openedx_tagging.import_export.exceptions import TagImportError
 from openedx_tagging.import_export.parsers import ParserFormat
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 from openedx_tagging.rest_api.paginators import TagsPagination
+from openedx_tagging.rest_api.v1.views import TaxonomyView
 from openedx_tagging.rules import can_change_object_tag_objectid, can_view_object_tag_objectid
 
 from .test_models import TestTagTaxonomyMixin
@@ -3354,6 +3356,26 @@ class TestCreateImportView(ImportTaxonomyMixin, APITestCase):
         for i, tag in enumerate(tags):
             assert tag["value"] == new_tags[i]["value"]
 
+    def test_create_import_does_not_call_the_validators_hook(self) -> None:
+        """
+        Tests that creating a taxonomy by import skips the import validators hook.
+        """
+        file = self._get_file([{"id": "tag_1", "value": "Tag 1"}], "json")
+        self.client.force_authenticate(user=self.staff)
+        with patch.object(TaxonomyView, "_get_import_validators") as hook:
+            response = self.client.post(
+                TAXONOMY_CREATE_IMPORT_URL,
+                {
+                    "taxonomy_name": "Imported Taxonomy name",
+                    "taxonomy_description": "Imported Taxonomy description",
+                    "taxonomy_export_id": "imported_taxonomy_export_id",
+                    "file": file,
+                },
+                format="multipart"
+            )
+        hook.assert_not_called()
+        assert response.status_code == status.HTTP_201_CREATED
+
     def test_import_no_file(self) -> None:
         """
         Tests importing a taxonomy without a file.
@@ -3931,4 +3953,35 @@ class TestImportTagsView(ImportTaxonomyMixin, APITestCase):
         )
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
+        self._check_taxonomy_not_changed()
+
+    def _put_with_rejecting_hook(self, url):
+        """
+        PUTs a valid file while the import validators hook returns a validator that rejects the plan.
+        """
+        file = self._get_file([{"id": "tag_1", "value": "Tag 1"}], "json")
+        self.client.force_authenticate(user=self.staff)
+        with patch.object(
+            TaxonomyView, "_get_import_validators",
+            return_value=[lambda plan: [TagImportError("Row 1: rejected by a test validator")]],
+        ):
+            response = self.client.put(url, {"file": file}, format="multipart")
+        return response
+
+    def test_import_runs_the_hooks_validators(self):
+        """
+        Tests that importing tags runs the validators the hook supplies.
+        """
+        response = self._put_with_rejecting_hook(TAXONOMY_TAGS_IMPORT_URL.format(pk=self.taxonomy.id))
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Row 1: rejected by a test validator" in response.data
+        self._check_taxonomy_not_changed()
+
+    def test_import_plan_runs_the_hooks_validators(self):
+        """
+        Tests that planning an import runs the validators the hook supplies.
+        """
+        response = self._put_with_rejecting_hook(TAXONOMY_TAGS_IMPORT_PLAN_URL.format(pk=self.taxonomy.id))
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert "Row 1: rejected by a test validator" in response.data["error"]
         self._check_taxonomy_not_changed()
