@@ -81,7 +81,7 @@ def is_valid_asset_path(path: str) -> bool:
     start or end with whitespace.
 
     Paths must also be unicode normalized, using
-    ``openedx_django_lib.validators.normalize_unicode``()
+    ``openedx_django_lib.validators.normalize_unicode()``
     """
     return is_valid_path_value(path)
 
