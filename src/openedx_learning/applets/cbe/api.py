@@ -18,7 +18,7 @@ from django.utils.translation import gettext_lazy as _
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey, UsageKey
 
-from openedx_catalog.api import get_course_run, get_course_run_ids
+from openedx_catalog.api import get_course_run
 from openedx_catalog.models_api import CourseRun
 from openedx_tagging import api as tagging_api
 from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags
@@ -174,7 +174,7 @@ def resolve_competency_tag(tag_id: int) -> Tag:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class CompetencyCriteriaTree:
     """
-    One competency's non-archived CompetencyCriteriaGroup tree and CompetencyCriterion leaves.
+    One competency's non-archived CompetencyCriteriaGroup tree, CompetencyCriterion leaves, and archived course runs.
 
     UNSTABLE: the criteria-authoring family is incomplete, so this shape may change without a
     deprecation cycle. ``groups`` and ``criteria`` are flat lists: each group carries its
@@ -182,87 +182,122 @@ class CompetencyCriteriaTree:
 
     ``criteria_count`` is ``len(criteria)``. ``total_criteria_count`` counts the criteria under
     every reachable group before any course scoping.
+
+    ``archived_course_keys`` lists, sorted by ``str`` and once each, the course runs whose
+    course-level group for this competency is archived, limited to the requested ``course_keys``
+    when a scope is given.
     """
 
     groups: list[CompetencyCriteriaGroup]
     criteria: list[CompetencyCriterion]
     criteria_count: int
     total_criteria_count: int
+    archived_course_keys: list[CourseKey]
 
 
-def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None = None) -> CompetencyCriteriaTree:
+def _course_key_of(group: CompetencyCriteriaGroup) -> CourseKey | None:
     """
-    Return the non-archived CompetencyCriteriaGroup tree and CompetencyCriterion leaves for ``tag``.
-
-    UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
-    behavior may change this function's shape without a deprecation cycle.
-
-    A group is reachable only if it and every ancestor up to its root are non-archived. A
-    criterion is returned only if it is non-archived and its group is returned, so the result
-    always forms one tree: no returned ``parent_id`` or ``group_id`` names a row that was left out.
-
-    ``course_keys`` scopes the result by course run. A course run's groups are its course-level
-    group (the group whose ``course`` is that run) and every group nested below it, at any depth.
-    The groups above any course are the ones not nested in any course-level group.
-
-    - ``None`` (the default) returns every reachable group.
-    - A list returns the groups above any course plus the groups of the named course runs.
-      ``[]`` returns only the groups above any course.
-    - A key that matches no course run is dropped, and a repeated key counts once, at its
-      first position. A list in which no key resolves returns only the groups above any course.
-
-    Groups come back with the groups above any course first, then the named courses in the order
-    requested, and within each of those by ``(parent_id, ordering, id)`` with root-level rows first.
-    Criteria are ordered by their group's position in ``groups``, then ``id``.
-
-    ``criteria_count`` is ``len(criteria)``. ``total_criteria_count`` is the number of criteria
-    under every reachable group before ``course_keys`` is applied, so a caller scoped down to
-    zero criteria can still tell the competency is not empty.
+    Return the key of the course run ``group`` is set to, or None when its ``course`` is not set.
     """
-    groups = list(
-        CompetencyCriteriaGroup.objects.filter(tag=tag, archived=False)
-        .select_related("course")
-        .order_by(F("parent_id").asc(nulls_first=True), "ordering", "id")
-    )
-    if not groups:
-        return CompetencyCriteriaTree(groups=[], criteria=[], criteria_count=0, total_criteria_count=0)
+    if group.course is None:
+        return None
+    course_key = group.course.course_key
+    # A saved CourseRun always has a key; the assert narrows the type for mypy.
+    assert course_key is not None
+    return course_key
 
+
+def _walk_group_tree(
+    groups: list[CompetencyCriteriaGroup],
+) -> tuple[dict[int, CourseKey | None], set[CourseKey]]:
+    """
+    Walk ``groups`` down from the roots and return ``(course_key_of_branch, archived_course_keys)``.
+
+    A course run's *branch* is the first group on a path from a root that has a ``course`` (its
+    course-level group) and every group below it. A group above every course-level group is in no
+    branch.
+
+    ``course_key_of_branch`` maps the id of each kept group to the key of the course run whose branch
+    it sits in, or to None for the root and any other group that is in no branch. A group is kept
+    only if it and all its ancestors are non-archived.
+
+    ``archived_course_keys`` holds the key of every course run whose course-level group is archived,
+    whether or not the caller asked for that run.
+
+    ``groups`` must hold every group of one competency, archived ones included, with ``course``
+    loaded. Their order does not matter.
+    """
     # Walk down from the roots instead of relying on row order. A group's parent is fixed once
     # saved, but a QuerySet.update() can still give a group a parent with a larger id, and
     # ordering by parent_id would then visit that child before its parent.
-    groups_by_parent_id: dict[int | None, list[CompetencyCriteriaGroup]] = {}
+    children_by_parent_id: dict[int | None, list[CompetencyCriteriaGroup]] = {}
     for group in groups:
-        groups_by_parent_id.setdefault(group.parent_id, []).append(group)
-    # Maps each reachable group id to the course run id of its branch, or None above any course.
-    branch_course_ids: dict[int, int | None] = {}
-    pending = [(group, group.course_id) for group in groups_by_parent_id.get(None, [])]
-    while pending:
-        group, branch_course_id = pending.pop()
-        branch_course_ids[group.id] = branch_course_id
-        for child in groups_by_parent_id.get(group.id, []):
-            pending.append((child, branch_course_id if branch_course_id is not None else child.course_id))
-    reachable_groups = [group for group in groups if group.id in branch_course_ids]
+        children_by_parent_id.setdefault(group.parent_id, []).append(group)
 
-    if course_keys is None:
-        scoped_groups = reachable_groups
-    else:
-        run_ids_by_key = get_course_run_ids(course_keys)
-        rank_by_run_id = {
-            run_ids_by_key[key]: rank
-            for rank, key in enumerate((key for key in dict.fromkeys(course_keys) if key in run_ids_by_key), start=1)
-        }
-        # Groups above any course rank 0, so a scoped tree never orphans a child from its parent, and
-        # a branch ranks by its course. A branch whose course was not requested is left out.
-        # sorted() is stable, so each rank keeps the query order.
-        ranked_groups = []
-        for group in reachable_groups:
-            group_course_id = branch_course_ids[group.id]
-            if group_course_id is None:
-                ranked_groups.append((0, group))
-            elif group_course_id in rank_by_run_id:
-                ranked_groups.append((rank_by_run_id[group_course_id], group))
-        scoped_groups = [group for _, group in sorted(ranked_groups, key=lambda ranked: ranked[0])]
+    course_key_of_branch: dict[int, CourseKey | None] = {}
+    archived_course_keys: set[CourseKey] = set()
+    # Each entry is a group still to visit, with two facts about its parent: the key of the course
+    # run whose branch the parent sits in (None if the parent is in no branch), and whether the
+    # parent was kept.
+    to_visit: list[tuple[CompetencyCriteriaGroup, CourseKey | None, bool]] = [
+        (root, None, True) for root in children_by_parent_id.get(None, [])
+    ]
+    while to_visit:
+        group, parent_branch_key, parent_was_kept = to_visit.pop()
+        # A group that is below a course-level group inherits that group's course run. Otherwise
+        # the group starts a branch if it has a course, and is in no branch if it has none.
+        own_course_key = _course_key_of(group)
+        branch_key = parent_branch_key if parent_branch_key is not None else own_course_key
+        was_kept = parent_was_kept and not group.archived
 
+        if was_kept:
+            course_key_of_branch[group.id] = branch_key
+        else:
+            # Only a group that starts its branch archives that run. An archived Rule Group below an
+            # active course-level group can carry the same course without archiving that run; the
+            # API writes Rule Groups with no course, so this covers rows written through the ORM.
+            if group.archived and parent_branch_key is None and own_course_key is not None:
+                archived_course_keys.add(own_course_key)
+            if branch_key is not None:
+                # Nothing below a dropped group in a branch is kept, and none of it can start
+                # another branch, so its subtree needs no visit.
+                continue
+            # A dropped group in no branch can still have archived course-level groups below it,
+            # which belong in ``archived_course_keys``, so its children are visited.
+        for child in children_by_parent_id.get(group.id, []):
+            to_visit.append((child, branch_key, was_kept))
+    return course_key_of_branch, archived_course_keys
+
+
+def _scope_groups_to_requested_courses(
+    kept_groups: list[CompetencyCriteriaGroup],
+    course_key_of_branch: dict[int, CourseKey | None],
+    rank_by_course_key: dict[CourseKey, int],
+) -> list[CompetencyCriteriaGroup]:
+    """
+    Return the groups in no branch, then the branch of each course run in ``rank_by_course_key``.
+
+    ``course_key_of_branch`` is the first value returned by :func:`_walk_group_tree`.
+    ``rank_by_course_key`` gives the order of the requested course runs, and branches of any other
+    course run are left out. Groups with the same rank keep their order in ``kept_groups``.
+    """
+    # A group in no branch gets rank 0 so it sorts ahead of every branch, which keeps a child
+    # after its parent. A group in a branch gets its course run's rank, or is left out when that
+    # run was not requested. sorted() is stable, so groups of equal rank keep their input order.
+    ranked_groups = []
+    for group in kept_groups:
+        branch_key = course_key_of_branch[group.id]
+        if branch_key is None:
+            ranked_groups.append((0, group))
+        elif branch_key in rank_by_course_key:
+            ranked_groups.append((rank_by_course_key[branch_key], group))
+    return [group for _, group in sorted(ranked_groups, key=lambda ranked: ranked[0])]
+
+
+def _fetch_criteria_in_group_order(scoped_groups: list[CompetencyCriteriaGroup]) -> list[CompetencyCriterion]:
+    """
+    Return the non-archived criteria of ``scoped_groups``, ordered by their group's position in the list, then ``id``.
+    """
     position_by_group_id = {group.id: position for position, group in enumerate(scoped_groups)}
     criteria = list(
         CompetencyCriterion.objects.filter(group_id__in=position_by_group_id.keys(), archived=False)
@@ -271,11 +306,112 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
     )
     # sort() is stable, so criteria of one group keep their id order.
     criteria.sort(key=lambda criterion: position_by_group_id[criterion.group_id])
+    return criteria
+
+
+def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None = None) -> CompetencyCriteriaTree:
+    """
+    Return the active criteria tree of the competency ``tag``, and the course runs whose rules are archived.
+
+    UNSTABLE: the criteria-authoring family is incomplete, so its group update and archive
+    behavior may change this function's shape without a deprecation cycle.
+
+    **The tree.** A competency has at most one criteria tree. Its root group has one child per
+    course run the competency is used in, the course-level group, which holds that run's Rule
+    Groups and criteria::
+
+        root group                    (no course run)
+        |-- course-level group: X     (course run X)
+        |   `-- Rule Group -> criteria
+        |-- course-level group: Y     (course run Y, archived)
+        |   `-- Rule Group -> criteria
+        `-- course-level group: Z     (course run Z)
+            `-- Rule Group -> criteria
+
+    A course run's branch is its course-level group and everything below it. The root, and any
+    other group outside every branch, belongs to no course run.
+
+    **Archived rows are left out.** An archived group is left out with everything below it, even
+    rows that are not archived themselves, and so is an archived criterion. The result is always
+    one connected tree: every returned ``parent_id`` and ``group_id`` names a returned group.
+
+    **Scoping by course run.** ``course_keys`` picks which branches come back. It does not select
+    a single course run's tree. The groups outside every branch always come back, and the lists
+    below call them "the root", which is the only such group in a tree the API creates:
+
+    - ``None`` (the default) returns the whole tree.
+    - A list such as ``[Z, X]`` returns the root, then Z's branch, then X's branch. Branches of
+      runs it does not name are left out.
+    - ``[]`` returns only the root.
+
+    A key that matches no course run is ignored, and a repeated key counts once, at its first
+    position. If no key matches, only the root comes back.
+
+    **Order.** ``groups`` and ``criteria`` are flat lists; ``parent_id`` and ``group_id`` rebuild
+    the tree. ``groups`` starts with the root, and is empty when the root is archived or the
+    competency has no groups. With a ``course_keys`` list, each requested branch follows in the
+    order named, and the groups inside each branch are sorted by ``(parent_id, ordering, id)``.
+    With ``None``, the whole list is sorted that way, so the branches are interleaved. That sort
+    keeps the children of one parent next to each other, ordered by parent id, so it is neither
+    depth-first nor strictly level by level. ``criteria`` follow their group's position in
+    ``groups``, then ``id``.
+
+    **Counts.** ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is
+    the number of active criteria in the whole tree, ignoring ``course_keys``, so a caller that
+    scoped the result down to zero criteria can still tell the competency has some.
+
+    **Archived course runs.** ``archived_course_keys`` lists the course runs whose course-level
+    group is archived. Such a run can no longer take new criteria for this competency, and its
+    branch is missing from ``groups``, so without this list it would look like a run with no
+    rules yet. The list holds course run keys, sorted by ``str``,
+    each once, and is ``[]`` when none are archived. It follows the ``course_keys`` scope: ``None``
+    lists every archived run, a list keeps only the runs it names, and ``[]`` lists none.
+
+    Only an archived course-level group puts its run on the list:
+
+    - An archived Rule Group or criterion under an active course-level group does not, even when
+      the Rule Group carries the same course.
+    - An archived root does not hide the archived course-level groups below it. The root is not
+      listed itself, because the API creates it with no course.
+    - Precisely, an archived group is listed when its own ``course`` is the first course on its
+      path down from the root. In every tree the API creates, that is the group directly under
+      the root.
+
+    For the tree above, ``course_keys=[Z, X]`` returns the root, Z's branch, and X's branch, with
+    ``archived_course_keys=[]``. ``course_keys=[Y]`` returns only the root, with
+    ``archived_course_keys=[Y]``.
+    """
+    # Archived rows are fetched too: the walk below skips them for the tree but still reads them
+    # to find archived course runs.
+    groups = list(
+        CompetencyCriteriaGroup.objects.filter(tag=tag)
+        .select_related("course")
+        .order_by(F("parent_id").asc(nulls_first=True), "ordering", "id")
+    )
+    if not groups:
+        return CompetencyCriteriaTree(
+            groups=[], criteria=[], criteria_count=0, total_criteria_count=0, archived_course_keys=[],
+        )
+
+    course_key_of_branch, archived_course_keys = _walk_group_tree(groups)
+    kept_groups = [group for group in groups if group.id in course_key_of_branch]
+
+    if course_keys is None:
+        scoped_groups = kept_groups
+    else:
+        # The position of each requested key in the request, starting at 1. It only orders the
+        # returned branches. A repeated key keeps its first position, and a key that matches no
+        # branch is never looked up, so it has no effect.
+        rank_by_course_key = {key: rank for rank, key in enumerate(dict.fromkeys(course_keys), start=1)}
+        scoped_groups = _scope_groups_to_requested_courses(kept_groups, course_key_of_branch, rank_by_course_key)
+        archived_course_keys = {key for key in archived_course_keys if key in rank_by_course_key}
+
+    criteria = _fetch_criteria_in_group_order(scoped_groups)
     if course_keys is None:
         total_criteria_count = len(criteria)
     else:
         total_criteria_count = CompetencyCriterion.objects.filter(
-            group_id__in=branch_course_ids.keys(), archived=False,
+            group_id__in=course_key_of_branch.keys(), archived=False,
         ).count()
 
     return CompetencyCriteriaTree(
@@ -283,6 +419,7 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
         criteria=criteria,
         criteria_count=len(criteria),
         total_criteria_count=total_criteria_count,
+        archived_course_keys=sorted(archived_course_keys, key=str),
     )
 
 
