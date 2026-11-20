@@ -83,12 +83,13 @@ Decision
    1. ``id``: unique primary key
    2. ``parent_id``: The ``CompetencyCriteriaGroup.id`` of the parent group. Null means this is a root group. Immutable after creation.
    3. ``oel_tagging_tag_id``: The ``oel_tagging_tag.id`` for the competency represented by this criteria tree. Immutable after creation.
-   4. ``course_id``: Nullable foreign key for the course that scopes a course-scoped subtree. Only the course-level group carries it; the groups below it leave ``course_id`` null and belong to the course through that ancestor. Immutable after creation. Root groups always have ``course_id`` null.
+   4. ``course_id``: Nullable foreign key for the course that scopes a course-scoped subtree. Only the course-level group carries it; the groups below it leave ``course_id`` null and belong to the course through that ancestor. Immutable after creation. Root groups always have ``course_id`` null. A group with its own ``course_id`` cannot be created inside a course-scoped subtree, so course-scoped subtrees never nest.
    5. ``name``: string
    6. ``ordering``: A sibling sort key. The read API returns a group's children ordered by ``(ordering, id)`` so a tree comes back in a stable order. Evaluation ignores it, because the result of ``AND`` or ``OR`` over a group's children cannot depend on the order they are read in. Whether authors will ever need to control that order is an open question; if the authoring UI turns out not to need it, the field should be removed in a follow-up.
    7. ``logic_operator``: Either “AND” or “OR” or null. This determines how children are combined at a group node ("AND" or "OR").
    8. ``archived``: Boolean, defaults to false. Set instead of deleting a group once a student status exists for it. Archived groups are hidden from authoring and new associations but remain queryable, so existing ``CompetencyCriteria`` rows and learner status rows stay resolvable. For MVP, archiving a group or a criterion is permanent, with the root as the one reversible exception: a new criterion for an archived root's competency reactivates that root instead of creating a second one, because archiving it for good would remove the ability to ever associate criteria with that competency again. Archiving a course-level group blocks that course for that competency; archiving a leaf closes only that leaf to new criteria. More unarchival capabilities may be added after MVP.
    9. ``scope_code``: Derived from ``oel_tagging_tag_id``, set on the root group and null on every other group, whether or not the root is archived. It exists so the database can hold at most one root per competency, the same way Decision 3's derived ``scope_code`` holds at most one live profile per scope.
+   10. ``subtree_course_id``: Nullable foreign key recording the course of the course-scoped subtree the group belongs to. It is set on the course-level group and on every group below it, and null on groups above any course. It is derived from ``course_id`` and the parent at creation (the group's own ``course_id`` when set, otherwise the parent's ``subtree_course_id``), and is immutable along with them. It is a derived copy of what the parent chain says, so it never decides what a deletion removes: deleting a course run sets it to null rather than deleting through it, and a null value only widens a scoped read. It is non-unique and carries only the foreign key's own index. It exists so a scoped read can select a subtree's rows in the database (#919).
 
    Example: A root group uses "OR" with two child groups.
 
@@ -259,6 +260,7 @@ Decision
    10. ``CompetencyCriteriaGroup(oel_tagging_tag_id, course_id, parent_id)`` (unique -- at most one course-level group per competency and course)
    11. ``CompetencyRuleProfile(scope_code)`` (unique -- at most one profile per distinct scope value; a plain unique constraint on the three raw nullable scope columns would not enforce this, since SQL never treats two ``NULL`` values as equal and this project's MySQL backend does not support the conditional/partial unique indexes that would otherwise route around that; see the ``scope_code`` column in Decision 3)
    12. ``CompetencyMasteryStatuses(status)`` (unique)
+   13. ``CompetencyCriteriaGroup(subtree_course_id)`` (the foreign key's own auto-created index; non-unique)
 
 6. Learner progress status concepts (``StudentCompetency*Status`` database tables)
 
@@ -507,3 +509,11 @@ Changelog
 
 * Decision 4 states that no ancestor or descendant of a competency tag may hold live criteria
   in the same course as that tag, and why.
+
+2026-11-18:
+
+* For issue #919: added ``subtree_course_id`` to ``CompetencyCriteriaGroup`` (Decision 2, column 10)
+  so a scoped read can select a course-scoped subtree's rows in the database. ``course_id`` and its
+  unique constraint are unchanged.
+  Column 4's rule that a group with its own ``course_id`` cannot sit inside a course-scoped subtree
+  is enforced when a group is created.
