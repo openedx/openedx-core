@@ -4,7 +4,7 @@ Public API for Competency-Based Education (CBE).
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -23,9 +23,19 @@ from openedx_catalog.models_api import CourseRun
 from openedx_tagging import api as tagging_api
 from openedx_tagging.api import create_taxonomy, get_ancestor_tags, get_descendant_tags
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
+from openedx_tagging.models.base import TAXONOMY_MAX_DEPTH
 from openedx_tagging.rules import ObjectTagPermissionItem, UserType
 
-from .data import CriterionDeletionResult, GradedObjectScore, GroupDeletionResult
+from .data import (
+    CriterionDeletionResult,
+    GradedObjectScore,
+    GroupDeletionResult,
+    LearnerCompetency,
+    LearnerCourseCriteria,
+    LearnerCriteriaGroup,
+    LearnerCriterion,
+    LearnerTaxonomy,
+)
 from .models import (
     CompetencyCourseRun,
     CompetencyCriteriaGroup,
@@ -49,6 +59,11 @@ __all__ = [
     "CriterionDeletionResult",
     "GradedObjectScore",
     "GroupDeletionResult",
+    "LearnerCompetency",
+    "LearnerCourseCriteria",
+    "LearnerCriteriaGroup",
+    "LearnerCriterion",
+    "LearnerTaxonomy",
     "associate_competency_criterion",
     "bulk_update_competency_criteria",
     "create_competency_criterion",
@@ -58,6 +73,7 @@ __all__ = [
     "get_blocked_courses",
     "get_competency_criteria_tree",
     "get_competency_rule_profiles",
+    "get_course_competency_criteria",
     "get_courses_with_live_criteria",
     "is_competency_taxonomy",
     "record_graded_object_statuses",
@@ -283,6 +299,246 @@ def get_competency_criteria_tree(tag: Tag, course_keys: list[CourseKey] | None =
         criteria=criteria,
         criteria_count=len(criteria),
         total_criteria_count=total_criteria_count,
+    )
+
+
+def _has_archived_ancestor_tag() -> Q:
+    """
+    Return a filter on CompetencyCriteriaGroup that matches a group whose tag has an archived ancestor tag.
+
+    A tag has at most ``TAXONOMY_MAX_DEPTH`` ancestors, so the ancestor chain is a fixed number of joins.
+    That keeps the check inside the caller's query instead of walking up the chain one query per level.
+    """
+    archived_ancestor = Q()
+    for level in range(1, TAXONOMY_MAX_DEPTH + 1):
+        archived_ancestor |= Q(**{"tag" + "__parent" * level + "__archived": True})
+    return archived_ancestor
+
+
+def _get_live_course_level_groups(course_key: CourseKey) -> list[CompetencyCriteriaGroup]:
+    """
+    Return the live course-level groups of ``course_key``, each with its root group, tag and taxonomy loaded.
+
+    A group is live when neither it nor its root group is archived, neither its tag nor any ancestor tag is
+    archived, and its taxonomy is an enabled, unarchived competency taxonomy.
+    """
+    return list(
+        CompetencyCriteriaGroup.objects.filter(
+            course__course_key=course_key,
+            parent__isnull=False,
+            parent__parent__isnull=True,
+            archived=False,
+            parent__archived=False,
+            tag__archived=False,
+            tag__taxonomy__archived=False,
+            tag__taxonomy__enabled=True,
+            tag__taxonomy_id__in=CompetencyTaxonomy.objects.values("pk"),
+        )
+        .exclude(_has_archived_ancestor_tag())
+        .select_related("parent", "tag__taxonomy")
+    )
+
+
+def _get_live_groups_below(
+    course_level_groups: list[CompetencyCriteriaGroup],
+) -> dict[int, CompetencyCriteriaGroup]:
+    """
+    Return ``course_level_groups`` and every non-archived group below them, keyed by id.
+
+    The groups below are found one level per query through ``parent_id``, so an archived group hides the
+    groups beneath it.
+    """
+    groups_by_id = {group.id: group for group in course_level_groups}
+    level_ids = list(groups_by_id)
+    while level_ids:
+        level = CompetencyCriteriaGroup.objects.filter(parent_id__in=level_ids, archived=False)
+        level_ids = []
+        for group in level:
+            groups_by_id[group.id] = group
+            level_ids.append(group.id)
+    return groups_by_id
+
+
+def _group_and_ancestors(
+    group: CompetencyCriteriaGroup, groups_by_id: dict[int, CompetencyCriteriaGroup],
+) -> Iterator[CompetencyCriteriaGroup]:
+    """Yield ``group``, then each of its parents, nearest first, for as long as the parent is in ``groups_by_id``."""
+    yield group
+    parent_id = group.parent_id
+    while parent_id in groups_by_id:
+        group = groups_by_id[cast(int, parent_id)]
+        yield group
+        parent_id = group.parent_id
+
+
+def _course_level_ancestor(
+    group: CompetencyCriteriaGroup, groups_by_id: dict[int, CompetencyCriteriaGroup],
+) -> CompetencyCriteriaGroup:
+    """
+    Return the course-level group above ``group``, or ``group`` itself when it is course-level.
+
+    ``groups_by_id`` must hold the course-level groups and no group above them.
+    """
+    *_, course_level_group = _group_and_ancestors(group, groups_by_id)
+    return course_level_group
+
+
+def _ids_of_groups_with_criteria(
+    groups_by_id: dict[int, CompetencyCriteriaGroup], criteria: list[CompetencyCriterion],
+) -> set[int]:
+    """Return the ids of the groups in ``groups_by_id`` that hold a criterion, directly or in a group below them."""
+    return {
+        group.id
+        for criterion in criteria
+        for group in _group_and_ancestors(groups_by_id[criterion.group_id], groups_by_id)
+    }
+
+
+def _groups_with_competency_ids_in_result_order(
+    live_course_level_groups_with_criteria: list[CompetencyCriteriaGroup],
+    groups_by_id: dict[int, CompetencyCriteriaGroup],
+    group_ids_with_criteria: set[int],
+) -> list[tuple[CompetencyCriteriaGroup, int]]:
+    """
+    Return the result's groups, each paired with its competency id, sorted by ``(ordering, id)``.
+
+    ``groups_by_id`` holds this course run's course-level groups and every live group below them, and
+    ``group_ids_with_criteria`` holds the ids of those that have a criterion directly or below them. The root group
+    is not in ``groups_by_id``. It is taken from the ``parent`` of each of
+    ``live_course_level_groups_with_criteria``. For one competency whose course-level group in this course run is
+    tagged ``T``::
+
+        Root group                                  returned once per root, from ``group.parent``     -> T
+        ├── Course-level group, another course run  not passed in, so not returned
+        └── Course-level group, this course run     returned                                          -> T
+            ├── Group holding a criterion below it  returned                                          -> T
+            │   └── Group holding a criterion       returned                                          -> T
+            └── Group with no criterion left        not in ``group_ids_with_criteria``, not returned
+
+    Every returned group, the root included, is paired with ``T``, the tag id of its course-level group. That
+    tag's archive state was checked, so every competency id names a returned competency.
+    """
+    root_groups = {
+        group.parent_id: (cast(CompetencyCriteriaGroup, group.parent), group.tag_id)
+        for group in live_course_level_groups_with_criteria
+    }
+    groups_with_competency_ids = list(root_groups.values())
+    groups_with_competency_ids.extend(
+        (group, _course_level_ancestor(group, groups_by_id).tag_id)
+        for group in groups_by_id.values()
+        if group.id in group_ids_with_criteria
+    )
+    groups_with_competency_ids.sort(key=lambda pair: (pair[0].ordering, pair[0].id))
+    return groups_with_competency_ids
+
+
+def get_course_competency_criteria(course_key: CourseKey) -> LearnerCourseCriteria:
+    """
+    Return the live competency criteria of one course run, for learners.
+
+    UNSTABLE: the learner Progress tab frontends
+    (https://github.com/openedx/openedx-core/issues/734 and https://github.com/openedx/openedx-core/issues/839)
+    are still to come, and the learner status endpoints will reuse this shape, so what this function returns
+    may change without a deprecation cycle.
+
+    This function checks no permission; the caller decides who may see the result.
+
+    :param course_key: The course run, as a plain course key with its branch and version stripped.
+    :return: A :class:`LearnerCourseCriteria` holding four flat lists that reference each other by id:
+        ``taxonomies``, ``competencies``, ``groups`` and ``criteria``. A key with no course run, or a
+        course run with no criteria, gives four empty lists.
+
+    What is left out of the lists is marked ``x``::
+
+        Taxonomy                                             x if archived, disabled, or not a competency taxonomy
+        └── Competency (a Tag)                               x if it or any ancestor tag is archived
+            └── Root group                                   x if archived, with the whole competency
+                ├── Criterion on the root group              x always
+                ├── Course-level group, another course run   x always
+                └── Course-level group, ``course_key``       x if archived
+                    ├── Group                                x if archived, with everything below it
+                    │   └── Criterion                        x if archived or its ObjectTag is archived
+                    └── Criterion                            x if archived or its ObjectTag is archived
+
+    A group, competency or taxonomy that has no criteria left after that is left out too.
+
+    An archived rule profile does not hide a criterion. A criterion's rule is returned exactly as stored,
+    including a rule type this library does not know.
+
+    | Ordering by:
+    | ``groups``:  ``(ordering, id)``
+    | ``taxonomies``, ``competencies``, ``criteria``: ``id``
+
+    The number of queries depends on the depth of the hierarchy, not on the amount of data.
+    """
+    course_level_groups = _get_live_course_level_groups(course_key)
+    if not course_level_groups:
+        return LearnerCourseCriteria(taxonomies=[], competencies=[], groups=[], criteria=[])
+
+    groups_by_id = _get_live_groups_below(course_level_groups)
+    criteria = list(
+        CompetencyCriterion.objects.filter(
+            group_id__in=groups_by_id.keys(), archived=False, object_tag__archived=False,
+        )
+        .select_related("object_tag", "rule_profile")
+        .order_by("id")
+    )
+    group_ids_with_criteria = _ids_of_groups_with_criteria(groups_by_id, criteria)
+    live_course_level_groups_with_criteria = [
+        group for group in course_level_groups if group.id in group_ids_with_criteria
+    ]
+
+    competency_tags = {group.tag_id: group.tag for group in live_course_level_groups_with_criteria}
+    taxonomies = {}
+    for tag in competency_tags.values():
+        # A group's tag is always a competency tag, so its taxonomy is always set.
+        if tag.taxonomy is None:
+            raise TypeError(f"Competency tag {tag.id} has no taxonomy.")
+        taxonomies[tag.taxonomy_id] = tag.taxonomy
+    groups = _groups_with_competency_ids_in_result_order(
+        live_course_level_groups_with_criteria, groups_by_id, group_ids_with_criteria,
+    )
+
+    learner_criteria = []
+    for criterion in criteria:
+        rule_type, rule_payload = _effective_rule(criterion)
+        learner_criteria.append(
+            LearnerCriterion(
+                id=criterion.id,
+                group_id=criterion.group_id,
+                object_id=criterion.object_tag.object_id,
+                rule_type=rule_type,
+                rule_payload=rule_payload,
+            )
+        )
+
+    return LearnerCourseCriteria(
+        taxonomies=[
+            LearnerTaxonomy(id=taxonomy.id, name=taxonomy.name)
+            for _, taxonomy in sorted(taxonomies.items())
+        ],
+        competencies=[
+            LearnerCompetency(
+                id=tag.id,
+                name=tag.value,
+                external_id=tag.external_id,
+                lineage=tag.get_lineage(),
+                taxonomy_id=cast(int, tag.taxonomy_id),
+            )
+            for _, tag in sorted(competency_tags.items())
+        ],
+        groups=[
+            LearnerCriteriaGroup(
+                id=group.id,
+                tag_id=competency_id,
+                parent_id=group.parent_id,
+                name=group.name,
+                logic_operator=group.logic_operator,
+                ordering=group.ordering,
+            )
+            for group, competency_id in groups
+        ],
+        criteria=learner_criteria,
     )
 
 
