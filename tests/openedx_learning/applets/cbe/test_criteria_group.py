@@ -4,8 +4,8 @@ tree.
 
 Each test name states the behavior it pins. Reading top to bottom gives the model's contract:
 its columns, its tree shape, the two constraints ADR-0002 Decision 2 deliberately leaves out,
-one root per competency and one course-level group per competency and course, then its indexes
-and history.
+one root per competency and one course-level group per competency and course, the course of the
+course-scoped subtree a group belongs to, then its indexes and history.
 
 Delete behavior is not covered here. Nothing in this module deletes a row that another row
 points at. See test_criteria_group_deletion.py, in this same change, for this model's own
@@ -19,6 +19,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
 from openedx_catalog.models import CourseRun
+from openedx_learning.applets.cbe.api import _create_leaf_group
 from openedx_learning.models import CompetencyCriteriaGroup, LogicOperator
 from openedx_tagging.models import Tag
 
@@ -228,6 +229,77 @@ def test_a_root_cannot_be_given_a_parent_behind_save(tag: Tag) -> None:
 
     with pytest.raises(IntegrityError), transaction.atomic():
         CompetencyCriteriaGroup.objects.filter(pk=root_b.pk).update(parent=root_a)
+
+
+# ---------------------------------------------------------------------------------------------
+# The course of the course-scoped subtree a group belongs to
+
+
+# ---------------------------------------------------------------------------------------------
+
+
+def test_create_leaf_group_sets_subtree_course_on_the_course_branch(tag: Tag, course_run: CourseRun) -> None:
+    leaf = _create_leaf_group(tag, course_run)
+
+    leaf.refresh_from_db()
+    assert leaf.parent is not None
+    assert leaf.parent.parent is not None
+    root, course_level = leaf.parent.parent, leaf.parent
+    assert leaf.subtree_course_id == course_run.id
+    assert course_level.subtree_course_id == course_run.id
+    assert root.subtree_course_id is None
+
+
+def test_subtree_course_is_inherited_below_the_course_level_group(tag: Tag, course_run: CourseRun) -> None:
+    leaf = _create_leaf_group(tag, course_run)
+    assert leaf.parent is not None
+    root = leaf.parent.parent
+
+    nested = CompetencyCriteriaGroup.objects.create(tag=tag, parent=leaf)
+    deeper = CompetencyCriteriaGroup.objects.create(tag=tag, parent=nested)
+    above_any_course = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+
+    assert nested.subtree_course_id == course_run.id
+    assert deeper.subtree_course_id == course_run.id
+    assert above_any_course.subtree_course_id is None
+
+
+@pytest.mark.parametrize("parent_kwarg", ["parent", "parent_id"], ids=["cached_parent", "uncached_parent"])
+@pytest.mark.parametrize("parent_level", ["course_level_group", "leaf_group"])
+def test_a_group_with_its_own_course_cannot_be_created_inside_a_course_scoped_subtree(
+    tag: Tag, course_run: CourseRun, parent_level: str, parent_kwarg: str
+) -> None:
+    other_run = CourseRun.objects.create(catalog_course=course_run.catalog_course, run_code="Spring2027")
+    leaf = _create_leaf_group(tag, course_run)
+    parent = leaf if parent_level == "leaf_group" else leaf.parent
+    assert parent is not None
+    parent_arg = parent if parent_kwarg == "parent" else parent.pk
+    group_count = CompetencyCriteriaGroup.objects.count()
+
+    with pytest.raises(ValidationError):
+        CompetencyCriteriaGroup.objects.create(tag=tag, course=other_run, **{parent_kwarg: parent_arg})
+
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+
+
+def test_two_leaves_under_one_course_level_group_are_allowed(tag: Tag, course_run: CourseRun) -> None:
+    first_leaf = _create_leaf_group(tag, course_run)
+    second_leaf = _create_leaf_group(tag, course_run)
+
+    assert first_leaf.pk != second_leaf.pk
+    assert first_leaf.parent_id == second_leaf.parent_id
+    assert second_leaf.subtree_course_id == course_run.id
+    assert first_leaf.parent is not None
+    root = first_leaf.parent.parent
+    # The unique constraint on (tag, course, parent) still rejects a duplicate course-level group.
+    with pytest.raises(IntegrityError), transaction.atomic():
+        CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root)
+
+
+def test_subtree_course_is_excluded_from_history() -> None:
+    historical_group = apps.get_model("openedx_learning", "HistoricalCompetencyCriteriaGroup")
+
+    assert "subtree_course" not in {f.name for f in historical_group._meta.get_fields()}
 
 
 # ---------------------------------------------------------------------------------------------
