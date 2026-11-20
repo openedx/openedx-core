@@ -55,13 +55,24 @@ from .serializers import (
     TaxonomyTagUpdateBodySerializer,
 )
 
+ARCHIVED_TAXONOMY_MESSAGE = "This taxonomy is archived and cannot be edited."
+
+
+def _get_taxonomy_including_archived(taxonomy_id: int) -> Taxonomy | None:
+    """
+    Returns the Taxonomy with the given ID even if it is archived, or None if not found.
+
+    This is the unfiltered lookup for write and delete actions. Read actions use the archive-aware `get_taxonomy`.
+    """
+    return Taxonomy.objects.filter(pk=taxonomy_id).first()
+
 
 @view_auth_classes
 class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
     """
     View to list, create, retrieve, update, delete, export or import Taxonomies.
 
-    TODO: We need to add a perform_update and call the api update function when is created.
+    TODO: `perform_update` needs to call the api update function when it is created.
     This is because it is necessary to call the model validations. (`full_clean()`).
     Currently those validations are not run, which means we could update `export_id` with any value
     through this api.
@@ -228,18 +239,30 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
     permission_classes = [TaxonomyObjectPermissions]
     pagination_class = TaxonomyPagination
 
+    # Actions for which `get_object` also resolves archived taxonomies. Writes reject them with a 400, and
+    # destroy keeps its existing behavior.
+    ACTIONS_THAT_RESOLVE_ARCHIVED = ("update", "partial_update", "destroy", "update_import", "plan_update_import")
+
     def get_object(self) -> Taxonomy:
         """
         Return the requested taxonomy object, if the user has appropriate
         permissions.
         """
         pk = int(self.kwargs["pk"])
-        taxonomy = get_taxonomy(pk)
+        if self.action in self.ACTIONS_THAT_RESOLVE_ARCHIVED:
+            taxonomy = _get_taxonomy_including_archived(pk)
+        else:
+            taxonomy = get_taxonomy(pk)
         if not taxonomy:
             raise Http404("Taxonomy not found")
         self.check_object_permissions(self.request, taxonomy)
 
         return taxonomy
+
+    def perform_update(self, serializer) -> None:
+        if serializer.instance.archived:
+            raise ValidationError(ARCHIVED_TAXONOMY_MESSAGE)
+        super().perform_update(serializer)
 
     def get_queryset(self) -> models.QuerySet:
         """
@@ -256,7 +279,7 @@ class TaxonomyView(TaggingExceptionHandlerMixin, ModelViewSet):
         enabled = query_params.data.get("enabled", None)
 
         qs = get_taxonomies(enabled)
-        qs = qs.annotate(tags_count=models.Count("tag", distinct=True))
+        qs = qs.annotate(tags_count=models.Count("tag", filter=models.Q(tag__archived=False), distinct=True))
         return qs
 
     def perform_create(self, serializer) -> None:
@@ -800,11 +823,17 @@ class TaxonomyTagsView(TaggingExceptionHandlerMixin, ListAPIView, RetrieveUpdate
         """
         Get the taxonomy from `pk` or raise 404.
 
+        Archived taxonomies are not found, except for POST, PUT and PATCH, which resolve them so that
+        the tag write is rejected with an explanation instead of a 404. GET and DELETE do not.
+
         The current taxonomy is cached in the view.
         """
         if not self._taxonomy:
             taxonomy_id = self.kwargs.get("pk")
-            taxonomy = get_taxonomy(int(taxonomy_id)) if taxonomy_id else None
+            if taxonomy_id and self.request.method in ("POST", "PUT", "PATCH"):
+                taxonomy = _get_taxonomy_including_archived(int(taxonomy_id))
+            else:
+                taxonomy = get_taxonomy(int(taxonomy_id)) if taxonomy_id else None
             if not taxonomy:
                 raise Http404("Taxonomy not found")
             self.check_object_permissions(self.request, taxonomy)
@@ -860,11 +889,14 @@ class TaxonomyTagsView(TaggingExceptionHandlerMixin, ListAPIView, RetrieveUpdate
         else:
             depth = 1  # Otherwise (default), load a single level of results only.
 
-        results = taxonomy.get_filtered_tags(
-            parent_tag_value=parent_tag_value,
-            search_term=search_term,
-            depth=depth,
-        )
+        try:
+            results = taxonomy.get_filtered_tags(
+                parent_tag_value=parent_tag_value,
+                search_term=search_term,
+                depth=depth,
+            )
+        except TagDoesNotExist as e:
+            raise Http404("Parent tag not found") from e
         if depth == 1:
             # We're already returning just a single level. It will be paginated normally.
             if include_counts:

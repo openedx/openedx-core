@@ -1079,6 +1079,15 @@ class TestTagLineage(TestCase):
         assert self.bob.depth == 1
         assert self.bob.lineage == "Charlie\tBob\t"
 
+    def test_child_and_descendant_counts_exclude_archived(self):
+        assert self.charlie.child_count == 2
+        assert self.charlie.descendant_count == 5
+
+        Tag.objects.filter(pk__in=[self.bob.pk, self.foxtrot.pk]).update(archived=True)
+        charlie = Tag.objects.get(pk=self.charlie.pk)  # The counts are cached on the instance
+        assert charlie.child_count == 1
+        assert charlie.descendant_count == 3
+
     # TODO: The following event-emission tests don't really belong in TestTagLineage.
     # They should be moved to a separate test_events.py module.
     @patch("openedx_tagging.signal_handlers.emit_content_object_associations_changed_for_tag_task.delay")
