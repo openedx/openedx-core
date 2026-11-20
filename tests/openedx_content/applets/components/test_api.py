@@ -733,6 +733,85 @@ class CreateNewVersionsTestCase(ComponentTestCase):
             version_2_draft.media.get(componentversionmedia__path="static/background.webp")
 
 
+class NextVersionDependenciesTestCase(ComponentTestCase):
+    """
+    Test how create_next_component_version() handles dependencies.
+    """
+    component: Component
+    dep_a: Component
+    dep_b: Component
+    dep_c: Component
+
+    @classmethod
+    def setUpTestData(cls) -> None:
+        super().setUpTestData()
+        cls.dep_a, _ = cls._create(component_code="dep_a")
+        cls.dep_b, _ = cls._create(component_code="dep_b")
+        cls.dep_c, _ = cls._create(component_code="dep_c")
+        cls.component, _ = cls._create(
+            component_code="main",
+            dependencies=[cls.dep_a.id, cls.dep_b.id],
+        )
+
+    @classmethod
+    def _create(cls, component_code: str, dependencies=None) -> tuple[Component, ComponentVersion]:
+        return components_api.create_component_and_version(
+            cls.learning_package.id,
+            component_type=cls.html_type,
+            component_code=component_code,
+            title=component_code,
+            created=cls.now,
+            dependencies=dependencies,
+        )
+
+    @staticmethod
+    def _dependency_ids(version: ComponentVersion) -> set:
+        return set(version.publishable_entity_version.dependencies.values_list("id", flat=True))
+
+    def test_dependencies_preserved_by_default(self):
+        """If dependencies isn't specified, the previous version's are kept."""
+        v2 = components_api.create_next_component_version(
+            self.component.id,
+            media_to_replace={},
+            created=self.now,
+            title="Changed title",
+        )
+        assert v2.version_num == 2
+        assert self._dependency_ids(v2) == {self.dep_a.id, self.dep_b.id}
+
+        # And it's still preserved on the next version after that:
+        v3 = components_api.create_next_component_version(self.component.id, media_to_replace={}, created=self.now)
+        assert self._dependency_ids(v3) == {self.dep_a.id, self.dep_b.id}
+
+    def test_set_new_dependencies(self):
+        """Passing a list of dependencies replaces the previous ones."""
+        v2 = components_api.create_next_component_version(
+            self.component.id,
+            media_to_replace={},
+            created=self.now,
+            dependencies=[self.dep_b.id, self.dep_c.id],
+        )
+        assert self._dependency_ids(v2) == {self.dep_b.id, self.dep_c.id}
+
+        # The previous version's dependencies are unchanged:
+        v1 = self.component.versioning.version_num(1)
+        assert self._dependency_ids(v1) == {self.dep_a.id, self.dep_b.id}
+
+    def test_remove_all_dependencies(self):
+        """Passing an empty list removes all dependencies."""
+        v2 = components_api.create_next_component_version(
+            self.component.id,
+            media_to_replace={},
+            created=self.now,
+            dependencies=[],
+        )
+        assert not self._dependency_ids(v2)
+
+        # And a subsequent version with dependencies=None keeps them empty:
+        v3 = components_api.create_next_component_version(self.component.id, media_to_replace={}, created=self.now)
+        assert not self._dependency_ids(v3)
+
+
 class SetCollectionsTestCase(ComponentTestCase):
     """
     Test setting collections for a component.

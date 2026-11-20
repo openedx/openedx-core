@@ -10,6 +10,7 @@ directly, since there might be other related models that you may not know about.
 Please look at the models.py file for more information about the kinds of data
 are stored in this app.
 """
+
 from __future__ import annotations
 
 import mimetypes
@@ -27,7 +28,8 @@ from django.http.response import HttpResponse, HttpResponseNotFound
 from ..media import api as media_api
 from ..media.models import Media
 from ..publishing import api as publishing_api
-from .models import Component, ComponentType, ComponentVersion, ComponentVersionMedia, LearningPackage
+from ..publishing.models import LearningPackage, PublishableEntity
+from .models import Component, ComponentType, ComponentVersion, ComponentVersionMedia
 
 # The public API that will be re-exported by openedx_content.api
 # is listed in the __all__ entries below. Internal helper functions that are
@@ -118,6 +120,7 @@ def create_component_version(
     created_by: int | None,
     *,
     media: dict[str, Media.ID | Media | bytes] | None = None,
+    dependencies: list[PublishableEntity.ID] | None = None,
 ) -> ComponentVersion:
     """
     Create a new ComponentVersion
@@ -140,6 +143,7 @@ def create_component_version(
             title=title,
             created=created,
             created_by=created_by,
+            dependencies=dependencies,
         )
         component_version = ComponentVersion.objects.create(
             publishable_entity_version=publishable_entity_version,
@@ -161,6 +165,7 @@ def create_next_component_version(
     *,
     force_version_num: int | None = None,
     ignore_previous_media: bool = False,
+    dependencies: list[PublishableEntity.ID] | None = None,
 ) -> ComponentVersion:
     """
     Create a new ComponentVersion based on the most recent version.
@@ -176,6 +181,9 @@ def create_next_component_version(
             this version's number explicitly. Use this if you need to restore or import a version with a specific
             version number, such as during data migration or when synchronizing with external systems.
         ignore_previous_media (bool): If True, do not copy over media from the previous version.
+        dependencies (list, optional): The PublishableEntity IDs this version depends on. If None (the default),
+            the previous version's dependencies are copied over unchanged. If a list is passed, it replaces the
+            previous dependencies entirely; pass ``[]`` to remove all dependencies.
 
     Returns:
         ComponentVersion: The newly created ComponentVersion instance.
@@ -235,12 +243,20 @@ def create_next_component_version(
         next_version_num = force_version_num
 
     with atomic():
+        if dependencies is None and last_version is not None:
+            # Carry over the previous version's dependencies unchanged. (Pass
+            # an explicit list, e.g. [], to override or clear them.)
+            dependencies = list(
+                last_version.publishable_entity_version.dependencies.values_list("id", flat=True)
+            )
+
         publishable_entity_version = publishing_api.create_publishable_entity_version(
             component_id,
             version_num=next_version_num,
             title=title,
             created=created,
             created_by=created_by,
+            dependencies=dependencies,
         )
         component_version = ComponentVersion.objects.create(
             publishable_entity_version=publishable_entity_version,
@@ -284,6 +300,7 @@ def create_component_and_version(  # pylint: disable=too-many-positional-argumen
     *,
     can_stand_alone: bool = True,
     media: dict[str, Media.ID | Media | bytes] | None = None,
+    dependencies: list[PublishableEntity.ID] | None = None,
 ) -> tuple[Component, ComponentVersion]:
     """
     Create a Component and associated ComponentVersion atomically.
@@ -304,6 +321,7 @@ def create_component_and_version(  # pylint: disable=too-many-positional-argumen
             created=created,
             created_by=created_by,
             media=media or {},
+            dependencies=dependencies,
         )
 
     return (component, component_version)
