@@ -52,8 +52,10 @@ class AssetPermissions(models.TextChoices):
     """Access permissions for an ``Asset``"""
 
     # No authentication required. Default (for performance reasons, not product reasons).
+    # a.k.a. "Unlocked" in some Studio UIs
     PUBLIC = "public"
     # Restricted to enrolled users only
+    # a.k.a. "Locked" in some Studio UIs
     ENROLLED = "enrolled"
     # Restricted to staff only
     STAFF = "staff"

@@ -105,7 +105,8 @@ def create_asset(
     allow_scripts: for HTML assets only, set this ``True`` to serve the asset in
         a more permissive sandbox that allows referencing JavaScript files.
 
-        Raises AssetAlreadyExists if an Asset exists with the same ``path``.
+    Raises AssetAlreadyExists if an Asset exists with the same ``path``, including ones
+    which have been deleted.
     """
     learning_package_id = _get_learning_package_id(learning_package)
     # Label this asset with a unique, semi-human-readable reference string.
@@ -189,7 +190,7 @@ def create_next_asset_version(
     Create a new AssetVersion based on the most recent version.
 
     Pass ``media=None`` to keep the same media, e.g. for renaming the ``title``
-    only.
+    only. For new assets, ``media`` is required.
     """
     # This needs to grab the highest version_num for this Publishable Entity.
     # This will often be the Draft version, but not always. For instance, if
@@ -204,7 +205,7 @@ def create_next_asset_version(
         if title is None:
             title = asset.path
         if media is None:
-            raise RuntimeError("Cannot create an initial version without media.")
+            raise ValueError(f"Cannot create an initial version of asset ({asset_id=}) without media.")
     else:
         next_version_num = last_version.version_num + 1
         if title is None:
