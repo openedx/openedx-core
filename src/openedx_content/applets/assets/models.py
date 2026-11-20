@@ -31,13 +31,17 @@ __all__ = [
 ]
 
 # Validation pattern for Asset's filename/path field.
-# Disallows starting slash, control chars, '//', '\', './' and '../'.
+# Disallows starting slash, control chars, '//', '\', '*', './' and '../', and whitespace at the start or end of any
+# path segment. This is also used in a DB CheckConstraint, so it must stay portable across Python, MySQL (ICU) and
+# PostgreSQL (ARE) regex engines: no lookbehind, no \z, no \S/\W inside brackets.
+# A single path segment: no slash, backslash or '*', and does not start or end with whitespace.
+_PATH_SEGMENT = r"[^/\\*\s](?:[^/\\*]*[^/\\*\s])?"
 PATH_RE = re.compile(
     r"^"  # beginning of string
     r"(?![^\x00-\x1f\x7f]*[\x00-\x1f\x7f])"  # No control chars anywhere in the string
     r"(?!.*(?:^|/)\.{1,2}(?:/|$))"  # no "." or ".." path segments
-    r"[^/\\]+"  # first segment: no slash or backslash
-    r"(?:/[^/\\]+)*"  # more segments, each after exactly one "/"
+    rf"{_PATH_SEGMENT}"  # first segment
+    rf"(?:/{_PATH_SEGMENT})*"  # more segments, each after exactly one "/"
     r"$"  # end of string
 )
 INVALID_PATH_MSG = "Asset path is invalid."

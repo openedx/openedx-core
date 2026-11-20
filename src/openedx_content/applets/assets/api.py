@@ -80,8 +80,9 @@ def is_valid_asset_path(path: str) -> bool:
     ``"images/photo.png"``.
 
     Paths must not be empty or longer than ``ASSET_PATH_MAX_LENGTH``, and must
-    not contain control characters, backslashes, a leading or trailing slash,
-    empty segments (``//``), or ``.`` or ``..`` segments.
+    not contain control characters, backslashes, ``*``, a leading or trailing
+    slash, empty segments (``//``), ``.`` or ``..`` segments, or segments that
+    start or end with whitespace.
     """
     return len(path) <= ASSET_PATH_MAX_LENGTH and PATH_RE.fullmatch(path) is not None
 

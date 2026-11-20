@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, assert_type, cast
 
 import pytest
 from django.core.exceptions import ValidationError
+from django.db.utils import DataError, IntegrityError
 
 from openedx_content.applets.assets import api
 from openedx_content.applets.assets.models import Asset, AssetVersion
@@ -182,6 +183,10 @@ def test_path_case_sensitive(lp: LearningPackage) -> None:
         # The next filename has a narrow no break space before "AM" since that's what MacOS puts in screenshot names
         ("screen shots/Screenshot 2026-10-23 at 11.26.13\u202fAM.png", True),
         # ❌ Invalid:
+        ("glob*.png", False),
+        (" space_before.jpg ", False),
+        ("space_after.jpg ", False),
+        ("folder /x.jpg", False),
         ("newline.pdf\n", False),
         ("nul\x00.pdf", False),  # \x7f is the DEL control character
         ("del\x7f.pdf", False),  # \x7f is the DEL control character
@@ -215,6 +220,12 @@ def test_valid_invalid_paths(path: str, valid: bool, lp: LearningPackage) -> Non
     else:
         with pytest.raises(ValidationError, match="Asset path is invalid."):
             create()
+
+        # Also test the raw database constraint, bypassing python checks:
+        asset = api.create_asset(lp.id, path="temp_path", created=now, created_by=None)
+        # DataError is raised by MySQL if the string is to long; everything else is IntegrityError
+        with pytest.raises((IntegrityError, DataError)):
+            Asset.objects.filter(pk=asset.id).update(path=path)
 
 
 @pytest.mark.parametrize(

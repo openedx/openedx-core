@@ -94,7 +94,7 @@ class Migration(migrations.Migration):
             constraint=models.CheckConstraint(
                 condition=django.db.models.lookups.Regex(
                     models.F("path"),
-                    "^(?![^\\x00-\\x1f\\x7f]*[\\x00-\\x1f\\x7f])(?!.*(?:^|/)\\.{1,2}(?:/|$))[^/\\\\]+(?:/[^/\\\\]+)*$",
+                    "^(?![^\\x00-\\x1f\\x7f]*[\\x00-\\x1f\\x7f])(?!.*(?:^|/)\\.{1,2}(?:/|$))[^/\\\\*\\s](?:[^/\\\\*]*[^/\\\\*\\s])?(?:/[^/\\\\*\\s](?:[^/\\\\*]*[^/\\\\*\\s])?)*$",
                 ),
                 name="oe_content_asset_valid_path",
                 violation_error_message="Asset path is invalid.",
