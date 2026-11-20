@@ -5,6 +5,7 @@ import django.db.models.lookups
 from django.db import migrations, models
 
 import openedx_django_lib.fields
+import openedx_django_lib.validators
 
 
 class Migration(migrations.Migration):
@@ -28,7 +29,9 @@ class Migration(migrations.Migration):
                 (
                     "path",
                     openedx_django_lib.fields.MultiCollationCharField(
-                        db_collations={"mysql": "utf8mb4_bin", "sqlite": "BINARY"}, max_length=480
+                        db_collations={"mysql": "utf8mb4_bin", "sqlite": "BINARY"},
+                        max_length=480,
+                        validators=[openedx_django_lib.validators.validate_path_value],
                     ),
                 ),
                 (
@@ -97,13 +100,13 @@ class Migration(migrations.Migration):
                     "^(?![^\\x00-\\x1f\\x7f]*[\\x00-\\x1f\\x7f])(?!.*(?:^|/)\\.{1,2}(?:/|$))[^/\\\\*\\s](?:[^/\\\\*]*[^/\\\\*\\s])?(?:/[^/\\\\*\\s](?:[^/\\\\*]*[^/\\\\*\\s])?)*$",
                 ),
                 name="oe_content_asset_valid_path",
-                violation_error_message="Asset path is invalid.",
+                violation_error_message="Path/filename is invalid or contains invalid characters.",
             ),
         ),
         migrations.AddConstraint(
             model_name="asset",
             constraint=models.CheckConstraint(
-                condition=models.Q(("path__length__lte", 480)), name="oe_content_asset_path_maxlength"
+                condition=models.Q(("path__length__lte", 480)), name="oe_content_asset_valid_path_maxlength"
             ),
         ),
         migrations.AddConstraint(

@@ -7,13 +7,12 @@ The model hierarchy is :class:`Asset` → :class:`AssetVersion` → :class:`Medi
 
 from __future__ import annotations
 
-import re
 from typing import NewType, cast
 
 from django.db import models
 from typing_extensions import Sentinel, deprecated
 
-from openedx_django_lib.fields import case_sensitive_char_field
+from openedx_django_lib.fields import path_field, path_field_checks
 from openedx_django_lib.managers import WithRelationsManager
 
 from ..media.models import Media
@@ -30,24 +29,7 @@ __all__ = [
     "AssetVersion",
 ]
 
-# Validation pattern for Asset's filename/path field.
-# Disallows starting slash, control chars, '//', '\', '*', './' and '../', and whitespace at the start or end of any
-# path segment. This is also used in a DB CheckConstraint, so it must stay portable across Python, MySQL (ICU) and
-# PostgreSQL (ARE) regex engines: no lookbehind, no \z, no \S/\W inside brackets.
-# A single path segment: no slash, backslash or '*', and does not start or end with whitespace.
-_PATH_SEGMENT = r"[^/\\*\s](?:[^/\\*]*[^/\\*\s])?"
-PATH_RE = re.compile(
-    r"^"  # beginning of string
-    r"(?![^\x00-\x1f\x7f]*[\x00-\x1f\x7f])"  # No control chars anywhere in the string
-    r"(?!.*(?:^|/)\.{1,2}(?:/|$))"  # no "." or ".." path segments
-    rf"{_PATH_SEGMENT}"  # first segment
-    rf"(?:/{_PATH_SEGMENT})*"  # more segments, each after exactly one "/"
-    r"$"  # end of string
-)
-INVALID_PATH_MSG = "Asset path is invalid."
-# Limit path length to 480. If not for this, on MySQL the actual limit would be 487 in practice anyways, due to
-# 'entity_ref' being 'openedx-asset:...' and limited to 500 chars.
-ASSET_PATH_MAX_LENGTH = 480
+
 # Sentinel value used so only internal APIs can call `Asset.save()`
 INTERNAL_API = Sentinel("INTERNAL_API")
 
@@ -124,11 +106,7 @@ class Asset(PublishableEntityMixin):
     different tables).
     """
 
-    path = case_sensitive_char_field(
-        max_length=ASSET_PATH_MAX_LENGTH,
-        blank=False,
-        # Validation of path value is below, as a CheckConstraint.
-    )
+    path = path_field(blank=False)
     """
     The file name, such as ``image.png`` or ``images/example.jpg``. If this path
     is e.g. ``image.png``, then it is referenced from OLX as "static/image.png".
@@ -157,16 +135,7 @@ class Asset(PublishableEntityMixin):
                 fields=["learning_package", "path"],
                 name="oe_content_asset_uniq_path",
             ),
-            # path (filename) has to match our path regex
-            models.CheckConstraint(
-                condition=models.lookups.Regex(models.F("path"), PATH_RE.pattern),
-                name="oe_content_asset_valid_path",
-                violation_error_message=INVALID_PATH_MSG,
-            ),
-            # Make SQLite enforce a maximum path length like MySQL does
-            models.CheckConstraint(
-                condition=models.Q(path__length__lte=ASSET_PATH_MAX_LENGTH), name="oe_content_asset_path_maxlength"
-            ),
+            *path_field_checks("path", name="oe_content_asset_valid_path"),
             models.CheckConstraint(
                 condition=models.Q(permissions__in=AssetPermissions.values), name="oe_content_asset_permissions_enum"
             ),

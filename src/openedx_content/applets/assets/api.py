@@ -16,19 +16,15 @@ from django.db.models import Prefetch, QuerySet
 from django.db.transaction import atomic
 from django.db.utils import IntegrityError
 
+from openedx_django_lib.validators import PATH_MAX_LENGTH, is_valid_path_value, validate_path_value
+
 from ..media import api as media_api
 from ..media.models import Media
 from ..publishing import api as publishing_api
 from ..publishing.models import LearningPackage, PublishableEntityVersion
-from .models import (
-    ASSET_PATH_MAX_LENGTH,
-    INTERNAL_API,
-    INVALID_PATH_MSG,
-    PATH_RE,
-    Asset,
-    AssetPermissions,
-    AssetVersion,
-)
+from .models import INTERNAL_API, Asset, AssetPermissions, AssetVersion
+
+ASSET_PATH_MAX_LENGTH = PATH_MAX_LENGTH
 
 # The public API that will be re-exported by openedx_content.api
 # is listed in the __all__ entries below. Internal helper functions that are
@@ -83,8 +79,11 @@ def is_valid_asset_path(path: str) -> bool:
     not contain control characters, backslashes, ``*``, a leading or trailing
     slash, empty segments (``//``), ``.`` or ``..`` segments, or segments that
     start or end with whitespace.
+
+    Paths must also be unicode normalized, using
+    ``openedx_django_lib.validators.normalize_unicode``()
     """
-    return len(path) <= ASSET_PATH_MAX_LENGTH and PATH_RE.fullmatch(path) is not None
+    return is_valid_path_value(path)
 
 
 def create_asset(
@@ -100,6 +99,9 @@ def create_asset(
     """
     Create a new Asset (a shared file, like an image or a PDF document).
 
+    path: filename, like "images/tomato.jpg". ⚠️ You should always use
+        ``openedx_django_lib.validators.normalize_unicode()`` on the path value
+        before passing it in to this function, to avoid some Unicode issues.
     permissions: Set permissions to restrict this asset to enrolled or staff
         users. set to ``None`` to use the system default (currently ``PUBLIC``
         but may change in the future).
@@ -118,8 +120,7 @@ def create_asset(
     # Do some quick checks now in python. These are similar to what `Asset.validate_constraints()`` would run for us,
     # but it wraps each check in a savepoint, so adds a lot of queries. The DB constraints remain as a backstop against
     # things like `Asset.objects.update(...)`, which bypass all other validation.
-    if not is_valid_asset_path(path):
-        raise ValidationError(INVALID_PATH_MSG)
+    validate_path_value(path)
     if permissions not in AssetPermissions.values:
         raise RuntimeError("Invalid permissions enum value.")  # This is a coding error, not a user input error
     try:
@@ -238,6 +239,9 @@ def create_asset_and_version(
     """
     Create an Asset and associated AssetVersion atomically.
 
+    path: filename, like "images/tomato.jpg". ⚠️ You should always use
+        ``openedx_django_lib.validators.normalize_unicode()`` on the path value
+        before passing it in to this function, to avoid some Unicode issues.
     permissions: Set permissions to restrict this asset to enrolled or staff
         users. Set to ``None`` to use the system default (currently ``PUBLIC``
         but may change in the future). If you set this to ``None`` and overwrite

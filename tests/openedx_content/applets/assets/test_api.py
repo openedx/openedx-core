@@ -20,6 +20,7 @@ from openedx_content.applets.media import api as media_api
 from openedx_content.applets.media.models import Media
 from openedx_content.applets.publishing import api as publishing_api
 from openedx_content.applets.publishing.models import LearningPackage
+from openedx_django_lib.validators import normalize_unicode
 
 if TYPE_CHECKING:
     from django.contrib.auth.models import User  # pylint: disable=imported-auth-user
@@ -218,7 +219,7 @@ def test_valid_invalid_paths(path: str, valid: bool, lp: LearningPackage) -> Non
         asset.refresh_from_db()
         assert asset.path == path
     else:
-        with pytest.raises(ValidationError, match="Asset path is invalid."):
+        with pytest.raises(ValidationError, match="Path/filename is invalid or contains invalid characters."):
             create()
 
         # Also test the raw database constraint, bypassing python checks:
@@ -226,6 +227,40 @@ def test_valid_invalid_paths(path: str, valid: bool, lp: LearningPackage) -> Non
         # DataError is raised by MySQL if the string is to long; everything else is IntegrityError
         with pytest.raises((IntegrityError, DataError)):
             Asset.objects.filter(pk=asset.id).update(path=path)
+
+
+@pytest.mark.parametrize(
+    ("path", "normalized"),
+    [
+        # ✅ Already Normalized:
+        ("caf\u00e9", True),
+        ("Αθήνα", True),
+        ("😎", True),
+        ("\ufb01le.txt", True),  # "ﬁ" ligature: NFC leaves it alone (NFKC would turn it into "fi")
+        # ❌ Needs normalization first:
+        ("cafe\u0301", False),  # "café" with a combining mark
+        ("Mu\u0308nchen/photo.png", False),  # "München" in NFD, as macOS often produces
+        ("\u212b.txt", False),  # ANGSTROM SIGN: NFC maps it to "Å" (U+00C5)
+    ],
+)
+def test_path_normalization(path: str, normalized: bool, lp: LearningPackage) -> None:
+    """Test Unicode normalization of filenames"""
+    assert api.is_valid_asset_path(path) is normalized
+
+    def create():
+        return api.create_asset(lp.id, path=path, created=now, created_by=None)
+
+    if normalized:
+        asset = create()
+        assert asset.id
+        asset.refresh_from_db()
+        assert asset.path == path
+    else:
+        with pytest.raises(ValidationError, match="Path/filename is invalid or contains invalid characters."):
+            create()
+
+        new_path = normalize_unicode(path)
+        test_path_normalization(new_path, True, lp)
 
 
 @pytest.mark.parametrize(
