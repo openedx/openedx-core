@@ -13,6 +13,7 @@ from django.test.testcases import TestCase
 
 import openedx_tagging.import_export.api as import_export_api
 from openedx_tagging.import_export import ParserFormat
+from openedx_tagging.import_export.exceptions import TagImportError
 from openedx_tagging.import_export.import_plan import TagItem
 from openedx_tagging.models import ObjectTag, Tag, TagImportTask, TagImportTaskState, Taxonomy
 
@@ -1094,6 +1095,63 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
             replace=True,
         )
         assert result
+
+    @staticmethod
+    def _rejecting_validator(_plan):
+        return [TagImportError("Row 1: rejected by a test validator")]
+
+    @ddt.data(True, False)
+    def test_validator_error_fails_the_import_and_reaches_the_log(self, plan_only):
+        tags_before = list(self.taxonomy.tag_set.order_by("pk").values_list("pk", "value", "parent_id"))
+        result, task, plan = import_export_api.import_tags(
+            self.taxonomy, self.file, self.parser_format, plan_only=plan_only,
+            validators=[self._rejecting_validator],
+        )
+        assert not result
+        assert task.status == TagImportTaskState.ERROR.value
+        assert "Row 1: rejected by a test validator" in task.log
+        assert [str(error) for error in plan.errors] == ["Row 1: rejected by a test validator"]
+        assert list(self.taxonomy.tag_set.order_by("pk").values_list("pk", "value", "parent_id")) == tags_before
+
+    def test_validator_errors_join_the_plan_errors(self):
+        result, task, _plan = import_export_api.import_tags(
+            self.taxonomy, self.invalid_plan_file, self.parser_format, validators=[self._rejecting_validator],
+        )
+        assert not result
+        assert "Conflict with 'create'" in task.log
+        assert "Row 1: rejected by a test validator" in task.log
+
+    def test_validator_receives_a_plan_with_the_final_tree(self):
+        tree_sizes_at_call = []
+        import_export_api.import_tags(
+            self.taxonomy, self.file, self.parser_format, plan_only=True,
+            validators=[lambda plan: tree_sizes_at_call.append(len(plan.final_tree)) or []],
+        )
+        assert tree_sizes_at_call and tree_sizes_at_call[0] > 0
+
+    def test_raising_validator_fails_the_import_without_executing(self):
+        def raising_validator(plan):
+            raise RuntimeError("validator broke")
+        tag_count = self.taxonomy.tag_set.count()
+        result, task, plan = import_export_api.import_tags(
+            self.taxonomy, self.file, self.parser_format, validators=[raising_validator],
+        )
+        assert not result
+        assert plan is None
+        assert task.status == TagImportTaskState.ERROR.value
+        assert self.taxonomy.tag_set.count() == tag_count
+
+    def test_raising_validator_is_logged(self):
+        def raising_validator(_plan):
+            raise RuntimeError("validator broke")
+        with self.assertLogs("openedx_tagging.import_export.api", level="ERROR") as logs:
+            result, _task, _plan = import_export_api.import_tags(
+                self.taxonomy, self.file, self.parser_format, validators=[raising_validator],
+            )
+        assert not result
+        assert len(logs.records) == 1
+        assert f"taxonomy {self.taxonomy.id}" in logs.records[0].getMessage()
+        assert "validator broke" in logs.output[0]
 
 
 class TestImportAcceptanceScenarios(TestCase):

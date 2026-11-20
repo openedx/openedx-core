@@ -9,7 +9,7 @@ Import
 In this functionality we have the following pipeline with the following classes:
 
 Parser.parse_import() -> TagImportPlan.generate_actions() -> [ImportActions]
--> TagImportPlan.plan() -> TagImportPlan.execute()
+-> validators -> TagImportPlan.plan() -> TagImportPlan.execute()
 
 Parsers are in charge of reading the input file,
 making the respective verifications of its format and returning a list of TagItems.
@@ -25,6 +25,7 @@ For more information see actions.py
 In each action it is verified if there are no errors or inconsistencies
 with taxonomy tags or with previous actions.
 In the end, TagImportPlan contains all actions and possible errors.
+Validators supplied by the caller then run on the plan and add their errors to it.
 You can run `plan()` to see the actions and errors or you can run `execute()`
 to execute each action.
 
@@ -44,14 +45,32 @@ TODO for next versions
 """
 from __future__ import annotations
 
+import logging
 import time
+from collections.abc import Callable, Sequence
 from typing import BinaryIO
 
 from django.utils.translation import gettext as _
 
 from ..models import TagImportTask, TagImportTaskState, Taxonomy
-from .import_plan import TagImportPlan, TagImportTask
+from .exceptions import TagImportError
+from .import_plan import FinalTag, TagImportPlan, TagImportTask
 from .parsers import ParserFormat, get_parser
+
+__all__ = [
+    "FinalTag",
+    "ImportValidator",
+    "TagImportError",
+    "TagImportPlan",
+    "export_tags",
+    "get_last_import_log",
+    "get_last_import_status",
+    "import_tags",
+]
+
+log = logging.getLogger(__name__)
+
+ImportValidator = Callable[[TagImportPlan], list[TagImportError]]
 
 
 def import_tags(
@@ -60,6 +79,8 @@ def import_tags(
     parser_format: ParserFormat,
     replace=False,
     plan_only=False,
+    *,
+    validators: Sequence[ImportValidator] | None = None,
 ) -> tuple[bool, TagImportTask, TagImportPlan | None]:
     """
     Execute the necessary actions to import the tags from `file`
@@ -79,6 +100,13 @@ def import_tags(
     Set `plan_only` to True to only generate the actions and not execute them.
 
     Raises ValueError if the taxonomy is archived, before anything is created or changed.
+
+    Each of `validators` receives the plan and returns a list of errors, which block the import like the
+    plan's own errors. A validator must not modify the plan or the database, and must return its errors
+    rather than raise: an exception fails the import. It runs even when the plan already has errors, so it must
+    tolerate a `final_tree` with a parent that is not a key of the tree, or with a parent cycle.
+    The `validators` parameter, `ImportValidator`, `TagImportPlan.final_tree` and `FinalTag` are UNSTABLE;
+    `import_tags` itself is stable.
     """
     if taxonomy.archived:
         raise ValueError(
@@ -128,6 +156,9 @@ def import_tags(
         task.log_start_planning()
         tag_import_plan = TagImportPlan(taxonomy)
         tag_import_plan.generate_actions(tags, replace)
+        # Before log_plan() so validator errors reach the task log shown to the administrator.
+        for validator in validators or ():
+            tag_import_plan.errors.extend(validator(tag_import_plan))
 
         end_time = time.time()
         elapsed_time = end_time - start_time
@@ -160,6 +191,7 @@ def import_tags(
         return True, task, tag_import_plan
     except Exception as exception:  # pylint: disable=broad-exception-caught
         # Log any exception
+        log.exception("Tag import failed for taxonomy %s", taxonomy.id)
         task.log_exception(exception)
         return False, task, None
 

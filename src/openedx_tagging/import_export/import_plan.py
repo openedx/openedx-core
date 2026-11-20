@@ -40,6 +40,20 @@ class ExistingTag(NamedTuple):
     parent_pk: int | None
 
 
+class FinalTag(NamedTuple):
+    """
+    A tag of the final tree, as it will be once the import is applied.
+
+    UNSTABLE: the fields may change without a deprecation cycle.
+    """
+
+    external_id: str
+    value: str
+    pk: int | None  # None for a tag the import creates
+    parent_key: str | None  # casefolded final id of the parent, None for a root
+    row: int | None  # 1-based file row, None for a tag the file does not mention
+
+
 # Stands in for the pk of a tag the import creates. Never equal to a real pk or to None.
 NEW_TAG = -1
 
@@ -84,6 +98,9 @@ class TagImportPlan:
       (``_order_rows_parent_first``), so the per-action parent validation and the
       execution both find the parent.
 
+    ``final_tree`` exposes the final tree to import validators. It is UNSTABLE, its keys are casefolded final ids,
+    and tags the import deletes are absent from it.
+
     "Row N" in an error is the N-th data row of the file, counting from 1: in a CSV file
     that is spreadsheet line N + 1, because the header is line 1.
     """
@@ -93,10 +110,12 @@ class TagImportPlan:
     indexed_actions: dict
     actions_dict: dict
     taxonomy: Taxonomy
+    final_tree: dict[str, FinalTag]
 
     def __init__(self, taxonomy: Taxonomy):
         self.actions = []
         self.errors = []
+        self.final_tree = {}
         self.taxonomy = taxonomy
         self.actions_dict = {}
         self._init_indexed_actions()
@@ -340,6 +359,27 @@ class TagImportPlan:
                 parent_of[key] = vacated_pks.get(info.parent_pk, key_of_pk[info.parent_pk]).casefold()
         return parent_of, pk_of, row_of
 
+    @staticmethod
+    def _build_final_tree(
+        tags: list[TagItem],
+        existing: dict[str, ExistingTag],
+        parent_of: dict[str, str | None],
+        pk_of: dict[str, int],
+        row_of: dict[str, int],
+    ) -> dict[str, FinalTag]:
+        """
+        Combine the dicts from ``_end_state`` into one FinalTag per final id.
+        """
+        final_tree: dict[str, FinalTag] = {}
+        for key, pk in pk_of.items():
+            if key in row_of:
+                tag = tags[row_of[key]]
+                external_id, value, row = tag.id, tag.value, row_of[key] + 1
+            else:
+                external_id, value, row = existing[key].external_id, existing[key].value, None
+            final_tree[key] = FinalTag(external_id, value, None if pk == NEW_TAG else pk, parent_of[key], row)
+        return final_tree
+
     def _validate_hierarchy(
         self,
         tags: list[TagItem],
@@ -517,6 +557,7 @@ class TagImportPlan:
 
         # Reject a cycle or an overflow of the final tree, then detach every moved tag.
         parent_of, pk_of, row_of = self._end_state(tags, existing)
+        self.final_tree = self._build_final_tree(tags, existing, parent_of, pk_of, row_of)
         self._validate_hierarchy(tags, existing, parent_of, pk_of, row_of)
         self._build_detach_actions(existing, parent_of, pk_of)
 
