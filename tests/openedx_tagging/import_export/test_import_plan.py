@@ -1082,6 +1082,21 @@ class TestTagImportPlan(TestImportActionMixin, TestCase):
         assert str(error) == f"Row 1's {field_and_value} belongs to an archived tag in this taxonomy. {advice}"
         assert not self.import_plan.actions
 
+    def test_generate_actions_reports_every_archived_collision(self) -> None:
+        self._archive('tag_3')
+        tags = [
+            TagItem(id='tag_50', value='Fifty'),
+            TagItem(id='tag_51', value='Tag 3'),
+            TagItem(id='tag_52', value='Fifty Two'),
+            TagItem(id='tag_3', value='Fifty Three'),
+        ]
+        self.import_plan.generate_actions(tags=tags)
+        errors = [str(error) for error in self.import_plan.errors]
+        assert len(errors) == 2
+        assert errors[0].startswith("Row 2's value (Tag 3)")
+        assert errors[1].startswith("Row 4's id (tag_3)")
+        assert not self.import_plan.actions
+
     @ddt.data(
         ('Photosynthesis', 'PHOTOSYNTHESIS'),  # every supported collation folds these
         ('Straße', 'STRASSE'),  # casefold folds these; SQLite NOCASE does not

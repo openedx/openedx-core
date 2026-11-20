@@ -307,7 +307,8 @@ class TagImportPlan:
         # accents and trailing spaces) would let that row rename or re-parent the archived tag.
         # Rows in a matched chunk are then looked up one at a time, because the DB returns the
         # stored tag, not the row that matched it. That costs up to four queries per row in such
-        # a chunk, about what building the actions for a clean import already costs per row.
+        # a chunk, which will result in the failed import having about the same query cost as a
+        # clean import.
         archived_subtree = self.taxonomy.tag_set.in_archived_subtree()
         if not archived_subtree.exists():
             return False

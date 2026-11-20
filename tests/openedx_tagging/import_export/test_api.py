@@ -1130,7 +1130,7 @@ class TestImportExportApi(TestImportExportMixin, TestCase):
 
     def test_replace_import_promotes_archived_child_of_deleted_tag(self) -> None:
         # Interim behavior until the import's deletes follow the archive-or-delete rule (#895).
-        # The alternative today is the delete cascading to the archived child.
+        # Without the move to the root, the delete would cascade to also delete the archived child.
         Tag.objects.filter(taxonomy=self.taxonomy, external_id="tag_4").update(archived=True)
         file = self._json_file([
             {"id": "tag_1", "value": "Tag 1"},
