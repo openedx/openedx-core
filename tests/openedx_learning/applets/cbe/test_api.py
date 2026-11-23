@@ -1618,13 +1618,14 @@ def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
     tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile, django_assert_num_queries,
 ) -> None:
     """
-    Reading several groups and criteria costs two queries unscoped and four scoped, not one per row.
+    Reading several groups and criteria costs two queries unscoped and five scoped, not one per row.
 
     Pins the select_related("course")/select_related("object_tag") calls in
     get_competency_criteria_tree(): dropping either would still pass every other test in this
     module (the rows returned would be identical), since select_related only changes how many
-    queries fetch them, not which rows come back. The two extra scoped queries resolve the course
-    keys to course run ids and count the criteria under every reachable group.
+    queries fetch them, not which rows come back. The three extra scoped queries resolve the course
+    keys to course run ids, scan the tag's non-archived groups as thin ``(id, parent_id)`` rows to find
+    the reachable ones for ``total_criteria_count``, and count the criteria under those groups.
     """
     leaf = _create_leaf_group(tag, course_run)
     assert course_run.course_key is not None
@@ -1639,7 +1640,7 @@ def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
         for criterion in tree.criteria:
             _ = criterion.object_tag
 
-    with django_assert_num_queries(4):
+    with django_assert_num_queries(5):
         tree = get_competency_criteria_tree(tag, [course_run.course_key])
         for group in tree.groups:
             _ = group.course
@@ -1679,12 +1680,73 @@ def test_get_competency_criteria_tree_scoped_fetches_only_the_scoped_criteria_an
     assert tree.total_criteria_count == 2
 
 
+def test_get_competency_criteria_tree_scoped_materializes_only_the_requested_runs_groups(
+    tag: Tag, course_run: CourseRun, organization: Organization, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scoped read instantiates the groups above any course and the requested run's groups, not other runs'."""
+    other_run = make_course_run(organization, "Python200", "Fall2026")
+    leaf = _create_leaf_group(tag, course_run)
+    other_leaf = _create_leaf_group(tag, other_run)
+    course_level = leaf.parent
+    other_course_level = other_leaf.parent
+    assert course_level is not None and other_course_level is not None
+    root = course_level.parent
+    assert root is not None
+    assert course_run.course_key is not None
+    original_from_db = CompetencyCriteriaGroup.from_db
+    materialized_ids: list[int] = []
+
+    def recording_from_db(_cls, *args):
+        instance = original_from_db(*args)
+        materialized_ids.append(instance.pk)
+        return instance
+
+    monkeypatch.setattr(CompetencyCriteriaGroup, "from_db", classmethod(recording_from_db))
+
+    get_competency_criteria_tree(tag, [course_run.course_key])
+
+    assert {root.pk, course_level.pk, leaf.pk} <= set(materialized_ids)
+    assert not {other_course_level.pk, other_leaf.pk} & set(materialized_ids)
+
+
+def test_total_criteria_count_scoped_still_prunes_under_an_archived_ancestor(
+    tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """The scoped count includes other runs' reachable criteria and excludes those under an archived group."""
+    other_run = make_course_run(organization, "Python200", "Fall2026")
+    run1_leaf = _create_leaf_group(tag, course_run)
+    run2_leaf = _create_leaf_group(tag, other_run)
+    run2_course_level = run2_leaf.parent
+    assert run2_course_level is not None
+    archived_mid = CompetencyCriteriaGroup.objects.create(tag=tag, parent=run2_course_level, archived=True)
+    pruned_leaf = CompetencyCriteriaGroup.objects.create(tag=tag, parent=archived_mid)
+    for run, group, name in (
+        (course_run, run1_leaf, "run1"),
+        (other_run, run2_leaf, "run2"),
+        (other_run, pruned_leaf, "pruned"),
+    ):
+        object_tag = ObjectTag.objects.create(object_id=usage_key(run, name), taxonomy=tag.taxonomy, tag=tag)
+        CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
+    assert course_run.course_key is not None
+
+    tree = get_competency_criteria_tree(tag, [course_run.course_key])
+
+    assert tree.criteria_count == 1
+    assert tree.total_criteria_count == 2
+    assert get_competency_criteria_tree(tag).total_criteria_count == 2
+
+
 def test_get_competency_criteria_tree_costs_one_query_when_the_competency_has_no_groups(
     tag: Tag, course_run: CourseRun, django_assert_num_queries,
 ) -> None:
-    """A competency with no groups skips the criteria query and, when scoped, the course run lookup."""
+    """
+    A competency with no groups costs one query unscoped. Scoped, it adds the course run lookup that the
+    groups query needs, and still skips the reachability scan, the criteria query and the count.
+    """
     assert course_run.course_key is not None
     with django_assert_num_queries(1):
+        get_competency_criteria_tree(tag)
+    with django_assert_num_queries(2):
         get_competency_criteria_tree(tag, [course_run.course_key])
 
 

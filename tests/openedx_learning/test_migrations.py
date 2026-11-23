@@ -1,5 +1,6 @@
 """
-Tests for the 0017_criteria_group_scope_code migration's duplicate-root check and backfill.
+Tests for the 0017_criteria_group_scope_code migration's duplicate-root check and backfill,
+and the 0019_backfill_subtree_course backfill.
 
 Uses the `migrator` pytest fixture from django_test_migrations to run the actual
 migration against historical (frozen) model states, the same way it will run against
@@ -12,14 +13,17 @@ import importlib
 import pytest
 from django.db import IntegrityError, connection, transaction
 
-from openedx_learning.models import CompetencyCriteriaGroup
-
 MIGRATE_FROM = ("openedx_learning", "0016_add_competency_course_run")
 MIGRATE_TO = ("openedx_learning", "0017_criteria_group_scope_code")
 
 DuplicateRootCriteriaGroupsError = importlib.import_module(
     "openedx_learning.migrations.0017_criteria_group_scope_code"
 ).DuplicateRootCriteriaGroupsError
+
+SUBTREE_MIGRATE_FROM = ("openedx_learning", "0018_criteria_group_subtree_course")
+SUBTREE_MIGRATE_TO = ("openedx_learning", "0019_backfill_subtree_course")
+
+subtree_migration = importlib.import_module("openedx_learning.migrations.0019_backfill_subtree_course")
 
 
 def _create_tag(apps, taxonomy, value):
@@ -76,11 +80,11 @@ def test_backfill_sets_scope_code_on_roots_only(migrator) -> None:
     assert NewGroup.objects.get(pk=course_group.pk).scope_code is None
     assert NewGroup.objects.get(pk=leaf.pk).scope_code is None
     assert NewGroup.objects.get(pk=archived_leaf.pk).scope_code is None
-    # The live model's save() must produce the code the backfill wrote, or a second root would slip past it. This
-    # INSERT goes through the live model at state 0017, so a later migration that adds a column to this table breaks
-    # it; when that happens, compare the backfilled value with the live model's computed code instead.
+    # The backfilled value must be the one save() writes for a root (see test_criteria_group.py), or a second
+    # root would slip past the unique constraint. The live model cannot INSERT at state 0017, because a later
+    # migration adds a column to this table, so the historical model writes the code save() would.
     with pytest.raises(IntegrityError), transaction.atomic():
-        CompetencyCriteriaGroup.objects.create(tag_id=tag_a.pk)
+        NewGroup.objects.create(tag_id=tag_a.pk, scope_code=f"tag:{tag_a.pk}")
 
 
 @pytest.mark.django_db
@@ -121,3 +125,49 @@ def test_duplicate_roots_stop_the_migration_before_any_schema_change(migrator) -
     finally:
         # The migrator fixture migrates to the latest state on teardown, which the duplicate would block.
         archived_root.delete()
+
+
+@pytest.mark.django_db
+def test_subtree_course_backfill_follows_the_derivation_rule(migrator, monkeypatch) -> None:
+    """
+    Migrating 0018 to 0019 backfills subtree_course on a nested tree built through historical models.
+
+    The tree has groups above any course, a course-level group, and groups nested below it. Each
+    group ends up with its own course if it has one, else its parent's subtree course, else null.
+    The batch size is patched down to 1 so the batching loop runs more than once per course.
+    """
+    monkeypatch.setattr(subtree_migration, "BACKFILL_BATCH_SIZE", 1)
+    old_state = migrator.apply_initial_migration(SUBTREE_MIGRATE_FROM)
+    apps = old_state.apps
+    Organization = apps.get_model("organizations", "Organization")
+    CatalogCourse = apps.get_model("openedx_catalog", "CatalogCourse")
+    CourseRun = apps.get_model("openedx_catalog", "CourseRun")
+    Group = apps.get_model("openedx_learning", "CompetencyCriteriaGroup")
+
+    org = Organization.objects.create(name="Org1", short_name="Org1")
+    catalog_course = CatalogCourse.objects.create(org=org, course_code="Math100", title="Math", language="en")
+    run_a = CourseRun.objects.create(
+        catalog_course=catalog_course, run_code="A", course_key="course-v1:Org1+Math100+A", title="Math",
+    )
+    tag = _create_tag(apps, _create_taxonomy(apps), "Competency A")
+
+    root = Group.objects.create(tag=tag, scope_code=f"tag:{tag.pk}")
+    above_course = Group.objects.create(tag=tag, parent=root)
+    course_a = Group.objects.create(tag=tag, parent=root, course=run_a)
+    leaf = Group.objects.create(tag=tag, parent=course_a)
+    nested = Group.objects.create(tag=tag, parent=leaf)
+    archived_leaf = Group.objects.create(tag=tag, parent=course_a, archived=True)
+
+    new_state = migrator.apply_tested_migration(SUBTREE_MIGRATE_TO)
+    NewGroup = new_state.apps.get_model("openedx_learning", "CompetencyCriteriaGroup")
+
+    expected_course_id = {
+        root: None,
+        above_course: None,
+        course_a: run_a.pk,
+        leaf: run_a.pk,
+        nested: run_a.pk,
+        archived_leaf: run_a.pk,
+    }
+    for group, course_id in expected_course_id.items():
+        assert NewGroup.objects.get(pk=group.pk).subtree_course_id == course_id, group.pk
