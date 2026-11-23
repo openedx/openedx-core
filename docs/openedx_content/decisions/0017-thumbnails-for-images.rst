@@ -34,9 +34,9 @@ A thumbnail is never a :class:`PublishableEntity`, a :class:`PublishableEntityVe
 2. Thumbnail generation is a generic API in openedx-core
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The code that computes thumbnail paths and generates thumbnails lives in a new app in openedx-core, outside of the learning package infrastructure. It exposes a generic API that takes a source :class:`Media` and the name of a variant (e.g. ``get_thumbnail(media, variant="files")``). The app does not define any variants of its own: it looks up the variant's dimensions and resize mode in the setting from decision 4, where the platform and plugins define them.
+The code that computes thumbnail paths and generates thumbnails lives in a new app in openedx-core, outside of the learning package infrastructure. It exposes a generic API that takes a source :class:`Media` and the name of a variant (e.g. ``get_thumbnail(media, variant="card")``). The app itself defines the available variants (see decision 4).
 
-Because the API only accepts variant names, a caller cannot request arbitrary dimensions. A plugin that passed a value taken from a request directly to the API would get an error for any name not listed in that setting, instead of generating a new size.
+Because the API only accepts variant names, a caller cannot request arbitrary dimensions. A plugin that passed a value taken from a request directly to the API would get an error for any name that is not a defined variant, instead of generating a new size.
 
 3. A thumbnail's storage path is a pure function of the source bytes and the resize parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -59,20 +59,27 @@ There is no database model that maps a source image to its thumbnails. Given a s
   Including it in the path means that two variants with the same dimensions but different modes never share a file.
 - The **algorithm version** is bumped whenever the resizing code or its output format changes in a way that changes the result, so that existing thumbnails are never overwritten with different content.
 
-4. Thumbnail sizes are named, configured variants
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+4. Thumbnail sizes are a fixed set of named variants
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Each consumer defines the sizes it needs as named variants (for example, one for the Files page, one for content library cards, and the two course card image sizes). Requests ask for a variant by name, and the variant's configured dimensions and mode are used to compute the path from decision 3.
+Thumbnails are only generated for a fixed set of named variants, each defined by its dimensions and mode. Requests ask for a variant by name, and the variant's dimensions and mode are used to compute the path from decision 3.
 
-This bounds how many thumbnails can exist for each image, and prevents a request from forcing the generation of an unbounded number of sizes. Because the API from decision 2 only accepts the variants listed in the setting described below, this limit does not depend on each consumer following this convention.
+This bounds how many thumbnails can exist for each image, and prevents a request from forcing the generation of an unbounded number of sizes. Because the API from decision 2 only accepts these variants, this limit does not depend on each caller following this convention.
 
-Variants are defined in a single Django setting, read by the openedx-core app from decision 2. The platform provides the default variants in code, which each deployment can override, and plugins and other apps that use the API add their own to the same setting. Variants are not configurable at runtime (e.g. through the Django admin), because:
+The openedx-core app defines the default variants, sized for the image cap of Paragon's ``<Card>`` component:
+
+- ``card``: in ``crop`` mode, for layouts where every image must fill the same space.
+- ``card_fit``: in ``fit`` mode, for layouts that must show the whole image.
+
+These are expected to cover virtually every use in the platform: the Files page, course lists on the learner home page, course search and discovery, and the content libraries UI. Their exact dimensions are left to the implementation.
+
+Variants are defined in code, and cannot be overridden or extended per deployment (e.g. through a Django setting or the Django admin), because:
 
 - **Variant names are a contract with the frontend.** Each UI requests the variant it was built for, so adding or removing a variant only makes sense together with the code that uses it.
-- **Dimensions are a UI decision.** The size of a thumbnail follows the layout that displays it, and should change together with that layout's code.
+- **Dimensions are a UI decision.** The size of a thumbnail follows the layout that displays it, and should change together with that layout's code, not between deployments.
 - **Changing a variant's dimensions or mode is expensive.** It leaves every existing thumbnail of that variant unused (see Consequences) and causes all of them to be generated again.
 
-The name and format of the setting, and which properties a variant has beyond its dimensions and mode (e.g. whether it is generated eagerly, see decision 5), are left to the implementation.
+Which properties a variant has beyond its dimensions and mode (e.g. whether it is generated eagerly, see decision 5) is left to the implementation.
 
 5. Thumbnails are generated eagerly when possible, and lazily as a fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -97,8 +104,8 @@ The lazy fallback covers every case where no eager generation happened, without 
 
 The storage path from decision 3 is an internal key, not a public URL. A thumbnail is requested through the same URL that already serves its source file, with the variant name added as a query parameter:
 
-- A shared :class:`Asset`, at its learning-package-level URL (:ref:`openedx-content-adr-0013`, decision 5), e.g. ``.../assets/published/images/fig1.png?thumbnail=files``.
-- A file attached to a :class:`Component`, at the Component's file URL (:ref:`openedx-content-adr-0005`), e.g. ``.../{component_key}/published/static/fig1.png?thumbnail=library_card``.
+- A shared :class:`Asset`, at its learning-package-level URL (:ref:`openedx-content-adr-0013`, decision 5), e.g. ``.../assets/published/images/fig1.png?thumbnail=card``.
+- A file attached to a :class:`Component`, at the Component's file URL (:ref:`openedx-content-adr-0005`), e.g. ``.../{component_key}/published/static/fig1.png?thumbnail=card_fit``.
 
 The view that serves the source file handles the request exactly as it would for the file itself, and only changes what it serves at the end:
 
@@ -114,9 +121,9 @@ Once the source :class:`Media` is resolved and access is granted, the view calls
 During the first phase of :ref:`openedx-content-adr-0016`, Studio keeps calling the legacy contentstore API, which a compatibility shim implements on top of Assets. That API includes thumbnail functions, which the shim implements with this system:
 
 - **Generating a thumbnail** (``generate_thumbnail()``, called on upload and import) triggers the eager generation from decision 5.
-- **The thumbnail location** returned for each file (``thumbnail_location``, which the Files page uses to show the preview) is the URL of the source file with the ``files`` variant, as described in decision 6.
+- **The thumbnail location** returned for each file (``thumbnail_location``, which the Files page uses to show the preview) is the URL of the source file with the ``card`` variant, as described in decision 6.
 - **Deleting a thumbnail** (when a file is deleted) does nothing, because thumbnail files are never deleted (see Consequences).
-- **Legacy thumbnail URLs** (``asset-v1:...+type@thumbnail+block@...``) are not :class:`Asset`\ s. The shim either maps them to the URL of their source file with the ``files`` variant, or returns a 404.
+- **Legacy thumbnail URLs** (``asset-v1:...+type@thumbnail+block@...``) are not :class:`Asset`\ s. The shim either maps them to the URL of their source file with the ``card`` variant, or returns a 404.
 
 This keeps image previews on the Files page of migrated courses without changes to the frontend.
 
@@ -129,7 +136,7 @@ Consequences
 - Migrating a course from contentstore requires no thumbnail-specific step: thumbnails are generated on first request.
 - This system must be implemented in time for the first phase of :ref:`openedx-content-adr-0016`. Otherwise, the Files page of migrated courses would show no image previews.
 - The thumbnail for a past version of an :class:`Asset` can be retrieved the same way as the current one, starting from that version's :class:`Media`.
-- Supporting a new size only requires configuring a new variant.
+- Supporting a new size only requires adding a variant to the openedx-core app.
 - Thumbnails are not included in a course's export package, and are regenerated after import. This preserves the behavior of the legacy contentstore.
 - Serving thumbnails depends on the cache from decision 5 to avoid checking storage. When the cache is empty (e.g. after it is cleared), the first request for each thumbnail checks storage again.
 - Thumbnail files are never deleted. When a configured size or the algorithm version changes, the previous files are left behind. ``openedx_content`` has no garbage-collection mechanism for :class:`Media` files either.
@@ -166,6 +173,11 @@ Allowing arbitrary dimensions in thumbnail requests
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Letting callers request any width and height would be more flexible, but combined with lazy generation it would let a single client force the generation and storage of an unbounded number of files.
+
+Defining variants in a Django setting
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Variants could be defined in a Django setting, with defaults that each deployment could override and to which plugins could add their own. This was rejected because thumbnail sizes should not differ between deployments: they follow the frontend that displays them, so a setting would invite overrides that the frontend is not designed for.
 
 Configuring variants at runtime through a model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
