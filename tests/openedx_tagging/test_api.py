@@ -225,6 +225,47 @@ class TestApiTagging(TestTagTaxonomyMixin, TestCase):
         ObjectTag.objects.filter(taxonomy=self.free_text_taxonomy, _value="hide").update(archived=True)
         assert [row["value"] for row in tagging_api.get_tags(self.free_text_taxonomy)] == ["keep"]
 
+    @ddt.data("Archaea", "archaea", " Archaea ")
+    def test_add_tag_with_archived_value_is_refused(self, value: str) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Archaea").update(archived=True)
+        with pytest.raises(ValueError) as exc:
+            tagging_api.add_tag_to_taxonomy(self.taxonomy, value)
+        assert str(exc.value) == (
+            f"Tag value '{value.strip()}' belongs to an archived tag in this taxonomy. Use a different value."
+        )
+        assert self.taxonomy.tag_set.filter(value="Archaea").count() == 1
+
+    @ddt.data(str, str.upper, " {} ".format)
+    def test_add_tag_with_archived_external_id_is_refused(self, variant) -> None:
+        archaea = self.taxonomy.tag_set.get(value="Archaea")
+        Tag.objects.filter(pk=archaea.pk).update(archived=True)
+        external_id = variant(archaea.external_id)
+        with pytest.raises(ValueError) as exc:
+            tagging_api.add_tag_to_taxonomy(self.taxonomy, "New Tag", external_id=external_id)
+        assert str(exc.value) == (
+            f"Tag external_id '{external_id.strip()}' belongs to an archived tag in this taxonomy. "
+            "Use a different external_id."
+        )
+        assert not self.taxonomy.tag_set.filter(value="New Tag").exists()
+
+    def test_add_tag_with_unarchived_duplicate_external_id_keeps_message(self) -> None:
+        archaea = self.taxonomy.tag_set.get(value="Archaea")
+        with pytest.raises(ValueError) as exc:
+            tagging_api.add_tag_to_taxonomy(self.taxonomy, "New Tag", external_id=archaea.external_id)
+        assert str(exc.value) == f"Tag with external_id '{archaea.external_id}' already exists for taxonomy."
+
+    def test_add_tag_under_a_tag_under_an_archived_tag_is_refused(self) -> None:
+        Tag.objects.filter(taxonomy=self.taxonomy, value="Eukaryota").update(archived=True)
+        with pytest.raises(ValueError) as exc:
+            tagging_api.add_tag_to_taxonomy(self.taxonomy, "New Tag", parent_tag_value="Animalia")
+        assert str(exc.value) == "Cannot add a tag under the archived tag 'Eukaryota'."
+        assert not self.taxonomy.tag_set.filter(value="New Tag").exists()
+
+    def test_add_tag_with_unarchived_duplicate_keeps_message(self) -> None:
+        with pytest.raises(ValueError) as exc:
+            tagging_api.add_tag_to_taxonomy(self.taxonomy, "Archaea")
+        assert str(exc.value) == "Tag with value 'Archaea' already exists for taxonomy."
+
     def test_get_tags_system(self) -> None:
         assert pretty_format_tags(tagging_api.get_tags(self.read_only_taxonomy), parent=False) == [
             "System Tag 1 (children: 0)",
