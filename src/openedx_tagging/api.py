@@ -12,9 +12,9 @@ are stored in this app.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from enum import Enum
-from typing import Any, Counter, cast
+from typing import Any, cast
 
 from django.db import models, transaction
 from django.db.models import F, QuerySet, Value
@@ -82,28 +82,28 @@ def create_taxonomy(  # pylint: disable=too-many-positional-arguments
 
 def get_taxonomy(taxonomy_id: int) -> Taxonomy | None:
     """
-    Returns the Taxonomy which has the given ID, or None if not found.
+    Returns the Taxonomy which has the given ID, or None if not found or archived.
     """
-    return Taxonomy.objects.filter(pk=taxonomy_id).first()
+    return Taxonomy.objects.unarchived().filter(pk=taxonomy_id).first()
 
 
 def get_taxonomy_by_export_id(taxonomy_export_id: str) -> Taxonomy | None:
     """
-    Returns the Taxonomy which has the given export ID, or None if not found.
+    Returns the Taxonomy which has the given export ID, or None if not found or archived.
     """
-    return Taxonomy.objects.filter(export_id=taxonomy_export_id).first()
+    return Taxonomy.objects.unarchived().filter(export_id=taxonomy_export_id).first()
 
 
 def get_taxonomies(enabled=True) -> QuerySet[Taxonomy]:
     """
-    Returns a queryset containing the enabled taxonomies, sorted by name.
+    Returns a queryset containing the enabled, unarchived taxonomies, sorted by name.
 
     We return a QuerySet here for ease of use with Django Rest Framework and other query-based use cases.
 
     If you want the disabled taxonomies, pass enabled=False.
     If you want all taxonomies (both enabled and disabled), pass enabled=None.
     """
-    queryset = Taxonomy.objects.order_by("name", "id")
+    queryset = Taxonomy.objects.unarchived().order_by("name", "id")
     if enabled is None:
         return queryset.all()
     return queryset.filter(enabled=enabled)
@@ -111,7 +111,7 @@ def get_taxonomies(enabled=True) -> QuerySet[Taxonomy]:
 
 def get_tags(taxonomy: Taxonomy) -> TagDataQuerySet:
     """
-    Returns a QuerySet of all the tags in the given taxonomy.
+    Returns a QuerySet of all the unarchived tags in the given taxonomy.
 
     Note that if the taxonomy is dynamic or free-text, only tags that have
     already been applied to some object will be returned.
@@ -146,7 +146,7 @@ def search_tags(
         # Fetch tags that the object already has to exclude them from the result.
         # Note: this adds a fair bit of complexity. In the future, maybe we can just do this filtering on the frontend?
         excluded_values = list(
-            taxonomy.objecttag_set.filter(object_id=exclude_object_id).values_list(
+            taxonomy.objecttag_set.unarchived().filter(object_id=exclude_object_id).values_list(
                 "_value", flat=True
             )
         )
@@ -162,7 +162,9 @@ def get_children_tags(
     parent_tag_value: str,
 ) -> TagDataQuerySet:
     """
-    Returns a QuerySet of children tags for the given parent tag.
+    Returns a QuerySet of unarchived children tags for the given parent tag.
+
+    Raises Tag.DoesNotExist if the parent tag does not exist, or Tag.IsArchived if it is archived.
 
     Note that if the taxonomy allows free-text tags, then the returned list will be empty.
     """
@@ -173,24 +175,30 @@ def get_ancestor_tags(tag: Tag) -> QuerySet[Tag]:
     """
     Return every ancestor of ``tag`` (its parent, grandparent, ... up to the root).
 
+    Archived tags, and every tag of an archived taxonomy, are left out.
+
     Returns an empty queryset if ``tag``'s taxonomy is unset or allows free text, since
     free-text tags have no taxonomy-defined hierarchy.
     """
     if tag.taxonomy is None or tag.taxonomy.allow_free_text:
         return Tag.objects.none()
-    return Tag.objects.filter(taxonomy=tag.taxonomy, value__in=tag.get_lineage()[:-1])
+    return Tag.objects.unarchived().filter(taxonomy=tag.taxonomy, value__in=tag.get_lineage()[:-1])
 
 
 def get_descendant_tags(tag: Tag) -> QuerySet[Tag]:
     """
     Return every descendant of ``tag`` at any depth, excluding ``tag`` itself.
 
+    Archived tags, and every tag of an archived taxonomy, are left out.
+
     Returns an empty queryset if ``tag``'s taxonomy is unset or allows free text, since
     free-text tags have no taxonomy-defined hierarchy.
     """
     if tag.taxonomy is None or tag.taxonomy.allow_free_text:
         return Tag.objects.none()
-    return Tag.objects.filter(taxonomy=tag.taxonomy, depth__gt=tag.depth, lineage__startswith=tag.lineage)
+    return Tag.objects.unarchived().filter(
+        taxonomy=tag.taxonomy, depth__gt=tag.depth, lineage__startswith=tag.lineage
+    )
 
 
 def resync_object_tags(object_tags: QuerySet | None = None) -> int:
@@ -220,11 +228,14 @@ def get_object_tags(
     """
     Returns a Queryset of object tags for a given object.
 
+    Archived object tags are excluded, as are those whose tag or taxonomy is archived.
+
     Pass taxonomy_id to limit the returned object_tags to a specific taxonomy.
     """
     filters = {"taxonomy_id": taxonomy_id} if taxonomy_id else {}
     base_qs = (
         ObjectTag.objects
+        .unarchived()
         .filter(object_id=object_id, **filters)
         .exclude(taxonomy__enabled=False)  # Exclude if the whole taxonomy is disabled
     )
@@ -258,14 +269,15 @@ def get_object_tag_counts(object_id_pattern: str, count_implicit=False) -> dict[
     "course-v1:foo+bar+baz@*", or a list of "comma,separated,IDs", return a
     dict of matching object IDs and how many tags each object has.
 
-    Deleted tags and disabled taxonomies are excluded from the counts, even if
+    Deleted tags, disabled taxonomies, and archived object tags (including those
+    whose tag or taxonomy is archived) are excluded from the counts, even if
     ObjectTag data about them is present.
 
     count_implicit: if True, this means to count all ancestor tags (implicit
     tags) of the explict tags that are associated with the object.
     """
     # Note: in the future we may add an option to exclude system taxonomies from the count.
-    qs: Any = ObjectTag.objects
+    qs: Any = ObjectTag.objects.unarchived()
     if object_id_pattern.endswith("*"):
         qs = qs.filter(object_id__startswith=object_id_pattern[0:len(object_id_pattern) - 1])
     elif "*" in object_id_pattern:
@@ -330,10 +342,25 @@ def _check_new_tag_count(
     else:
         current_count = ObjectTag.objects.filter(object_id=object_id).exclude(_export_id=taxonomy_export_id).count()
 
+    _check_object_tag_limit(current_count, new_tag_count, object_id)
+
+
+def _check_object_tag_limit(current_count: int, new_tag_count: int, object_id: str) -> None:
+    """
+    Raises ValueError if ``new_tag_count`` tags on top of ``current_count`` would exceed OBJECT_MAX_TAGS.
+    """
     if current_count + new_tag_count > OBJECT_MAX_TAGS:
         raise ValueError(
             _("Cannot add more than {limit} tags to ({object_id}).").format(object_id=object_id, limit=OBJECT_MAX_TAGS)
         )
+
+
+def _check_taxonomy_allows_tag_count(taxonomy: Taxonomy, tag_count: int) -> None:
+    """
+    Raises ValueError if ``tag_count`` tags on one object is more than the taxonomy allows.
+    """
+    if not taxonomy.allow_multiple and tag_count > 1:
+        raise ValueError(_("Taxonomy ({name}) only allows one tag per object.").format(name=taxonomy.name))
 
 
 def _get_current_tags(
@@ -346,8 +373,7 @@ def _get_current_tags(
     Returns the current object tags of the related object_id with taxonomy
     """
     if taxonomy:
-        if not taxonomy.allow_multiple and len(tags) > 1:
-            raise ValueError(_("Taxonomy ({name}) only allows one tag per object.").format(name=taxonomy.name))
+        _check_taxonomy_allows_tag_count(taxonomy, len(tags))
         current_tags = list(
            ObjectTag.objects.filter(taxonomy=taxonomy, object_id=object_id)
         )
@@ -461,6 +487,46 @@ def tag_object(
             object_tag.save()
 
 
+def add_tag_to_object(object_id: str, tag: Tag) -> ObjectTag:
+    """
+    Adds one existing ``tag`` to ``object_id``, and returns its ObjectTag.
+
+    UNSTABLE: this function is new, so its shape may change without a deprecation cycle.
+
+    Unlike :func:`tag_object`, no other ObjectTag of the object is read for replacement or changed,
+    so a concurrent write of another tag on the same object, even one in the same taxonomy, is not
+    undone by this call. If ``tag`` is already applied to the object, its existing ObjectTag is
+    returned and nothing is written.
+
+    Raises ValueError if the taxonomy of ``tag`` allows only one tag per object and the object
+    already has a different tag in it, or if the object already has the maximum number of tags
+    (``OBJECT_MAX_TAGS``). Both use the same messages as :func:`tag_object`. Raises ValueError if
+    ``tag`` does not belong to a taxonomy. Raises Django's ``ValidationError`` if the new ObjectTag
+    fails ``full_clean()``.
+
+    The checks and the insert are not atomic, so a caller that needs them to hold against concurrent
+    writers must serialize those writers itself.
+    """
+    taxonomy = tag.taxonomy
+    if taxonomy is None:
+        raise ValueError(_("Tag ({value}) does not belong to a taxonomy.").format(value=tag.value))
+
+    object_tag = ObjectTag.objects.filter(object_id=object_id, taxonomy_id=taxonomy.id, tag_id=tag.id).first()
+    if object_tag is not None:
+        return object_tag
+
+    if not taxonomy.allow_multiple:
+        # The new tag would be the one after the ones the object already has in this taxonomy.
+        existing_count = ObjectTag.objects.filter(object_id=object_id, taxonomy_id=taxonomy.id).count()
+        _check_taxonomy_allows_tag_count(taxonomy, existing_count + 1)
+    _check_object_tag_limit(ObjectTag.objects.filter(object_id=object_id).count(), 1, object_id)
+
+    object_tag = ObjectTag(taxonomy=taxonomy, object_id=object_id, tag=tag)
+    object_tag.full_clean()
+    object_tag.save()
+    return object_tag
+
+
 def add_tag_to_taxonomy(
     taxonomy: Taxonomy,
     tag: str,
@@ -473,6 +539,10 @@ def add_tag_to_taxonomy(
     Tag is returned.
 
     If `external_id` is omitted, one is generated from the tag's name.
+
+    Raises ``ValueError`` if the taxonomy is archived, if the value or ``external_id``
+    is held by another tag, archived or not, or if the parent is archived or under an
+    archived tag.
     """
     new_tag = taxonomy.add_tag(tag, parent_tag_value, external_id)
 
@@ -491,6 +561,8 @@ def update_tag_in_taxonomy(taxonomy: Taxonomy, tag: str, new_value: str):
     updated accordingly.
 
     Currently only supports updating the Tag value.
+
+    Raises ValueError if the taxonomy is archived, or if the tag is archived.
     """
     updated_tag = taxonomy.update_tag(tag, new_value)
 
@@ -573,13 +645,15 @@ def add_usage_counts(taxonomy: Taxonomy, tag_data: TagDataQuerySet) -> TagDataQu
     parent tag, "Natural Science" is only applied to it once,
     because no tag can be applied to the same object twice.
 
+    Archived object tags, and those whose tag or taxonomy is archived, are not counted.
+
     For performance reasons, we call this function with the list result of the
     QuerySet so we can then add the counts in-memory rather than annotate to a
     QuerySet which would require a very expensive annotation to join the
     in-memory data to the original QuerySet.
     """
 
-    object_tags = taxonomy.objecttag_set.values_list("object_id", "tag__lineage")
+    object_tags = taxonomy.objecttag_set.unarchived().values_list("object_id", "tag__lineage")
     tag_counts: Counter[str] = Counter()
     object_tag_lineage_seen: defaultdict[str, set] = defaultdict(set)
 

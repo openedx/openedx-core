@@ -9,8 +9,9 @@ validated payload to a learner's score fraction and returns whether the rule is 
 from __future__ import annotations
 
 import operator
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Callable, Literal, TypedDict
+from typing import Literal, TypedDict
 
 from django.core.exceptions import ValidationError
 from django.db import models

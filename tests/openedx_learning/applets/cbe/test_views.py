@@ -4,29 +4,40 @@ Tests for the CBE REST API views.
 Fixtures live in this directory's conftest.py. Several scenarios here create rule profile rows
 directly rather than through a live call, because no create or archive endpoint exists yet.
 """
+from datetime import datetime
 from typing import Any, Generator
+from unittest import mock
 from urllib.parse import urlencode
 
 import pytest
 import rules
+from django.core.exceptions import ValidationError
 from django.urls import reverse
 from opaque_keys import InvalidKeyError
 from opaque_keys.edx.keys import CourseKey, UsageKey
 from organizations.models import Organization
 from rest_framework import status
-from rest_framework.test import APIClient
+from rest_framework.request import Request
+from rest_framework.test import APIClient, APIRequestFactory
 
-from openedx_catalog.models import CatalogCourse, CourseRun
+from openedx_catalog.models import CourseRun
+from openedx_learning.applets.cbe import api as cbe_api
 from openedx_learning.applets.cbe.api import _create_leaf_group
+from openedx_learning.applets.cbe.rest_api.paginators import CompetencyBlockedCoursesPagination
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
     CompetencyCriterion,
     CompetencyRuleProfile,
     CompetencyTaxonomy,
     LogicOperator,
+    MasteryStatus,
     RuleType,
+    StudentCompetencyCriteriaGroupStatus,
+    StudentCompetencyCriterionStatus,
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
+
+from .utils import make_course_run, make_leaf_criterion, make_skill_family, make_tag, usage_key
 
 pytestmark = pytest.mark.django_db
 
@@ -73,22 +84,14 @@ def criterion_create_url(tag_id: int) -> str:
     return reverse("cbe:criterion-create", kwargs={"tag_id": tag_id})
 
 
-def usage_key(course_run: CourseRun, block_id: str) -> str:
-    """Build a gradeable-subsection-shaped usage key string under `course_run`."""
-    key = course_run.course_key
-    assert key is not None
-    return f"block-v1:{key.org}+{key.course}+{key.run}+type@sequential+block@{block_id}"
+def criterion_delete_url(tag_id: int, criterion_id: int) -> str:
+    """Return the delete-criterion endpoint's path for `tag_id`/`criterion_id`, resolved through the URL name."""
+    return reverse("cbe:criterion-delete", kwargs={"tag_id": tag_id, "criterion_id": criterion_id})
 
 
-def make_course_run(organization: Organization, course_code: str, run_code: str) -> CourseRun:
-    """Create a CourseRun distinct from the `course_run` fixture, for the different-course tests."""
-    catalog_course = CatalogCourse.objects.create(org=organization, course_code=course_code)
-    return CourseRun.objects.create(catalog_course=catalog_course, run_code=run_code)
-
-
-def make_tag(taxonomy: CompetencyTaxonomy, value: str, parent: Tag | None = None) -> Tag:
-    """Create a Tag on `taxonomy`, optionally under `parent`, for taxonomy-hierarchy tests."""
-    return Tag.objects.create(taxonomy=taxonomy, value=value, parent=parent)
+def group_delete_url(tag_id: int, group_id: int) -> str:
+    """Return the group detail endpoint's path for `tag_id`/`group_id`, which DELETE is sent to."""
+    return reverse("cbe:criteria-group-detail", kwargs={"tag_id": tag_id, "group_id": group_id})
 
 
 # What migration 0005 seeds the system default with. Asserted verbatim rather than imported, so
@@ -341,6 +344,7 @@ def test_no_group_no_existing_groups_creates_the_full_hierarchy_and_201s(
     assert response.data["object_tag_id"] == criterion.object_tag_id
     assert response.data["group_id"] == criterion.group_id
     assert response.data["rule_profile_id"] == default_rule_profile.id
+    assert response.data["archived"] is False
 
 
 def test_logic_operator_provided_is_stored_on_the_new_leaf(
@@ -551,6 +555,182 @@ def test_duplicate_association_via_the_derive_path_is_rejected_before_creating_a
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert "object_id" in response.data
     assert CompetencyCriteriaGroup.objects.count() == groups_before
+
+
+def test_supplied_archived_leaf_group_is_rejected(user_client: APIClient, tag: Tag, course_run: CourseRun) -> None:
+    """The 400 is keyed group_id, and no criterion is created."""
+    leaf = _create_leaf_group(tag, course_run)
+    leaf.archived = True
+    leaf.save()
+    object_id = usage_key(course_run, "p1")
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": object_id, "group_id": leaf.id}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "archived" in str(response.data["group_id"])
+    assert not CompetencyCriterion.objects.exists()
+
+
+def test_derive_path_with_an_archived_course_level_group_is_rejected(
+    user_client: APIClient, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    With no group_id, an archived course-level group for the object's course is a 400 keyed ``object_id``.
+
+    The root is active, so nothing is reactivated, and the request creates no leaf and no criterion.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    course_level = CompetencyCriteriaGroup.objects.create(tag=tag, course=course_run, parent=root, archived=True)
+    groups_before = CompetencyCriteriaGroup.objects.count()
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p1")}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "archived" in str(response.data["object_id"])
+    assert f"group {course_level.id}" in str(response.data["object_id"])
+    assert CompetencyCriteriaGroup.objects.count() == groups_before
+    assert not CompetencyCriterion.objects.exists()
+
+
+def test_derive_path_reactivates_an_archived_root_instead_of_creating_a_second_one(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, organization: Organization,
+) -> None:
+    """An archived root whose only course-level group (another course) is archived is reactivated and reused."""
+    other_course_run = make_course_run(organization, "Python200", "Fall2026")
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, archived=True)
+    other_course_level = CompetencyCriteriaGroup.objects.create(
+        tag=tag, course=other_course_run, parent=root, archived=True,
+    )
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p1")}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+    root.refresh_from_db()
+    assert root.archived is False
+    assert CompetencyCriteriaGroup.objects.filter(tag=tag, parent__isnull=True).count() == 1
+    criterion = CompetencyCriterion.objects.get(pk=response.data["id"])
+    assert criterion.group.parent is not None
+    assert criterion.group.parent.parent_id == root.id
+    assert criterion.group.parent.course_id == course_run.id
+    other_course_level.refresh_from_db()
+    assert other_course_level.archived is True
+
+
+def test_re_association_while_a_sibling_keeps_the_course_level_group_alive_is_rejected_as_archived(
+    user_client: APIClient, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    A derive-path POST for an archived (tag, object_id) is a 400 keyed ``object_id`` even with a live sibling.
+
+    The archive state mirrors the cascade: the first criterion and its leaf are archived, the sibling's leaf is not.
+    With no ``group_id``, the archived criterion blocks anywhere under the competency, and the message names the
+    archived state.
+    """
+    object_id = usage_key(course_run, "p1")
+    first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
+    sibling = user_client.post(criterion_create_url(tag.id), {"object_id": usage_key(course_run, "p2")}, format="json")
+    assert first.status_code == status.HTTP_201_CREATED
+    assert sibling.status_code == status.HTTP_201_CREATED
+    criterion = CompetencyCriterion.objects.get(pk=first.data["id"])
+    criterion.archived = True
+    criterion.save()
+    criterion.group.archived = True
+    criterion.group.save()
+    group_count = CompetencyCriteriaGroup.objects.count()
+    criterion_count = CompetencyCriterion.objects.count()
+
+    response = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "previously associated" in str(response.data["object_id"])
+    assert "archived" in str(response.data["object_id"])
+    assert CompetencyCriteriaGroup.objects.count() == group_count
+    assert CompetencyCriterion.objects.count() == criterion_count
+
+
+def test_supplied_group_holding_an_archived_criterion_for_the_same_content_is_rejected_as_archived(
+    user_client: APIClient, user, now: datetime, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    Scenario 6 of #717 at the POST level: an archived criterion blocks re-association into its own leaf.
+
+    The leaf is active because a second criterion keeps it alive, and also holds an archived criterion for the
+    content. The archived state comes from the DELETE endpoint: the criterion has a learner status, so the delete
+    archives it. A request supplying that ``group_id`` is a 400 keyed ``group_id`` whose message names the
+    archived state, and nothing is created.
+    """
+    object_id = usage_key(course_run, "p1")
+    first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
+    assert first.status_code == status.HTTP_201_CREATED
+    sibling = user_client.post(
+        criterion_create_url(tag.id),
+        {"object_id": usage_key(course_run, "p2"), "group_id": first.data["group_id"]},
+        format="json",
+    )
+    assert sibling.status_code == status.HTTP_201_CREATED
+    archived_criterion = CompetencyCriterion.objects.get(pk=first.data["id"])
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=archived_criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    deletion = user_client.delete(criterion_delete_url(tag.id, archived_criterion.id))
+    assert deletion.data == {"id": archived_criterion.id, "archived": True}
+    criterion_count = CompetencyCriterion.objects.count()
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": object_id, "group_id": first.data["group_id"]}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "previously associated" in str(response.data["group_id"])
+    assert "archived" in str(response.data["group_id"])
+    assert CompetencyCriterion.objects.count() == criterion_count
+    archived_criterion.refresh_from_db()
+    assert archived_criterion.archived is True
+
+
+def test_supplied_different_group_accepts_content_whose_criterion_in_another_group_is_archived(
+    user_client: APIClient, user, now: datetime, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    A criterion for the content in a different active group is accepted although another group holds an archived one.
+
+    The archived criterion blocks only its own group, or the no-``group_id`` path. A different explicit group is a
+    deliberate second association (ADR-0002). The archived state comes from the DELETE endpoint, with a second
+    criterion keeping the first group active.
+    """
+    object_id = usage_key(course_run, "p1")
+    first = user_client.post(criterion_create_url(tag.id), {"object_id": object_id}, format="json")
+    assert first.status_code == status.HTTP_201_CREATED
+    sibling = user_client.post(
+        criterion_create_url(tag.id),
+        {"object_id": usage_key(course_run, "p2"), "group_id": first.data["group_id"]},
+        format="json",
+    )
+    assert sibling.status_code == status.HTTP_201_CREATED
+    archived_criterion = CompetencyCriterion.objects.get(pk=first.data["id"])
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=archived_criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    deletion = user_client.delete(criterion_delete_url(tag.id, archived_criterion.id))
+    assert deletion.data == {"id": archived_criterion.id, "archived": True}
+    other_leaf = _create_leaf_group(tag, course_run)
+
+    response = user_client.post(
+        criterion_create_url(tag.id), {"object_id": object_id, "group_id": other_leaf.id}, format="json",
+    )
+
+    assert response.status_code == status.HTTP_201_CREATED
+    new_criterion = CompetencyCriterion.objects.get(pk=response.data["id"])
+    assert new_criterion.group_id == other_leaf.id
+    assert new_criterion.object_tag_id == archived_criterion.object_tag_id
+    archived_criterion.refresh_from_db()
+    assert archived_criterion.archived is True
 
 
 def test_all_null_rule_fields_resolve_to_the_system_default_profile_id(
@@ -822,7 +1002,9 @@ def test_tag_refused_at_the_object_tag_limit_is_400_and_creates_nothing(
 
 NEW_PAYLOAD = {"op": "gte", "value": 0.75, "scale": "percent"}
 NEW_RULE: dict[str, Any] = {"rule_type_override": "Grade", "rule_payload_override": NEW_PAYLOAD}
-CRITERION_FIELDS = {"id", "group_id", "rule_profile_id", "rule_type_override", "rule_payload_override", "object_tag_id"}
+CRITERION_FIELDS = {
+    "id", "group_id", "rule_profile_id", "rule_type_override", "rule_payload_override", "object_tag_id", "archived",
+}
 
 
 def bulk_update_url(group_id: int) -> str:
@@ -1457,6 +1639,24 @@ def test_a_malformed_course_key_is_400(user_client: APIClient, tag: Tag) -> None
     assert set(response.data) == {"course_keys"}
 
 
+def test_a_version_only_course_key_is_400(user_client: APIClient, tag: Tag) -> None:
+    """A version-only course key parses but can't drop its version, so it is rejected like a malformed one."""
+    version_only = "course-v1:version@aaaaaaaaaaaaaaaaaaaaaaaa"
+    response = user_client.get(criteria_tree_url(tag.id), {"course_keys": version_only})
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert set(response.data) == {"course_keys"}
+
+
+@pytest.mark.parametrize("library_key", ["library-v1:Org1+Lib1", "library-v1:version@aaaaaaaaaaaaaaaaaaaaaaaa"])
+def test_a_library_key_is_400(user_client: APIClient, tag: Tag, library_key: str) -> None:
+    """A library key parses as a CourseKey but can never name a course run, so it is rejected like a malformed one."""
+    response = user_client.get(criteria_tree_url(tag.id), {"course_keys": library_key})
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert library_key in str(response.data["course_keys"])
+
+
 def test_more_than_the_limit_of_course_keys_is_400(user_client: APIClient, tag: Tag) -> None:
     """More than 100 course_keys entries 400s, keyed by course_keys, and the error names the 100 limit."""
     too_many = ",".join(f"course-v1:Org+Course{i}+Run" for i in range(101))
@@ -1495,6 +1695,32 @@ def test_a_repeated_course_keys_query_parameter_is_400(user_client: APIClient, t
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert set(response.data) == {"course_keys"}
+
+
+@pytest.mark.parametrize("suffix", [
+    "+branch@draft",
+    "+branch@draft+version@aaaaaaaaaaaaaaaaaaaaaaaa",
+    "+version@aaaaaaaaaaaaaaaaaaaaaaaa",
+])
+def test_a_branch_qualified_course_key_matches_the_plain_course(
+    user_client: APIClient,
+    tag: Tag,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+    suffix: str,
+) -> None:
+    """A course key with a branch or version scopes the tree exactly as the plain course key does."""
+    leaf = _create_leaf_group(tag, course_run)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+    key = str(course_run.course_key)
+
+    plain = user_client.get(criteria_tree_url(tag.id), {"course_keys": key})
+    branched = user_client.get(criteria_tree_url(tag.id), {"course_keys": f"{key}{suffix}"})
+
+    assert plain.status_code == branched.status_code == status.HTTP_200_OK
+    assert plain.data["criteria_count"] == 1
+    assert branched.data == plain.data
 
 
 def test_no_view_access_with_course_keys_still_403s_without_leaking_data(
@@ -1985,11 +2211,1005 @@ def test_update_group_from_an_unidentified_caller_is_401(
     assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
-@pytest.mark.parametrize("method", ["get", "put", "post", "delete"])
-def test_group_detail_offers_only_patch(
+@pytest.mark.parametrize("method", ["get", "put", "post"])
+def test_group_detail_offers_only_patch_and_delete(
     method: str, user_client: APIClient, tag: Tag, leaf: CompetencyCriteriaGroup,
 ) -> None:
-    """Every method other than PATCH, PUT included, is refused as not allowed."""
+    """Every method other than PATCH and DELETE, PUT included, is refused as not allowed."""
     response = getattr(user_client, method)(group_detail_url(tag.id, leaf.id), {}, format="json")
 
     assert response.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+
+
+# ==============================================================================================
+# CompetencyBlockedCoursesView
+# ==============================================================================================
+
+
+def blocked_courses_url(tag_id: int, **params: str) -> str:
+    """Return the blocked-courses endpoint's path for `tag_id`, with `params` as its query string."""
+    url = reverse("cbe:blocked-courses", kwargs={"tag_id": tag_id})
+    return f"{url}?{urlencode(params)}" if params else url
+
+
+def collect_pages(client: APIClient, url: str) -> tuple[int, list[list[dict]]]:
+    """Follow `next` links from `url` and return the first page's count and each page's rows."""
+    response = client.get(url)
+    assert response.status_code == status.HTTP_200_OK
+    count = response.data["count"]
+    pages = [response.data["results"]]
+    while response.data["next"]:
+        response = client.get(response.data["next"])
+        assert response.status_code == status.HTTP_200_OK
+        pages.append(response.data["results"])
+    return count, pages
+
+
+def test_blocked_courses_reports_a_relative_claim_with_the_row_shape(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A course an ancestor has a criterion in is reported in a paginated envelope, naming that ancestor."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    # The seven keys are the standard envelope of edx-platform ADR 0032, which DefaultPagination implements.
+    assert set(response.data) == {"next", "previous", "count", "num_pages", "current_page", "start", "results"}
+    assert response.data["results"] == [{
+        "course_key": "course-v1:Org1+Python100+Fall2026",
+        "conflicting_tag_id": critical_thinking.id,
+        "conflicting_tag_value": "Critical Thinking",
+    }]
+
+
+def test_blocked_courses_ignores_an_unaffected_course(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A course with no relative's criterion is not reported, even when another course is blocked."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    blocked = course_run
+    unaffected = make_course_run(organization, "Python200", "Fall2026")
+    make_leaf_criterion(critical_thinking, blocked, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    keys = [row["course_key"] for row in response.data["results"]]
+    assert keys == [str(blocked.course_key)]
+    assert str(unaffected.course_key) not in keys
+
+
+def test_blocked_courses_narrows_to_requested_course_keys(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Only the requested courses come back, though a third course is blocked too."""
+    cognitive_skills, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    course_y = make_course_run(organization, "Python200", "Fall2026")
+    course_z = make_course_run(organization, "Python300", "Fall2026")
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    make_leaf_criterion(cognitive_skills, course_y, default_rule_profile, "p1")
+    make_leaf_criterion(critical_thinking, course_z, default_rule_profile, "p1")
+
+    response = user_client.get(
+        blocked_courses_url(inference.id, course_keys=f"{course_run.course_key},{course_y.course_key}"),
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert {row["course_key"] for row in response.data["results"]} == {
+        str(course_run.course_key), str(course_y.course_key),
+    }
+
+
+def test_blocked_courses_is_an_empty_200_when_nothing_is_claimed(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """No relative has a criterion anywhere: an empty collection, not a failure."""
+    _, _, inference, _ = make_skill_family(competency_taxonomy)
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["count"] == 0
+    assert response.data["results"] == []
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        pytest.param(
+            (
+                ("C300", "A100", "B200"),
+                {},
+                ["course-v1:Org1+A100+Run1", "course-v1:Org1+B200+Run1", "course-v1:Org1+C300+Run1"],
+            ),
+            id="unfiltered",
+        ),
+        pytest.param(
+            (
+                ("C300", "A100", "D400", "B200"),
+                {"course_keys": "course-v1:Org1+D400+Run1,course-v1:Org1+A100+Run1,course-v1:Org1+C300+Run1"},
+                ["course-v1:Org1+A100+Run1", "course-v1:Org1+C300+Run1", "course-v1:Org1+D400+Run1"],
+            ),
+            id="narrowed",
+        ),
+    ],
+)
+def test_blocked_courses_paginates_without_repeats_or_gaps(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+    scenario: tuple[tuple[str, ...], dict[str, str], list[str]],
+) -> None:
+    """
+    Three courses at two per page arrive across two pages, each exactly once, in course key order,
+    whether they are every blocked course or the ones ``course_keys`` narrows the result to.
+    """
+    course_codes, params, expected = scenario
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    for course_code in course_codes:
+        course = make_course_run(organization, course_code, "Run1")
+        make_leaf_criterion(critical_thinking, course, default_rule_profile, "p1")
+    count, pages = collect_pages(user_client, blocked_courses_url(inference.id, page_size="2", **params))
+
+    assert count == 3
+    assert [len(page) for page in pages] == [2, 1]
+    assert [row["course_key"] for page in pages for row in page] == expected
+
+
+def test_blocked_courses_default_page_size_is_100(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Without page_size, a page holds 100 rows and the 101st is on the next page."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    for i in range(101):
+        course = make_course_run(organization, f"C{i}", "Run1")
+        make_leaf_criterion(critical_thinking, course, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["count"] == 101
+    assert len(response.data["results"]) == 100
+    assert response.data["next"] is not None
+
+
+def test_blocked_courses_page_size_is_capped_at_500() -> None:
+    """A page_size above the cap is clamped to 500 rather than honored or rejected."""
+    request = Request(APIRequestFactory().get("/", {"page_size": "1000"}))
+
+    assert CompetencyBlockedCoursesPagination().get_page_size(request) == 500
+
+
+def test_blocked_courses_page_out_of_range_404s(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A page past the last one is reported as not found."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id, page="999"))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_blocked_courses_unknown_tag_404s(user_client: APIClient) -> None:
+    """A tag_id that doesn't resolve is reported as not found."""
+    response = user_client.get(blocked_courses_url(999999))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_blocked_courses_tag_outside_a_competency_taxonomy_404s(user_client: APIClient) -> None:
+    """A real Tag that isn't on a CompetencyTaxonomy is reported as not found."""
+    plain_taxonomy = Taxonomy.objects.create(name="Plain Tags", export_id="plain-v1")
+    plain_tag = Tag.objects.create(taxonomy=plain_taxonomy, value="Not A Competency")
+
+    response = user_client.get(blocked_courses_url(plain_tag.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        pytest.param(urlencode({"course_keys": "not-a-key"}), id="malformed course_keys"),
+        pytest.param(urlencode([("course_keys", "a"), ("course_keys", "b")]), id="repeated course_keys"),
+    ],
+)
+def test_blocked_courses_without_view_access_403s(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+    query: str,
+) -> None:
+    """
+    A non-staff caller may not read blocked courses for a competency on a disabled taxonomy, even
+    with garbage in course_keys: permission is checked before course_keys is counted or parsed.
+    """
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    competency_taxonomy.enabled = False
+    competency_taxonomy.save()
+
+    response = user_client.get(f"{blocked_courses_url(inference.id)}?{query}")
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert "results" not in response.data
+
+
+def test_blocked_courses_anonymous_request_is_401_and_discloses_nothing(
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """An unauthenticated caller gets 401 and no rows, even for a competency with a blocked course."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+
+    response = APIClient().get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert "results" not in response.data
+
+
+def test_blocked_courses_malformed_course_key_400s(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """An unparseable course key is rejected, and the error names it."""
+    _, _, inference, _ = make_skill_family(competency_taxonomy)
+
+    response = user_client.get(blocked_courses_url(inference.id, course_keys="not-a-key"))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "not-a-key" in str(response.data["course_keys"])
+
+
+@pytest.mark.parametrize("course_keys", ["", ",,"])
+def test_blocked_courses_blank_course_keys_is_an_empty_page(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+    course_keys: str,
+) -> None:
+    """A course_keys filter that names no course narrows to nothing, even when a course is blocked."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+
+    response = user_client.get(blocked_courses_url(inference.id, course_keys=course_keys))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["count"] == 0
+    assert response.data["results"] == []
+
+
+def test_blocked_courses_repeated_course_keys_parameter_400s(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy,
+) -> None:
+    """Supplying course_keys twice is rejected instead of silently using one value."""
+    _, _, inference, _ = make_skill_family(competency_taxonomy)
+    query = urlencode([("course_keys", "course-v1:Org+A+1"), ("course_keys", "course-v1:Org+B+1")])
+
+    response = user_client.get(f"{blocked_courses_url(inference.id)}?{query}")
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "results" not in response.data
+
+
+def test_blocked_courses_strips_whitespace_around_course_keys(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    organization: Organization,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """Spaces after the commas don't make a key unparseable."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    course_y = make_course_run(organization, "Python200", "Fall2026")
+    make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    make_leaf_criterion(critical_thinking, course_y, default_rule_profile, "p1")
+
+    response = user_client.get(
+        blocked_courses_url(inference.id, course_keys=f"{course_run.course_key}, {course_y.course_key}"),
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert {row["course_key"] for row in response.data["results"]} == {
+        str(course_run.course_key), str(course_y.course_key),
+    }
+
+
+def test_blocked_courses_ignores_an_archived_claim(
+    user_client: APIClient,
+    competency_taxonomy: CompetencyTaxonomy,
+    course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A relative's archived criterion doesn't block the course."""
+    _, critical_thinking, inference, _ = make_skill_family(competency_taxonomy)
+    criterion = make_leaf_criterion(critical_thinking, course_run, default_rule_profile, "p1")
+    CompetencyCriterion.objects.filter(pk=criterion.pk).update(archived=True)
+
+    response = user_client.get(blocked_courses_url(inference.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["results"] == []
+
+
+# ==============================================================================================
+# CompetencyCriterionDeleteView (#674)
+# ==============================================================================================
+
+
+@pytest.fixture(name="criterion")
+def _criterion(
+    group: CompetencyCriteriaGroup, tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile
+) -> CompetencyCriterion:
+    """A CompetencyCriterion directly under the root `group`, for the delete-view tests."""
+    # The conftest object_tag's object_id isn't a parseable usage key, which _allow_object_level_tagging denies.
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    return CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
+
+
+def test_hard_delete_200s_with_archived_false(user_client: APIClient, criterion: CompetencyCriterion) -> None:
+    """With no learner status on the criterion, the DELETE removes the row and the body says archived=false."""
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {"id": criterion.id, "archived": False}
+    assert not CompetencyCriterion.objects.filter(id=criterion.id).exists()
+
+
+def test_archive_200s_with_archived_true(
+    user_client: APIClient, user, criterion: CompetencyCriterion, now: datetime,
+) -> None:
+    """With a learner status on the criterion, the DELETE keeps the row, flags it archived, and says archived=true."""
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {"id": criterion.id, "archived": True}
+    criterion.refresh_from_db()
+    assert criterion.archived is True
+
+
+def test_repeat_delete_on_an_archived_criterion_is_idempotent_200(
+    user_client: APIClient, user, criterion: CompetencyCriterion, now: datetime,
+) -> None:
+    """A second DELETE against an already-archived criterion still 200s with the same body."""
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {"id": criterion.id, "archived": True}
+
+
+def test_repeat_delete_on_a_criterion_archived_without_its_own_status_stays_archived(
+    user_client: APIClient, *, user, tag: Tag, course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    A group subtree archive also archives a criterion that has no learner status of its own, because a
+    sibling group's criterion has one. A DELETE on that criterion then 200s with archived=true and leaves
+    the criterion and its ObjectTag in place, archived.
+    """
+    leaf_a = _create_leaf_group(tag, course_run)
+    parent = leaf_a.parent
+    assert parent is not None
+    leaf_b = CompetencyCriteriaGroup.objects.create(tag=tag, parent=parent)
+    object_tag_a = ObjectTag.objects.create(object_id=usage_key(course_run, "a"), taxonomy=tag.taxonomy, tag=tag)
+    object_tag_b = ObjectTag.objects.create(object_id=usage_key(course_run, "b"), taxonomy=tag.taxonomy, tag=tag)
+    criterion_a = CompetencyCriterion.objects.create(
+        group=leaf_a, object_tag=object_tag_a, rule_profile=default_rule_profile,
+    )
+    criterion_b = CompetencyCriterion.objects.create(
+        group=leaf_b, object_tag=object_tag_b, rule_profile=default_rule_profile,
+    )
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion_a, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    assert user_client.delete(group_delete_url(tag.id, parent.id)).data["archived"] is True
+    criterion_b.refresh_from_db()
+    assert criterion_b.archived is True
+    assert not StudentCompetencyCriterionStatus.objects.filter(criterion=criterion_b).exists()
+
+    response = user_client.delete(criterion_delete_url(tag.id, criterion_b.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {"id": criterion_b.id, "archived": True}
+    criterion_b.refresh_from_db()
+    assert criterion_b.archived is True
+    assert ObjectTag.objects.filter(id=object_tag_b.id).exists()
+
+
+@pytest.mark.parametrize("hard_delete_first", [False, True], ids=["never-existed", "already-hard-deleted"])
+def test_delete_of_a_criterion_that_is_not_there_404s(
+    hard_delete_first: bool, user_client: APIClient, criterion: CompetencyCriterion,
+) -> None:
+    """
+    A criterion_id that never existed, or whose row an earlier hard delete removed, 404s from the view's
+    own lookup. Repeating a hard delete is not idempotent like repeating an archive.
+    """
+    criterion_id = 999999
+    if hard_delete_first:
+        criterion_id = criterion.id
+        assert user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion_id)).status_code == 200
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion_id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_cascade_deleted_group_404s_on_subsequent_create(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """
+    Hard-deleting a group's only criterion cascade-deletes that now-empty leaf group, and a later
+    create-criterion POST naming that same (now-gone) group_id 404s rather than resolving.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+
+    delete_response = user_client.delete(criterion_delete_url(tag.id, criterion.id))
+    assert delete_response.status_code == status.HTTP_200_OK
+    assert not CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
+
+    create_response = user_client.post(
+        criterion_create_url(tag.id),
+        {"object_id": usage_key(course_run, "p2"), "group_id": leaf.id},
+        format="json",
+    )
+
+    assert create_response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_tag_id_criterion_id_mismatch_404s(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, criterion: CompetencyCriterion,
+) -> None:
+    """A criterion that exists, but under a different competency tag than the URL names, 404s."""
+    other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Other Competency")
+
+    response = user_client.delete(criterion_delete_url(other_tag.id, criterion.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+@pytest.mark.parametrize("lacks", ["object tagging access", "taxonomy view access"])
+def test_delete_without_permission_is_403(
+    *,
+    lacks: str, user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, tag: Tag,
+    group: CompetencyCriteriaGroup, course_run: CourseRun, default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A caller refused by the object-level tagging rule, or without view access to the taxonomy, gets a 403."""
+    block_id = UNAUTHORIZED_MARKER if lacks == "object tagging access" else "p1"
+    object_tag = ObjectTag.objects.create(
+        object_id=usage_key(course_run, block_id), taxonomy=competency_taxonomy, tag=tag,
+    )
+    criterion = CompetencyCriterion.objects.create(
+        group=group, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+    if lacks == "taxonomy view access":
+        competency_taxonomy.enabled = False
+        competency_taxonomy.save()
+
+    response = user_client.delete(criterion_delete_url(tag.id, criterion.id))
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert CompetencyCriterion.objects.filter(id=criterion.id).exists()
+
+
+def test_delete_from_an_unidentified_caller_is_401(api_client: APIClient, criterion: CompetencyCriterion) -> None:
+    """A caller the system cannot identify is refused before anything is read, and the criterion remains."""
+    response = api_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert CompetencyCriterion.objects.filter(id=criterion.id).exists()
+
+
+def test_a_grade_that_lands_during_the_delete_is_a_retryable_409(
+    monkeypatch: pytest.MonkeyPatch, user_client: APIClient, user, criterion: CompetencyCriterion, now: datetime,
+) -> None:
+    """
+    A learner's status row committed after the delete's progress check makes the delete raise ProtectedError.
+
+    The view answers a 409 that tells the caller to retry, and the criterion is neither deleted nor archived.
+    """
+
+    def progress_arrives_after_the_check(criterion_id: int) -> bool:
+        StudentCompetencyCriterionStatus.objects.create(
+            user=user, criterion_id=criterion_id, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+        )
+        return False
+
+    monkeypatch.setattr(cbe_api, "_criterion_has_learner_progress", progress_arrives_after_the_check)
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert "Retry the DELETE" in str(response.data["detail"])
+    criterion.refresh_from_db()
+    assert criterion.archived is False
+
+
+def test_delete_of_a_criterion_gone_by_the_time_of_the_call_is_404(
+    run_when_tag_lock_is_taken, user_client: APIClient, criterion: CompetencyCriterion,
+) -> None:
+    """A criterion removed between the view's lookup and the API's locked re-read is a 404, not a 500."""
+    run_when_tag_lock_is_taken(lambda: CompetencyCriterion.objects.filter(pk=criterion.pk).delete())
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_archiving_a_criterion_whose_stored_payload_went_invalid_is_400_and_changes_nothing(
+    user_client: APIClient, user, batch: tuple[CompetencyCriterion, CompetencyCriterion], now: datetime,
+) -> None:
+    """
+    Archiving saves the criterion, which re-validates its rule payload. A payload that stopped being
+    valid after it was stored, here written past validation with update(), makes the DELETE a 400
+    keyed by the model-level error, and the criterion is neither archived nor deleted.
+    """
+    criterion = batch[1]
+    CompetencyCriterion.objects.filter(pk=criterion.pk).update(rule_payload_override={"op": "gt", "value": 75})
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    response = user_client.delete(criterion_delete_url(criterion.group.tag_id, criterion.id))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert list(response.json()) == ["__all__"]
+    criterion.refresh_from_db()
+    assert criterion.archived is False
+
+
+@pytest.mark.parametrize("endpoint", ["delete a criterion", "bulk update criteria", "update a group", "delete a group"])
+def test_a_competency_tag_deleted_while_the_request_waits_for_its_lock_is_404(
+    endpoint: str,
+    run_when_tag_lock_is_taken,
+    user_client: APIClient,
+    leaf: CompetencyCriteriaGroup,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion],
+) -> None:
+    """
+    A competency tag removed by an admin while the request waits for the Tag lock is a 404, not a 500.
+    The group's foreign key to the tag cascades, so the row can't go before the request starts without
+    taking the criterion with it; the delete runs as the lock is taken, as a commit during the wait would.
+    """
+    run_when_tag_lock_is_taken(lambda: Tag.objects.filter(pk=leaf.tag_id).delete())
+
+    if endpoint == "delete a criterion":
+        response = user_client.delete(criterion_delete_url(leaf.tag_id, batch[0].id))
+    elif endpoint == "bulk update criteria":
+        body = {"criterion_ids": [criterion.id for criterion in batch], **NEW_RULE}
+        response = user_client.patch(bulk_update_url(leaf.id), body, format="json")
+    elif endpoint == "update a group":
+        response = user_client.patch(
+            group_detail_url(leaf.tag_id, leaf.id), {"logic_operator": LogicOperator.AND}, format="json",
+        )
+    else:
+        response = user_client.delete(group_delete_url(leaf.tag_id, leaf.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+# ==============================================================================================
+# CompetencyCriteriaGroupDetailView DELETE (#675)
+# ==============================================================================================
+
+
+def test_group_hard_delete_200s_then_repeat_delete_404s(
+    user_client: APIClient, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    Deleting an empty leaf group 200s, hard-deletes it, and reports zero cascade counts; a
+    repeat DELETE then 404s.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    url = group_delete_url(tag.id, leaf.id)
+
+    response = user_client.delete(url)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {
+        "id": leaf.id, "archived": False, "cascaded_group_count": 0, "cascaded_criteria_count": 0,
+    }
+    assert not CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
+
+    repeat = user_client.delete(url)
+
+    assert repeat.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_group_cascade_hard_delete_200s_then_child_group_id_404s_on_subsequent_create(
+    user_client: APIClient, tag: Tag, course_run: CourseRun,
+) -> None:
+    """
+    Hard-deleting a course-level group cascade-deletes its child leaf group too, and a later
+    create-criterion POST naming that now-gone child group_id 404s rather than resolving.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+
+    response = user_client.delete(group_delete_url(tag.id, course_level.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["archived"] is False
+    assert response.data["cascaded_group_count"] == 1
+    assert response.data["cascaded_criteria_count"] == 0
+    assert not CompetencyCriteriaGroup.objects.filter(id=leaf.id).exists()
+
+    create_response = user_client.post(
+        criterion_create_url(tag.id),
+        {"object_id": usage_key(course_run, "p1"), "group_id": leaf.id},
+        format="json",
+    )
+
+    assert create_response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_group_archive_200s_with_archived_true(
+    user_client: APIClient, *, user, tag: Tag, course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    Deleting a group whose criterion a learner status row references 200s, archives the
+    subtree, and reports archived=true.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    response = user_client.delete(group_delete_url(tag.id, leaf.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {
+        "id": leaf.id, "archived": True, "cascaded_group_count": 0, "cascaded_criteria_count": 1,
+    }
+    leaf.refresh_from_db()
+    assert leaf.archived is True
+
+
+def test_group_repeat_delete_on_an_archived_group_is_idempotent_200(
+    user_client: APIClient, *, user, tag: Tag, course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """A second DELETE against an already-archived group subtree still 200s with the same body."""
+    leaf = _create_leaf_group(tag, course_run)
+    object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    url = group_delete_url(tag.id, leaf.id)
+    user_client.delete(url)
+
+    response = user_client.delete(url)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {
+        "id": leaf.id, "archived": True, "cascaded_group_count": 0, "cascaded_criteria_count": 1,
+    }
+
+
+def test_group_repeat_delete_on_a_child_archived_only_because_a_sibling_had_status_is_200_archived(
+    user_client: APIClient, *, user, tag: Tag, course_run: CourseRun,
+    default_rule_profile: CompetencyRuleProfile, now: datetime,
+) -> None:
+    """
+    Deleting a parent group archives every child, including one with no learner status of its own.
+    A DELETE on that child then 200s with archived=true and leaves the child, its criterion, and the
+    criterion's ObjectTag in place, archived.
+    """
+    leaf_a = _create_leaf_group(tag, course_run)
+    parent = leaf_a.parent
+    assert parent is not None
+    leaf_b = CompetencyCriteriaGroup.objects.create(tag=tag, parent=parent)
+    criteria = []
+    object_tags = []
+    for leaf, key in ((leaf_a, "a"), (leaf_b, "b")):
+        object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, key), taxonomy=tag.taxonomy, tag=tag)
+        object_tags.append(object_tag)
+        criteria.append(
+            CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+        )
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=criteria[0], status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+    assert user_client.delete(group_delete_url(tag.id, parent.id)).data["archived"] is True
+
+    response = user_client.delete(group_delete_url(tag.id, leaf_b.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == {
+        "id": leaf_b.id, "archived": True, "cascaded_group_count": 0, "cascaded_criteria_count": 1,
+    }
+    for node in (parent, leaf_b, criteria[1]):
+        node.refresh_from_db()
+        assert node.archived is True
+    assert ObjectTag.objects.filter(id=object_tags[1].id).exists()
+
+
+def test_group_unknown_group_id_404s(user_client: APIClient, tag: Tag) -> None:
+    """A group_id with no matching row 404s."""
+    response = user_client.delete(group_delete_url(tag.id, 999999))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_group_tag_id_mismatch_404s(
+    user_client: APIClient, competency_taxonomy: CompetencyTaxonomy, tag: Tag, course_run: CourseRun,
+) -> None:
+    """A group that exists, but under a different competency tag than the URL names, 404s."""
+    leaf = _create_leaf_group(tag, course_run)
+    other_tag = Tag.objects.create(taxonomy=competency_taxonomy, value="Other Competency")
+
+    response = user_client.delete(group_delete_url(other_tag.id, leaf.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_group_delete_no_permission_is_403(
+    user_client: APIClient, tag: Tag, organization: Organization, object_tag: ObjectTag,
+    default_rule_profile: CompetencyRuleProfile,
+) -> None:
+    """A caller without tagging permission on the subtree's course gets a 403, and the subtree survives."""
+    unauthorized_course_run = make_course_run(organization, f"{UNAUTHORIZED_MARKER}100", "Fall2026")
+    leaf = _create_leaf_group(tag, unauthorized_course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    criterion = CompetencyCriterion.objects.create(
+        group=leaf, object_tag=object_tag, rule_profile=default_rule_profile,
+    )
+
+    response = user_client.delete(group_delete_url(tag.id, leaf.id))
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert CompetencyCriteriaGroup.objects.filter(id__in=[leaf.id, course_level.id], archived=False).count() == 2
+    assert CompetencyCriterion.objects.filter(id=criterion.id, archived=False).exists()
+    assert ObjectTag.objects.filter(id=object_tag.id).exists()
+
+
+def test_group_delete_without_taxonomy_access_is_403_and_changes_nothing(
+    user_client: APIClient, leaf: CompetencyCriteriaGroup, batch: tuple[CompetencyCriterion, CompetencyCriterion],
+) -> None:
+    """
+    A caller who may tag the course but lacks ``oel_tagging.change_objecttag_taxonomy`` for the
+    competency's taxonomy gets a 403, and the subtree is untouched. This check is the only one that can
+    refuse here, because CompetencyReadPermission does not run on DELETE.
+    """
+    course_level = leaf.parent
+    assert course_level is not None
+    perm = "oel_tagging.change_objecttag_taxonomy"
+    original = rules.permissions.permissions[perm]
+    rules.set_perm(perm, rules.always_deny)
+    try:
+        response = user_client.delete(group_delete_url(leaf.tag_id, leaf.id))
+    finally:
+        rules.set_perm(perm, original)
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert CompetencyCriteriaGroup.objects.filter(id__in=[leaf.id, course_level.id], archived=False).count() == 2
+    assert CompetencyCriterion.objects.filter(id__in=[c.id for c in batch], archived=False).count() == 2
+    assert ObjectTag.objects.filter(id__in=[c.object_tag_id for c in batch]).count() == 2
+
+
+def test_archiving_a_group_with_a_criterion_whose_stored_payload_went_invalid_is_400_and_changes_nothing(
+    user_client: APIClient, user, leaf: CompetencyCriteriaGroup,
+    batch: tuple[CompetencyCriterion, CompetencyCriterion], now: datetime,
+) -> None:
+    """
+    The archive path saves each criterion, which re-validates its rule payload. A payload that stopped
+    being valid after it was stored, here written past validation with update(), makes the DELETE a 400,
+    and nothing in the subtree is archived, including the criterion that holds the learner status.
+    """
+    course_level = leaf.parent
+    assert course_level is not None
+    CompetencyCriterion.objects.filter(pk=batch[1].pk).update(rule_payload_override={"op": "gt", "value": 75})
+    StudentCompetencyCriterionStatus.objects.create(
+        user=user, criterion=batch[0], status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    response = user_client.delete(group_delete_url(leaf.tag_id, leaf.id))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert list(response.json()) == ["__all__"]
+    assert not CompetencyCriteriaGroup.objects.filter(id__in=[leaf.id, course_level.id], archived=True).exists()
+    assert not CompetencyCriterion.objects.filter(id__in=[c.id for c in batch], archived=True).exists()
+
+
+def test_group_delete_of_a_group_gone_by_the_time_of_the_call_is_404(
+    user_client: APIClient, tag: Tag, course_run: CourseRun,
+) -> None:
+    """A group removed between the view's lookup and the API call is a 404, not a 500."""
+    leaf = _create_leaf_group(tag, course_run)
+
+    with mock.patch(
+        "openedx_learning.applets.cbe.rest_api.v1.views.delete_or_archive_competency_criteria_group",
+        side_effect=CompetencyCriteriaGroup.DoesNotExist,
+    ):
+        response = user_client.delete(group_delete_url(tag.id, leaf.id))
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_group_delete_maps_a_validation_error_from_the_api_to_400(
+    user_client: APIClient, tag: Tag, course_run: CourseRun,
+) -> None:
+    """A Django ValidationError raised by the API function becomes a 400 keyed by its field."""
+    leaf = _create_leaf_group(tag, course_run)
+
+    with mock.patch(
+        "openedx_learning.applets.cbe.rest_api.v1.views.delete_or_archive_competency_criteria_group",
+        side_effect=ValidationError({"group_id": "x"}),
+    ):
+        response = user_client.delete(group_delete_url(tag.id, leaf.id))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "group_id" in response.json()
+
+
+def test_group_delete_whose_error_is_not_a_learner_race_on_the_subtree_is_a_retryable_409(
+    user_client: APIClient, user, tag: Tag, course_run: CourseRun, now: datetime,
+) -> None:
+    """
+    A status that reaches an ancestor group during the delete makes the DELETE fail outside the target
+    subtree. The view answers a 409 telling the caller to retry, and nothing is deleted or archived.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=course_level, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
+    )
+
+    with mock.patch.object(cbe_api, "_group_has_learner_progress", return_value=False):
+        response = user_client.delete(group_delete_url(tag.id, leaf.id))
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert str(response.data["detail"]) == "The delete conflicted with a concurrent change. Retry the DELETE."
+    assert CompetencyCriteriaGroup.objects.filter(id__in=[leaf.id, course_level.id], archived=False).count() == 2
+
+
+@pytest.fixture(name="checked_object_ids")
+def _checked_object_ids(_allow_object_level_tagging: None) -> Generator[list[str], None, None]:
+    """Record every object_id the object-level tagging predicate is asked about, then defer to it."""
+    perm = "oel_tagging.change_objecttag_objectid"
+    allowing = rules.permissions.permissions[perm]
+    seen: list[str] = []
+
+    def _recording_predicate(user, object_id: str) -> bool:
+        seen.append(object_id)
+        return allowing.test(user, object_id)
+
+    rules.set_perm(perm, _recording_predicate)
+    yield seen
+    rules.set_perm(perm, allowing)
+
+
+def test_group_delete_checks_permission_against_a_course_level_groups_own_course(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, checked_object_ids: list[str],
+) -> None:
+    """A course-level target group is checked against its own course's key."""
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+
+    response = user_client.delete(group_delete_url(tag.id, course_level.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert checked_object_ids == [str(course_run.course_key)]
+
+
+def test_group_delete_checks_permission_against_the_parents_course_for_a_leaf_group(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, checked_object_ids: list[str],
+) -> None:
+    """A leaf target group, which has no course of its own, is checked against its parent's course key."""
+    leaf = _create_leaf_group(tag, course_run)
+
+    response = user_client.delete(group_delete_url(tag.id, leaf.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert checked_object_ids == [str(course_run.course_key)]
+
+
+def test_group_root_target_is_400_before_any_permission_check_or_write(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, checked_object_ids: list[str],
+) -> None:
+    """
+    A root group_id is rejected with a 400 that says root groups cannot be targeted, before the
+    permission predicate runs, and nothing under it changes.
+    """
+    leaf = _create_leaf_group(tag, course_run)
+    course_level = leaf.parent
+    assert course_level is not None
+    root = course_level.parent
+    assert root is not None
+
+    response = user_client.delete(group_delete_url(tag.id, root.id))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert [str(message) for message in response.data["group_id"]] == [
+        "group_id must not reference a root CompetencyCriteriaGroup."
+    ]
+    assert not checked_object_ids
+    assert set(
+        CompetencyCriteriaGroup.objects.filter(archived=False).values_list("id", flat=True)
+    ) == {root.id, course_level.id, leaf.id}
+
+
+@pytest.mark.parametrize("depth", [2, 3])
+def test_group_delete_checks_permission_against_the_course_level_ancestor_at_any_depth(
+    user_client: APIClient, tag: Tag, course_run: CourseRun, checked_object_ids: list[str], depth: int,
+) -> None:
+    """A target nested `depth` levels below its course-level group is checked against that course and deleted."""
+    course_level = _create_leaf_group(tag, course_run).parent
+    assert course_level is not None
+    target = course_level
+    for _ in range(depth):
+        target = CompetencyCriteriaGroup.objects.create(tag=tag, parent=target)
+
+    response = user_client.delete(group_delete_url(tag.id, target.id))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data["archived"] is False
+    assert checked_object_ids == [str(course_run.course_key)]
+    assert not CompetencyCriteriaGroup.objects.filter(id=target.id).exists()
+
+
+def test_group_with_no_course_level_group_in_its_lineage_is_400_before_any_permission_check_or_write(
+    user_client: APIClient, tag: Tag, checked_object_ids: list[str],
+) -> None:
+    """A non-root group with no course above it is invalid data: a 400, with no permission check and no write."""
+    root = CompetencyCriteriaGroup.objects.create(tag=tag)
+    middle = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
+    target = CompetencyCriteriaGroup.objects.create(tag=tag, parent=middle)
+
+    response = user_client.delete(group_delete_url(tag.id, target.id))
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "group_id" in response.data
+    assert not checked_object_ids
+    assert set(
+        CompetencyCriteriaGroup.objects.filter(archived=False).values_list("id", flat=True)
+    ) == {root.id, middle.id, target.id}

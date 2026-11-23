@@ -3,9 +3,9 @@
 This module provides functions to manage sections.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
 
 from ..containers import api as containers_api
 from ..containers.models import ContainerVersion

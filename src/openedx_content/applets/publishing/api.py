@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from functools import partial
-from typing import ContextManager, Optional, cast
+from typing import ContextManager, cast
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
@@ -238,15 +238,7 @@ def create_publishable_entity_version(
             created_by_id=created_by,
         )
         if dependencies:
-            # Validate that dependencies are from the same learning package:
-            if (
-                PublishableEntity.objects.filter(id__in=dependencies)
-                .exclude(learning_package_id=version.entity.learning_package_id)
-                .exists()
-            ):
-                raise ValidationError("Dependencies must be from the same learning package")
-            # Store dependencies:
-            set_version_dependencies(version.id, dependencies)
+            _set_version_dependencies(version.id, entity_id, dependencies)
 
         set_draft_version(
             entity_id,
@@ -308,17 +300,80 @@ def set_version_dependencies(
        code will still work if you build from the top-down, but we'll end up
        doing many redundant re-calculations, since every change to a lower layer
        will cause recalculation to the higher levels that depend on it.
-    3. Do not create circular dependencies.
+    3. Do not create circular dependencies. A ValidationError is raised if the
+       new dependencies would create a cycle through the current draft or
+       published versions of the referenced entities.
+    4. Dependencies must be in the same LearningPackage as the version's
+       entity. A ValidationError is raised otherwise.
     """
+    entity_id = PublishableEntityVersion.objects.values_list("entity_id", flat=True).get(pk=version_id)
+    _set_version_dependencies(version_id, entity_id, dependencies)
+
+
+def _set_version_dependencies(
+    version_id: int,  # PublishableEntityVersion.id
+    entity_id: PublishableEntity.ID,  # The entity that version_id belongs to
+    dependencies: list[PublishableEntity.ID],
+) -> None:
+    """
+    Implementation of set_version_dependencies(), for callers that already
+    know the version's entity_id and can save a query.
+    """
+    dependency_set = set(dependencies)  # dependencies have no ordering
+
+    # Dependencies must be from the same learning package. Side-effect
+    # propagation follows dependencies, so a cross-package dependency would
+    # write log records into the wrong package's logs.
+    entity_lp_id = PublishableEntity.objects.filter(id=entity_id).values("learning_package_id")
+    if (
+        PublishableEntity.objects.filter(id__in=dependency_set)
+        .exclude(learning_package_id=Subquery(entity_lp_id))
+        .exists()
+    ):
+        raise ValidationError("Dependencies must be from the same learning package")
+
+    _validate_no_dependency_cycles(entity_id, dependency_set)
     PublishableEntityVersionDependency.objects.bulk_create(
         [
             PublishableEntityVersionDependency(
                 referring_version_id=version_id,
                 referenced_entity_id=dep_entity_id,
             )
-            for dep_entity_id in set(dependencies)  # dependencies have no ordering
+            for dep_entity_id in dependency_set
         ],
     )
+
+
+def _validate_no_dependency_cycles(
+    entity_id: PublishableEntity.ID,
+    dependencies: set[PublishableEntity.ID],
+) -> None:
+    """
+    Raise ValidationError if making ``entity_id`` depend on ``dependencies``
+    would create a cycle.
+
+    We crawl the dependency graph one layer at a time, starting from the
+    proposed dependencies and following the dependencies of each entity's
+    current Draft and Published versions (the same relationships that side-
+    effect propagation follows). If we ever get back to ``entity_id``, there's a
+    cycle.
+    """
+    visited: set[PublishableEntity.ID] = set()
+    frontier = set(dependencies)
+    while frontier:
+        if entity_id in frontier:
+            raise ValidationError(
+                f"Cannot set dependencies of entity {entity_id}: doing so would create a dependency cycle."
+            )
+        visited |= frontier
+        draft_version_ids = Draft.objects.filter(entity_id__in=frontier).values("version_id")
+        published_version_ids = Published.objects.filter(entity_id__in=frontier).values("version_id")
+        frontier = set(
+            PublishableEntityVersionDependency.objects.filter(
+                Q(referring_version_id__in=draft_version_ids)
+                | Q(referring_version_id__in=published_version_ids)
+            ).values_list("referenced_entity_id", flat=True)
+        ) - visited
 
 
 def get_publishable_entity(publishable_entity_id: PublishableEntity.ID, /) -> PublishableEntity:
@@ -431,36 +486,67 @@ def publish_all_drafts(
 
 
 def _get_dependencies_with_unpublished_changes(
-    draft_qset: QuerySet[Draft]
-) -> list[QuerySet[Draft]]:
+    direct_drafts: list[Draft]
+) -> list[list[Draft]]:
     """
-    Return all dependencies to publish as a list of Draft QuerySets.
+    Return all dependencies to publish as a list of Draft lists, one per layer.
 
     This should only return the Drafts that have actual changes, not pure side-
     effects. The side-effect calculations will happen separately.
+
+    Each entity appears at most once, in the first layer it is reached in, and
+    entities in ``direct_drafts`` are never repeated as dependencies. The Drafts
+    returned have ``entity__published__version`` pre-loaded.
     """
     # First we have to do a full crawl of *all* dependencies, regardless of
     # whether they have unpublished changes or not. This is because we might
     # have a dependency-of-a-dependency that has changed somewhere down the
-    # line. Example: The draft_qset includes a Subsection. Even if the Unit
+    # line. Example: The direct_drafts include a Subsection. Even if the Unit
     # versions are still the same, there might be a changed Component that needs
     # to be published.
-    all_dependency_drafts = []
-    dependency_drafts = Draft.objects.filter(
-        entity__affects__in=draft_qset.values_list("version_id", flat=True)
-    ).distinct()
+    #
+    # Each layer is one query. We materialize the version IDs of each layer and
+    # use them to find the next layer, rather than nesting each layer's query
+    # inside the next one as a subquery.
+    #
+    # Dependencies aren't supposed to form cycles, but we can't completely
+    # prevent it. Two concurrent edits can each pass the cycle check in
+    # _set_version_dependencies(), and a draft can be reset to an old version
+    # with different dependencies. So we skip entities we've already seen
+    # (including the directly-requested ones), and only crawl onward from new
+    # ones. Otherwise a cycle would keep this loop running forever. This also
+    # means an entity reachable by more than one path (e.g. both a Unit and one
+    # of its Components were directly requested) is only crawled once.
+    #
+    # We filter out seen entities in Python rather than with an exclude() so
+    # that the query doesn't grow a NOT IN (...) of every entity crawled so far.
+    all_dependency_layers: list[list[Draft]] = []
+    seen_entity_ids: set[PublishableEntity.ID] = {draft.entity_id for draft in direct_drafts}
+    version_ids = [draft.version_id for draft in direct_drafts if draft.version_id is not None]
+    while version_ids:
+        dependency_drafts = [
+            draft
+            for draft in (
+                Draft.objects
+                     .filter(entity__affects__in=version_ids)
+                     .select_related("entity__published__version")
+                     .distinct()
+                     .order_by("pk")
+            )
+            if draft.entity_id not in seen_entity_ids
+        ]
+        if not dependency_drafts:
+            break
+        all_dependency_layers.append(dependency_drafts)
+        seen_entity_ids.update(draft.entity_id for draft in dependency_drafts)
+        version_ids = [draft.version_id for draft in dependency_drafts if draft.version_id is not None]
 
-    while dependency_drafts:
-        all_dependency_drafts.append(dependency_drafts)
-        dependency_drafts = Draft.objects.filter(
-            entity__affects__in=dependency_drafts.all().values_list("version_id", flat=True)
-        ).distinct()
-
-    unpublished_dependency_drafts = [
-        dependency_drafts_qset.all().with_unpublished_changes()
-        for dependency_drafts_qset in all_dependency_drafts
+    # We fetched every dependency above (so that we could keep crawling), but we
+    # only publish the ones that have actually changed.
+    return [
+        [draft for draft in layer if draft.has_unpublished_changes()]
+        for layer in all_dependency_layers
     ]
-    return unpublished_dependency_drafts
 
 
 def publish_from_drafts(
@@ -487,13 +573,20 @@ def publish_from_drafts(
         published_at = datetime.now(tz=timezone.utc)
 
     with atomic():
+        # Materialize the directly-requested Drafts once. We need the full rows
+        # to build the PublishLogRecords anyway, and this also gives us the set
+        # of direct Draft IDs (and their version IDs, for dependency expansion)
+        # without separate queries.
+        direct_drafts = list(draft_qset.select_related("entity__published__version"))
+        direct_draft_ids = {draft.pk for draft in direct_drafts}
+
         if publish_dependencies:
-            dependency_drafts_qsets = _get_dependencies_with_unpublished_changes(draft_qset)
+            dependency_draft_layers = _get_dependencies_with_unpublished_changes(direct_drafts)
         else:
-            dependency_drafts_qsets = []
+            dependency_draft_layers = []
             # Validation: check that all dependencies have been published already.
             if Draft.objects.filter(
-                entity__affects__in=draft_qset.values_list("version_id", flat=True),
+                entity__affects__in=[draft.version_id for draft in direct_drafts if draft.version_id is not None],
                 entity__published=None,
             ).exists():
                 raise ValidationError("Cannot publish entities that have unpublished dependencies.")
@@ -508,20 +601,11 @@ def publish_from_drafts(
         publish_log.full_clean()
         publish_log.save(force_insert=True)
 
-        # Materialize the directly-requested Drafts once. We need the full rows
-        # to build the PublishLogRecords anyway, and this also gives us the set
-        # of direct Draft IDs without a separate query.
-        direct_drafts = list(draft_qset.select_related("entity__published__version"))
-        direct_draft_ids = {draft.pk for draft in direct_drafts}
-
-        # We're intentionally avoiding union() here because Django ORM unions
-        # introduce cumbersome restrictions (can only union once, can't
-        # select_related on it after, the extra rows must be exactly compatible
-        # in unioned qsets, etc.) Instead, we're going to have one queryset per
-        # dependency layer.
-        all_draft_groups: list[list[Draft] | QuerySet[Draft]] = [
+        # We process the Drafts one layer at a time: first the ones that were
+        # directly requested, then each layer of their dependencies.
+        all_draft_groups: list[list[Draft]] = [
             direct_drafts,
-            *dependency_drafts_qsets,  # one QuerySet per layer of dependencies
+            *dependency_draft_layers,  # one list per layer of dependencies
         ]
 
         # Walk all the Drafts to publish, in order, and build up the list of
@@ -616,7 +700,7 @@ def get_draft_version(
     if isinstance(publishable_entity_or_id, PublishableEntity):
         # Fetches the draft version for a given PublishableEntity.
         # Gracefully handles cases where no draft is present.
-        draft: Optional[Draft] = getattr(publishable_entity_or_id, "draft", None)
+        draft: Draft | None = getattr(publishable_entity_or_id, "draft", None)
         if draft is None:
             return None
         return draft.version
@@ -646,7 +730,7 @@ def get_published_version(
     if isinstance(publishable_entity_or_id, PublishableEntity):
         # Fetches the published version for a given PublishableEntity.
         # Gracefully handles cases where no published version is present.
-        published: Optional[Published] = getattr(publishable_entity_or_id, "published", None)
+        published: Published | None = getattr(publishable_entity_or_id, "published", None)
         if published is None:
             return None
         return published.version

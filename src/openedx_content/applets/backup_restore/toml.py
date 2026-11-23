@@ -3,7 +3,7 @@ TOML serialization for learning packages and publishable entities.
 """
 
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any
 
 import tomlkit
 from django.contrib.auth.models import User as UserType  # pylint: disable=imported-auth-user
@@ -239,7 +239,7 @@ def parse_learning_package_toml(content: str) -> dict:
     """
     Parse the learning package TOML content and return a dict of its fields.
     """
-    lp_data: Dict[str, Any] = tomlkit.parse(content)
+    lp_data: dict[str, Any] = tomlkit.parse(content)
     return lp_data
 
 
@@ -247,7 +247,7 @@ def parse_publishable_entity_toml(content: str) -> dict:
     """
     Parse the publishable entity TOML file and return a dict of its fields.
     """
-    pe_data: Dict[str, Any] = tomlkit.parse(content)
+    pe_data: dict[str, Any] = tomlkit.parse(content)
     return pe_data
 
 
@@ -255,5 +255,5 @@ def parse_collection_toml(content: str) -> dict:
     """
     Parse the collection TOML content and return a dict of its fields.
     """
-    collection_data: Dict[str, Any] = tomlkit.parse(content)
+    collection_data: dict[str, Any] = tomlkit.parse(content)
     return collection_data
