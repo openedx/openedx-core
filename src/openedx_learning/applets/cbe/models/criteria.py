@@ -121,8 +121,30 @@ class CompetencyCriteriaGroup(models.Model):
         ),
     )
 
-    # scope_code is derived bookkeeping; tag and parent, which it derives from, are already tracked.
-    history = HistoricalRecords(excluded_fields=["scope_code"])
+    # Derived in save() when the group is created, so a write that skips save() (QuerySet.update(), raw SQL)
+    # can leave a stale value, and a scoped read may then omit the group. A never-set (NULL) value, from
+    # bulk_create() or a fixture load, only costs extra loaded rows. SET_NULL because `course` and `parent`
+    # already decide what deleting a course run removes; a null value only makes a scoped read load the
+    # group and place it by its parent chain.
+    subtree_course = models.ForeignKey(
+        CourseRun,
+        null=True,
+        blank=True,
+        editable=False,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text=_(
+            "The course of the course-scoped subtree this group belongs to: the course-level group's own "
+            "course, inherited by every group below it. Null for groups above any course."
+        ),
+    )
+
+    # Declared so pylint accepts save() assigning the foreign key's attname.
+    subtree_course_id: CourseRun.ID | None
+
+    # scope_code and subtree_course are derived bookkeeping; tag, parent and course, which they derive from,
+    # are already tracked.
+    history = HistoricalRecords(excluded_fields=["scope_code", "subtree_course"])
 
     class Meta:
         indexes = [
@@ -182,9 +204,39 @@ class CompetencyCriteriaGroup(models.Model):
             return None
         return f"tag:{self.tag_id}"
 
+    def _derive_subtree_course_id(self) -> CourseRun.ID | None:
+        """
+        Return the subtree course for a group being created, or raise ValidationError for a nested course group.
+
+        The value is this group's own course, else its parent's subtree course, else None.
+        """
+        parent_subtree_course_id = None
+        if self.parent_id is not None:
+            if "parent" in self._state.fields_cache:
+                parent_subtree_course_id = self.parent.subtree_course_id if self.parent is not None else None
+            else:
+                parent_subtree_course_id = (
+                    CompetencyCriteriaGroup.objects.filter(pk=self.parent_id)
+                    .values_list("subtree_course_id", flat=True)
+                    .first()
+                )
+        if self.course_id is not None:
+            if parent_subtree_course_id is not None:
+                raise ValidationError(
+                    _("A CompetencyCriteriaGroup with its own course cannot be created inside a course-scoped subtree.")
+                )
+            return self.course_id
+        return parent_subtree_course_id
+
     def save(self, *args, **kwargs):
-        """Reject a moved or re-tagged group, then set scope_code; tag and parent are fixed, so the code is too."""
+        """
+        Reject a moved or re-tagged group, then set scope_code and, on creation, subtree_course.
+
+        Creating a group with its own course inside a course-scoped subtree raises ValidationError.
+        """
         self._check_tree_position_immutable()
+        if self._state.adding:
+            self.subtree_course_id = self._derive_subtree_course_id()
         self.scope_code = self._compute_scope_code()
         super().save(*args, **kwargs)
 
