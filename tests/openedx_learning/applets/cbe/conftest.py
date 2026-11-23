@@ -1,12 +1,14 @@
 """Shared fixtures for the CBE test modules: schema, deletion, tree-integration, status, and REST tests."""
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 
 import pytest
+import rules
 from django.contrib.auth import get_user_model
 from organizations.api import ensure_organization
 from organizations.models import Organization
 from rest_framework.test import APIClient
+from rules.permissions import permissions as rule_permissions
 
 from openedx_catalog.models import CatalogCourse, CourseRun
 from openedx_learning.models import (
@@ -18,6 +20,8 @@ from openedx_learning.models import (
     RuleType,
 )
 from openedx_tagging.models import ObjectTag, Tag
+
+CHANGE_OBJECTTAG_OBJECTID = "oel_tagging.change_objecttag_objectid"
 
 
 @pytest.fixture(name="organization")
@@ -159,3 +163,12 @@ def _run_when_tag_lock_is_taken(monkeypatch: pytest.MonkeyPatch) -> Callable[[Ca
         monkeypatch.setattr(Tag.objects, "select_for_update", _select_for_update)
 
     return _install
+
+
+@pytest.fixture(name="allow_object_level_tagging")
+def _allow_object_level_tagging() -> Iterator[None]:
+    """Let any user tag any object, since openedx_tagging leaves the real check to openedx-platform."""
+    original = rule_permissions[CHANGE_OBJECTTAG_OBJECTID]
+    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, lambda _user, _object_id: True)
+    yield
+    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, original)

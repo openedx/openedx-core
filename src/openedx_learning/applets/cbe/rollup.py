@@ -31,7 +31,11 @@ __all__ = ["combine_children", "combine_parent_competency_status", "roll_up_comp
 
 
 def _combine_and(child_statuses: Sequence[MasteryStatus | None]) -> MasteryStatus:
-    """Return an AND group's status: demonstrated when every child is, not demonstrated when any child is."""
+    """
+    Return an AND group's status, given at least one child with a status, which ``combine_children`` checks.
+
+    It is demonstrated when every child is, else not demonstrated when any child is, else partially attempted.
+    """
     if all(status == MasteryStatus.DEMONSTRATED for status in child_statuses):
         return MasteryStatus.DEMONSTRATED
     if MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED in child_statuses:
@@ -40,7 +44,11 @@ def _combine_and(child_statuses: Sequence[MasteryStatus | None]) -> MasteryStatu
 
 
 def _combine_or(child_statuses: Sequence[MasteryStatus | None]) -> MasteryStatus:
-    """Return an OR group's status: demonstrated when any child is, not demonstrated when every child is."""
+    """
+    Return an OR group's status, given at least one child with a status, which ``combine_children`` checks.
+
+    It is demonstrated when any child is, else not demonstrated when every child is, else partially attempted.
+    """
     if MasteryStatus.DEMONSTRATED in child_statuses:
         return MasteryStatus.DEMONSTRATED
     if all(status == MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED for status in child_statuses):
@@ -172,7 +180,7 @@ def _roll_up_group(
     """
     if not group.archived:
         _raise_group_status(user_id, group.pk, combine_children(group.logic_operator, child_statuses), now)
-    # The stored status can be higher than this recomputation, and the competency has to match it.
+    # The stored status can be higher than this recomputation, and the competency is raised to at least the stored one.
     if group.parent_id is None:
         _raise_competency_from_root(user_id, group, now)
 
@@ -203,17 +211,17 @@ def _roll_up_groups(user_id: int, group_ids: set[int], now: datetime) -> set[int
     Returns the ids of the competency tags whose root group was reached.
     """
     competency_tag_ids: set[int] = set()
-    level = set(group_ids)
-    while level:
-        groups = _roll_up_group_level(user_id, level, now)
+    group_level = set(group_ids)
+    while group_level:
+        groups = _roll_up_group_level(user_id, group_level, now)
         competency_tag_ids |= _competency_tag_ids(groups)
-        level = _parent_group_ids(groups)
+        group_level = _parent_group_ids(groups)
     return competency_tag_ids
 
 
 def _own_criteria_statuses(user_id: int, tag_ids: set[int]) -> dict[int, MasteryStatus]:
     """Return each tag's own criteria result: its best root-group status, for tags that have an attempted root."""
-    # Archived roots are counted because the walk raises a competency's row from an archived root's stored status.
+    # Archived roots count too: a status earned through the competency's own criteria counts after its root is archived.
     rows = (
         StudentCompetencyCriteriaGroupStatus.objects.filter(
             user_id=user_id, group__tag_id__in=tag_ids, group__parent__isnull=True,
@@ -225,61 +233,62 @@ def _own_criteria_statuses(user_id: int, tag_ids: set[int]) -> dict[int, Mastery
     return {tag_id: _competency_level(MasteryStatus(best)) for tag_id, best in rows}
 
 
-def _sub_competency_status(child_ids: list[int], competency_status: dict[int, int]) -> MasteryStatus | None:
+def _sub_competency_status(child_tag_ids: list[int], competency_status: dict[int, int]) -> MasteryStatus | None:
     """Return DEMONSTRATED if every sub-competency is, PARTIALLY_ATTEMPTED if any has a status, else None."""
-    statuses = [competency_status[child_id] for child_id in child_ids if child_id in competency_status]
+    statuses = [competency_status[child_tag_id] for child_tag_id in child_tag_ids if child_tag_id in competency_status]
     if not statuses:
         return None
-    if len(statuses) == len(child_ids) and all(status == MasteryStatus.DEMONSTRATED for status in statuses):
+    if len(statuses) == len(child_tag_ids) and all(status == MasteryStatus.DEMONSTRATED for status in statuses):
         return MasteryStatus.DEMONSTRATED
     return MasteryStatus.PARTIALLY_ATTEMPTED
 
 
-def _parent_ids(tag_ids: set[int]) -> set[int]:
+def _parent_tag_ids(tag_ids: set[int]) -> set[int]:
     """Return the ids of the parents of the tags in ``tag_ids``."""
     return set(Tag.objects.filter(pk__in=tag_ids, parent_id__isnull=False).values_list("parent_id", flat=True))
 
 
-def _child_ids_by_parent(parent_ids: set[int]) -> dict[int, list[int]]:
+def _child_tag_ids_by_parent_tag(parent_tag_ids: set[int]) -> dict[int, list[int]]:
     """Return, per parent tag, the ids of its direct child tags."""
     children: dict[int, list[int]] = {}
-    for child_id, parent_id in Tag.objects.filter(parent_id__in=parent_ids).values_list("pk", "parent_id"):
-        children.setdefault(parent_id, []).append(child_id)
+    for child_tag_id, parent_tag_id in Tag.objects.filter(parent_id__in=parent_tag_ids).values_list("pk", "parent_id"):
+        children.setdefault(parent_tag_id, []).append(child_tag_id)
     return children
 
 
-def _child_competency_statuses(user_id: int, parent_ids: set[int]) -> dict[int, int]:
-    """Return the learner's stored competency status for each child tag of ``parent_ids`` that has one."""
+def _child_competency_statuses(user_id: int, parent_tag_ids: set[int]) -> dict[int, int]:
+    """Return the learner's stored competency status for each child tag of ``parent_tag_ids`` that has one."""
     return dict(
-        StudentCompetencyStatus.objects.filter(user_id=user_id, tag__parent_id__in=parent_ids).values_list(
+        StudentCompetencyStatus.objects.filter(user_id=user_id, tag__parent_id__in=parent_tag_ids).values_list(
             "tag_id", "status_id",
         )
     )
 
 
-def _roll_up_parent_level(user_id: int, parent_ids: set[int], now: datetime) -> None:
-    """Recompute each competency in ``parent_ids`` from its own criteria and its direct sub-competencies."""
-    child_ids = _child_ids_by_parent(parent_ids)
-    child_statuses = _child_competency_statuses(user_id, parent_ids)
-    own_statuses = _own_criteria_statuses(user_id, parent_ids)
-    for parent_id in sorted(parent_ids):
+def _roll_up_parent_level(user_id: int, parent_tag_ids: set[int], now: datetime) -> None:
+    """Recompute each competency in ``parent_tag_ids`` from its own criteria and its direct sub-competencies."""
+    child_tag_ids = _child_tag_ids_by_parent_tag(parent_tag_ids)
+    child_statuses = _child_competency_statuses(user_id, parent_tag_ids)
+    own_statuses = _own_criteria_statuses(user_id, parent_tag_ids)
+    for parent_tag_id in sorted(parent_tag_ids):
         status = combine_parent_competency_status(
-            own_statuses.get(parent_id), _sub_competency_status(child_ids.get(parent_id, []), child_statuses),
+            own_statuses.get(parent_tag_id),
+            _sub_competency_status(child_tag_ids.get(parent_tag_id, []), child_statuses),
         )
-        _raise_competency_status(user_id, parent_id, status, now)
+        _raise_competency_status(user_id, parent_tag_id, status, now)
 
 
 def _roll_up_parent_tags(user_id: int, tag_ids: set[int], now: datetime) -> None:
     """Recompute the parent of each tag in ``tag_ids``, then its parent, one level at a time, up to the top."""
-    level = set(tag_ids)
+    tag_level = set(tag_ids)
     # The depth cap bounds the walk to a few iterations, and a tag's parents stay in its own taxonomy.
     for _ in range(TAXONOMY_MAX_DEPTH):
-        level = _parent_ids(level)
-        if not level:
+        tag_level = _parent_tag_ids(tag_level)
+        if not tag_level:
             return
-        _roll_up_parent_level(user_id, level, now)
+        _roll_up_parent_level(user_id, tag_level, now)
     # Tag.save() enforces the cap, so only a tree built around it can still have parents here.
-    pending = _parent_ids(level)
+    pending = _parent_tag_ids(tag_level)
     if pending:
         log.error(
             "Competency rollup for user %s stopped at the taxonomy depth cap; parent tags %s were not recomputed",
@@ -305,7 +314,9 @@ def roll_up_competency_statuses(*, user_id: int, object_ids: Sequence[str]) -> N
         )
     if not object_ids:
         return
-    # Not filtered on archived: naming an archived criterion's object recomputes its group from non-archived children.
+    # Not filtered on archived: this query only picks the groups the walk starts from, and what counts is filtered
+    # per level. Starting from an archived criterion's group lets a recomputation reach a fully archived tree, so its
+    # competency still gets the root's stored status.
     group_ids = set(
         CompetencyCriterion.objects.filter(
             object_tag__object_id__in=list(set(object_ids)),

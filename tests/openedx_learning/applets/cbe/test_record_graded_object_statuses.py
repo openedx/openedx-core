@@ -3,16 +3,13 @@ Tests for `record_graded_object_statuses`, exercising each acceptance-criteria s
 leaf-level competency status recording.
 """
 import logging
-from collections.abc import Iterator
 from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
-import rules
 from django.db import DatabaseError, transaction
 from django.db.transaction import TransactionManagementError
 from freezegun import freeze_time
-from rules.permissions import permissions as rule_permissions
 
 from openedx_catalog.models import CatalogCourse, CourseRun
 from openedx_learning.api import (
@@ -32,8 +29,6 @@ from openedx_learning.models import (
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
 pytestmark = pytest.mark.django_db
-
-CHANGE_OBJECTTAG_OBJECTID = "oel_tagging.change_objecttag_objectid"
 
 
 def _make_criterion(
@@ -60,15 +55,6 @@ def _criterion(
 ) -> CompetencyCriterion:
     """A leaf CompetencyCriterion directly under the root `group`, using the seeded default profile."""
     return _make_criterion(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
-
-
-@pytest.fixture(name="allow_object_level_tagging")
-def _allow_object_level_tagging() -> Iterator[None]:
-    """Let any user tag any object, since openedx_tagging leaves the real check to openedx-platform."""
-    original = rule_permissions[CHANGE_OBJECTTAG_OBJECTID]
-    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, lambda _user, _object_id: True)
-    yield
-    rules.set_perm(CHANGE_OBJECTTAG_OBJECTID, original)
 
 
 @pytest.fixture(name="rule_profile_75")

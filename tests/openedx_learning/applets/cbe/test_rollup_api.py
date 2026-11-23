@@ -12,7 +12,8 @@ from django.db.transaction import TransactionManagementError
 from django.test.utils import CaptureQueriesContext
 from freezegun import freeze_time
 
-from openedx_learning.api import roll_up_competency_statuses
+from openedx_catalog.models import CatalogCourse, CourseRun
+from openedx_learning.api import delete_or_archive_competency_criteria_group, roll_up_competency_statuses
 from openedx_learning.applets.cbe import rollup
 from openedx_learning.models import (
     CompetencyCriteriaGroup,
@@ -37,12 +38,15 @@ NOT_DEMONSTRATED = MasteryStatus.ATTEMPTED_NOT_DEMONSTRATED
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 ASSIGNMENT_1 = "block-v1:Org1+Python100+Fall2026+problem+a1"
 ASSIGNMENT_2 = "block-v1:Org1+Python100+Fall2026+problem+a2"
+COURSE_B_ASSIGNMENT = "block-v1:Org1+Python200+Fall2026+problem+b1"
 
 
-def _make_group(tag: Tag, *, parent=None, logic_operator=None, archived: bool = False) -> CompetencyCriteriaGroup:
+def _make_group(
+    tag: Tag, *, parent=None, logic_operator=None, archived: bool = False, course: CourseRun | None = None,
+) -> CompetencyCriteriaGroup:
     """Create a criteria group; a null operator is how real root and course-level groups are stored."""
     return CompetencyCriteriaGroup.objects.create(
-        tag=tag, parent=parent, logic_operator=logic_operator, archived=archived,
+        tag=tag, parent=parent, logic_operator=logic_operator, archived=archived, course=course,
     )
 
 
@@ -479,6 +483,10 @@ def test_an_archived_branch_no_longer_has_to_be_completed(user, tag, default_rul
 
 
 def test_an_or_group_whose_only_demonstrated_route_is_archived_is_not_demonstrated(user, tag, or_tree) -> None:
+    """
+    The sequence is deliberately unrealistic: in production a rollup after the grade would already have stored
+    DEMONSTRATED on the root before the archive. It shows that an archived route counts as no route.
+    """
     _record(user, or_tree.first, DEMONSTRATED)
     _archive(or_tree.route_1)
     _archive(or_tree.first)
@@ -531,14 +539,16 @@ def test_a_recorded_unmet_group_status_is_kept_when_its_only_attempted_requireme
 
 
 def test_a_previously_demonstrated_requirement_changes_nothing_until_the_rollup_runs(user, tag, and_tree) -> None:
+    """The second rollup runs for the remaining requirement's content and stands in for an operator recomputation."""
     _record(user, and_tree.first, DEMONSTRATED)
     _record(user, and_tree.second, NOT_DEMONSTRATED)
     _roll_up(user, ASSIGNMENT_1, ASSIGNMENT_2)
     assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
 
     _archive(and_tree.second)
+    assert _group_status(user, and_tree.leaf) == NOT_DEMONSTRATED
 
-    _roll_up(user, ASSIGNMENT_2)
+    _roll_up(user, ASSIGNMENT_1)
     assert _group_status(user, and_tree.leaf) == DEMONSTRATED
     assert _competency_status(user, tag) == DEMONSTRATED
 
@@ -546,6 +556,10 @@ def test_a_previously_demonstrated_requirement_changes_nothing_until_the_rollup_
 def test_an_archived_root_group_writes_neither_its_own_nor_the_competency_status(
     user, tag, default_rule_profile,
 ) -> None:
+    """
+    A live group under an archived one is a state the system is not expected to produce. The test proves that an
+    archived group is not recomputed if the rollup ever meets one.
+    """
     root = _make_group(tag, archived=True)
     leaf = _make_group(tag, parent=root, logic_operator=LogicOperator.AND)
     criterion = _make_criterion(leaf, ASSIGNMENT_1, default_rule_profile)
@@ -559,13 +573,19 @@ def test_an_archived_root_group_writes_neither_its_own_nor_the_competency_status
 
 
 def test_an_archived_root_raises_its_competency_from_the_stored_root_status(user, tag, and_tree) -> None:
-    """A rollup that stopped between the root write and the competency write is repaired after the root is archived."""
+    """
+    When the root group's status and the competency's status are out of sync, the next rollup of an associated
+    assignment brings them back in sync, even when the entire tree is archived.
+    """
     StudentCompetencyCriteriaGroupStatus.objects.create(
         user=user, group=and_tree.root, status_id=DEMONSTRATED, created=NOW, modified=NOW,
     )
     _archive(and_tree.first)
     _archive(and_tree.second)
+    _archive(and_tree.leaf)
     _archive(and_tree.root)
+    assert _group_status(user, and_tree.root) == DEMONSTRATED
+    assert _competency_status(user, tag) is None
 
     _roll_up(user, ASSIGNMENT_1)
 
@@ -576,13 +596,22 @@ def test_an_archived_root_raises_its_competency_from_the_stored_root_status(user
 def test_a_root_raises_its_competency_from_the_stored_root_status_after_the_earning_route_is_archived(
     user, tag, or_tree,
 ) -> None:
-    """A rollup that stopped between the root write and the competency write is repaired from the stored root status."""
+    """
+    Like the test above, the next rollup brings an out-of-sync competency status back in sync with its root group's
+    status, but here the root is not archived and the route that earned the root's status was archived.
+    """
     _record(user, or_tree.first, DEMONSTRATED)
+    StudentCompetencyCriteriaGroupStatus.objects.create(
+        user=user, group=or_tree.route_1, status_id=DEMONSTRATED, created=NOW, modified=NOW,
+    )
     StudentCompetencyCriteriaGroupStatus.objects.create(
         user=user, group=or_tree.root, status_id=DEMONSTRATED, created=NOW, modified=NOW,
     )
     _archive(or_tree.route_1)
+    _archive(or_tree.first)
     _record(user, or_tree.second, NOT_DEMONSTRATED)
+    assert _group_status(user, or_tree.root) == DEMONSTRATED
+    assert _competency_status(user, tag) is None
 
     _roll_up(user, ASSIGNMENT_2)
 
@@ -591,12 +620,14 @@ def test_a_root_raises_its_competency_from_the_stored_root_status_after_the_earn
 
 
 def test_the_walk_continues_past_an_archived_group_to_its_parent(user, tag, default_rule_profile) -> None:
+    """A visit that starts in an archived group still recomputes the parent, from its non-archived children only."""
     root = _make_group(tag)
     archived_leaf = _make_group(tag, parent=root, logic_operator=LogicOperator.AND, archived=True)
     live_leaf = _make_group(tag, parent=root, logic_operator=LogicOperator.AND)
     in_archived = _make_criterion(archived_leaf, ASSIGNMENT_1, default_rule_profile)
     _make_criterion(live_leaf, ASSIGNMENT_2, default_rule_profile)
     _record(user, in_archived, DEMONSTRATED)
+    # Inserted directly: a status earned through a rollup would already have raised the root, hiding a stopped walk.
     StudentCompetencyCriteriaGroupStatus.objects.create(
         user=user, group=live_leaf, status_id=DEMONSTRATED, created=NOW, modified=NOW,
     )
@@ -612,7 +643,8 @@ def test_an_archived_intermediate_group_cuts_its_live_subtree_off_from_the_root(
     user, tag, default_rule_profile,
 ) -> None:
     """
-    The archived middle group is dropped from the root's children, so the live leaf's result does not reach the root.
+    A live group under an archived one is a state the system is not expected to produce. The test proves that an
+    archived group is not recomputed if the rollup ever meets one, and is dropped from its parent's children.
     """
     root = _make_group(tag)
     middle = _make_group(tag, parent=root, logic_operator=LogicOperator.AND, archived=True)
@@ -626,3 +658,36 @@ def test_an_archived_intermediate_group_cuts_its_live_subtree_off_from_the_root(
     assert _group_status(user, middle) is None
     assert _group_status(user, root) is None
     assert _competency_status(user, tag) is None
+
+
+@pytest.mark.usefixtures("allow_object_level_tagging")
+def test_a_course_group_archived_through_the_archive_action_no_longer_holds_the_competency_back(
+    user, tag, course_run, default_rule_profile,
+) -> None:
+    """Archive a failed course's group through the real archive action, so the rollup meets the tree it leaves."""
+    course_b_run = CourseRun.objects.create(
+        catalog_course=CatalogCourse.objects.create(org=course_run.catalog_course.org, course_code="Python200"),
+        run_code="Fall2026",
+    )
+    root = _make_group(tag, logic_operator=LogicOperator.AND)
+    course_a_group = _make_group(tag, parent=root, course=course_run)
+    course_b_group = _make_group(tag, parent=root, course=course_b_run)
+    course_a_criterion = _make_criterion(course_a_group, ASSIGNMENT_1, default_rule_profile)
+    course_b_criterion = _make_criterion(course_b_group, COURSE_B_ASSIGNMENT, default_rule_profile)
+    _record(user, course_a_criterion, NOT_DEMONSTRATED)
+    _roll_up(user, ASSIGNMENT_1)
+    assert _group_status(user, root) == NOT_DEMONSTRATED
+
+    result = delete_or_archive_competency_criteria_group(course_a_group.id, user)
+
+    assert result.archived
+    course_a_group.refresh_from_db()
+    course_a_criterion.refresh_from_db()
+    assert course_a_group.archived
+    assert course_a_criterion.archived
+
+    _record(user, course_b_criterion, DEMONSTRATED)
+    _roll_up(user, COURSE_B_ASSIGNMENT)
+
+    assert _group_status(user, root) == DEMONSTRATED
+    assert _competency_status(user, tag) == DEMONSTRATED
