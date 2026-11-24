@@ -1609,23 +1609,23 @@ def test_tree_response_archived_course_keys_follow_the_course_keys_query_param(
     assert response.data["archived_course_keys"] == [str(course_run.course_key)]
 
 
-def test_deleting_the_only_rule_group_with_learner_progress_reports_its_course_run_as_archived(
+def test_deleting_the_only_leaf_group_with_learner_progress_reports_its_course_run_as_archived(
     user_client: APIClient, *, user, tag: Tag, course_run: CourseRun,
     default_rule_profile: CompetencyRuleProfile, now: datetime,
 ) -> None:
-    """Archiving the only Rule Group cascades up to its course-level group, and the tree then lists the course run."""
+    """Archiving the only leaf group cascades up to its course-level group, and the tree then lists the course run."""
     root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
     course_level = _create_course_level_group(tag, course_run, root, archived=False)
-    rule_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
+    leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
     object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
     criterion = CompetencyCriterion.objects.create(
-        group=rule_group, object_tag=object_tag, rule_profile=default_rule_profile,
+        group=leaf_group, object_tag=object_tag, rule_profile=default_rule_profile,
     )
     StudentCompetencyCriterionStatus.objects.create(
         user=user, criterion=criterion, status_id=MasteryStatus.DEMONSTRATED, created=now, modified=now,
     )
 
-    delete_response = user_client.delete(group_delete_url(tag.id, rule_group.id))
+    delete_response = user_client.delete(group_delete_url(tag.id, leaf_group.id))
 
     assert delete_response.status_code == status.HTTP_200_OK
     assert delete_response.data["archived"] is True
@@ -1635,7 +1635,7 @@ def test_deleting_the_only_rule_group_with_learner_progress_reports_its_course_r
     assert str(course_run.course_key) in response.data["archived_course_keys"]
     returned_group_ids = {group["id"] for group in response.data["groups"]}
     assert course_level.id not in returned_group_ids
-    assert rule_group.id not in returned_group_ids
+    assert leaf_group.id not in returned_group_ids
     assert criterion.id not in {c["id"] for c in response.data["criteria"]}
 
 

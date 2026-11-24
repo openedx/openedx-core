@@ -186,27 +186,28 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
     UNSTABLE: the criteria-authoring family is incomplete, so this response shape may change
     without a deprecation cycle.
 
-    Only groups whose whole ancestor chain is non-archived are returned, with their non-archived
-    criteria; see ``get_competency_criteria_tree``. Returned as two flat lists (groups, criteria)
-    for client-side reconstruction: each group carries its parent_id, and each criterion its
-    group_id. A third list, ``archived_course_keys``, holds the keys of the archived course runs.
+    Only groups in the active tree, meaning the group and all its ancestors are non-archived, are
+    returned, with their non-archived criteria; see ``get_competency_criteria_tree``. Returned as
+    two flat lists (groups, criteria) for client-side reconstruction: each group carries its
+    parent_id, and each criterion its group_id. A third list, ``archived_course_keys``, holds the
+    keys of the course runs whose rules are archived.
     An empty tree (the tag exists but nothing has been authored under it yet) is a
     valid 200 with three empty arrays; a 404 is reserved for tag resolution failure only.
 
     The optional ``course_keys`` query parameter (comma-separated course keys) scopes the tree by
     course run. A course run's groups are its course-level group and every group nested below it.
-    Omitting the parameter returns every reachable group. Supplying it returns the groups above
-    any course plus the groups of the named runs, ordered with the groups above any course first
-    and then by the order requested; keys that match no run are ignored, and an empty value
+    Omitting the parameter returns every group in the active tree. Supplying it returns the groups
+    above any course plus the groups of the named runs, ordered with the groups above any course
+    first and then by the order requested; keys that match no run are ignored, and an empty value
     returns only the groups above any course. The parameter may be supplied once. A key's branch
     and version are ignored, and a version-only or library key is a 400.
 
     ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is the number
-    under every reachable group regardless of ``course_keys``, so a client scoped down to zero
-    criteria can still tell the competency is not empty.
+    under every group in the active tree regardless of ``course_keys``, so a client scoped down to
+    zero criteria can still tell the competency is not empty.
 
-    ``archived_course_keys`` is always present: the sorted course run key strings that have an
-    archived course-level group for this competency, limited to ``course_keys`` when given.
+    ``archived_course_keys`` is always present: the keys, as strings and sorted, of the course runs
+    whose course-level group for this competency is archived, limited to ``course_keys`` when given.
     """
 
     authentication_classes = (JwtAuthentication, SessionAuthenticationAllowInactiveUser)
