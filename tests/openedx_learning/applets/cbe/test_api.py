@@ -57,7 +57,14 @@ from openedx_learning.models import (
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
-from .utils import make_course_run, make_leaf_criterion, make_skill_family, make_tag, usage_key
+from .utils import (
+    create_course_level_group,
+    make_course_run,
+    make_leaf_criterion,
+    make_skill_family,
+    make_tag,
+    usage_key,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -1620,15 +1627,6 @@ def test_get_competency_criteria_tree_orders_groups_by_parent_ordering_and_id(
     assert siblings == [early.id, tied_first.id, tied_second.id, leaf.id, late.id]
 
 
-def _create_course_level_group(
-    tag: Tag, course_run: CourseRun, root: CompetencyCriteriaGroup, *, archived: bool = False,
-) -> CompetencyCriteriaGroup:
-    """Create `course_run`'s course-level group under `root`, archived or not."""
-    return CompetencyCriteriaGroup.objects.create(
-        tag=tag, name="Course level", parent=root, course=course_run, archived=archived,
-    )
-
-
 def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
     tag: Tag, course_run: CourseRun, organization: Organization, default_rule_profile: CompetencyRuleProfile,
     django_assert_num_queries,
@@ -1640,13 +1638,13 @@ def test_get_competency_criteria_tree_costs_a_bounded_number_of_queries(
     get_competency_criteria_tree(): dropping either would still pass every other test in this
     module (the rows returned would be identical), since select_related only changes how many
     queries fetch them, not which rows come back. The one extra scoped query counts the criteria
-    under every kept group; the course keys are matched in Python, with no lookup. An archived
+    under every group in the active tree; the course keys are matched in Python, with no lookup. An archived
     course-level group is in the setup so reading ``archived_course_keys`` is held to the same budget.
     """
     leaf = _create_leaf_group(tag, course_run)
     root = CompetencyCriteriaGroup.objects.get(tag=tag, parent=None)
     archived_run = make_course_run(organization, "Archived101", "2026")
-    _create_course_level_group(tag, archived_run, root, archived=True)
+    create_course_level_group(tag, archived_run, root, archived=True)
     assert course_run.course_key is not None
     assert archived_run.course_key is not None
     for i in range(3):
@@ -1857,7 +1855,7 @@ def test_get_competency_criteria_tree_ignores_a_requested_key_that_matches_no_co
     leaf = _create_leaf_group(tag, course_run)
     other_leaf = _create_leaf_group(tag, other_run)
     root = CompetencyCriteriaGroup.objects.get(tag=tag, parent=None)
-    _create_course_level_group(tag, archived_run, root, archived=True)
+    create_course_level_group(tag, archived_run, root, archived=True)
     for run, group in ((course_run, leaf), (other_run, other_leaf)):
         object_tag = ObjectTag.objects.create(object_id=usage_key(run, "p1"), taxonomy=tag.taxonomy, tag=tag)
         CompetencyCriterion.objects.create(group=group, object_tag=object_tag, rule_profile=default_rule_profile)
@@ -2102,9 +2100,9 @@ def test_archived_course_keys_reports_an_archived_course_level_group_by_its_key(
     x2 = CourseRun.objects.create(catalog_course=x.catalog_course, run_code="2027")
     y = make_course_run(organization, "CS200", "2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    _create_course_level_group(tag, x, root, archived=True)
-    _create_course_level_group(tag, x2, root)
-    _create_course_level_group(tag, y, root)
+    create_course_level_group(tag, x, root, archived=True)
+    create_course_level_group(tag, x2, root)
+    create_course_level_group(tag, y, root)
 
     tree = get_competency_criteria_tree(tag)
 
@@ -2116,18 +2114,26 @@ def test_archived_course_keys_ignores_archived_leaf_groups_and_criteria_under_an
     tag: Tag, organization: Organization, default_rule_profile: CompetencyRuleProfile,
     leaf_group_carries_course: bool,
 ) -> None:
-    """Archived leaf groups and criteria below an active course-level group never mark the run archived."""
+    """
+    Nothing archived below an active course-level group puts its course run on the list.
+
+    The tree is an active course-level group with two leaf groups. One leaf group is archived. The
+    other is active and holds an archived criterion and an active one. The test runs twice
+    because the API never gives a leaf group a course. With ``leaf_group_carries_course`` set, the
+    archived leaf group carries the course, which only a row written outside the API can do, so
+    the test fails if the code reports every archived group that has a course.
+    """
     y = make_course_run(organization, "CS200", "2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    course_level = _create_course_level_group(tag, y, root)
-    CompetencyCriteriaGroup.objects.create(
+    course_level = create_course_level_group(tag, y, root)
+    _archived_leaf_group = CompetencyCriteriaGroup.objects.create(
         tag=tag, parent=course_level, course=y if leaf_group_carries_course else None, archived=True,
     )
-    leaf_group_b = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level, course=None)
+    active_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level, course=None)
     for block_id, archived in (("p1", True), ("p2", False)):
         object_tag = ObjectTag.objects.create(object_id=usage_key(y, block_id), taxonomy=tag.taxonomy, tag=tag)
         CompetencyCriterion.objects.create(
-            group=leaf_group_b, object_tag=object_tag, rule_profile=default_rule_profile, archived=archived,
+            group=active_leaf_group, object_tag=object_tag, rule_profile=default_rule_profile, archived=archived,
         )
 
     tree = get_competency_criteria_tree(tag)
@@ -2142,8 +2148,8 @@ def test_archived_course_keys_is_not_hidden_by_an_archived_root(
     x = make_course_run(organization, "CS101", "2026")
     y = make_course_run(organization, "CS200", "2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, archived=True)
-    _create_course_level_group(tag, x, root, archived=True)
-    _create_course_level_group(tag, y, root, archived=True)
+    create_course_level_group(tag, x, root, archived=True)
+    create_course_level_group(tag, y, root, archived=True)
 
     tree = get_competency_criteria_tree(tag)
 
@@ -2158,9 +2164,9 @@ def test_archived_course_keys_reports_only_the_selected_competencys_groups(
     x = make_course_run(organization, "CS101", "2026")
     y = make_course_run(organization, "CS200", "2026")
     parent_root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    _create_course_level_group(tag, x, parent_root, archived=True)
+    create_course_level_group(tag, x, parent_root, archived=True)
     child_root = CompetencyCriteriaGroup.objects.create(tag=child, parent=None)
-    _create_course_level_group(child, y, child_root, archived=True)
+    create_course_level_group(child, y, child_root, archived=True)
 
     assert get_competency_criteria_tree(tag).archived_course_keys == [x.course_key]
 
@@ -2173,7 +2179,7 @@ def test_archived_course_keys_is_empty_without_archived_course_level_groups(
 
     x = make_course_run(organization, "CS101", "2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    _create_course_level_group(tag, x, root)
+    create_course_level_group(tag, x, root)
 
     assert not get_competency_criteria_tree(tag).archived_course_keys
 
@@ -2196,10 +2202,12 @@ def test_archived_course_keys_follows_the_course_keys_scope(
         "z": make_course_run(organization, "CS300", "2026"),
     }
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    _create_course_level_group(tag, runs["x"], root, archived=True)
-    _create_course_level_group(tag, runs["y"], root, archived=True)
-    _create_course_level_group(tag, runs["z"], root)
+    create_course_level_group(tag, runs["x"], root, archived=True)
+    create_course_level_group(tag, runs["y"], root, archived=True)
+    create_course_level_group(tag, runs["z"], root)
     keys = {name: run.course_key for name, run in runs.items()}
+    # The parametrized ``scope`` holds short names because course keys do not exist until the runs are
+    # created; turn each name into the course key of its run.
     scope_keys: list[CourseKey] | None = None
     if scope is not None:
         scope_keys = []
@@ -2220,14 +2228,13 @@ def test_archived_course_keys_lists_a_run_whose_rows_are_left_out_of_the_tree(
     x = make_course_run(organization, "CS101", "2026")
     y = make_course_run(organization, "CS200", "2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    x_course_level = _create_course_level_group(tag, x, root, archived=True)
+    x_course_level = create_course_level_group(tag, x, root, archived=True)
     x_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=x_course_level, archived=True)
-    x_active_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=x_course_level)
-    y_course_level = _create_course_level_group(tag, y, root)
+    y_course_level = create_course_level_group(tag, y, root)
     y_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=y_course_level)
     x_object_tag = ObjectTag.objects.create(object_id=usage_key(x, "p1"), taxonomy=tag.taxonomy, tag=tag)
     y_object_tag = ObjectTag.objects.create(object_id=usage_key(y, "p1"), taxonomy=tag.taxonomy, tag=tag)
-    x_criterion = CompetencyCriterion.objects.create(
+    CompetencyCriterion.objects.create(
         group=x_leaf_group, object_tag=x_object_tag, rule_profile=default_rule_profile, archived=True,
     )
     y_criterion = CompetencyCriterion.objects.create(
@@ -2240,10 +2247,31 @@ def test_archived_course_keys_lists_a_run_whose_rows_are_left_out_of_the_tree(
     group_ids = {group.id for group in tree.groups}
     assert x_course_level.id not in group_ids
     assert x_leaf_group.id not in group_ids
-    assert x_active_leaf_group.id not in group_ids
     assert {root.id, y_course_level.id, y_leaf_group.id} <= group_ids
     assert [criterion.id for criterion in tree.criteria] == [y_criterion.id]
-    assert x_criterion.id not in {criterion.id for criterion in tree.criteria}
+
+
+def test_archived_course_keys_are_sorted_by_course_key_string(
+    tag: Tag, organization: Organization,
+) -> None:
+    """
+    Archived course runs of different courses come back ordered by key string, not in creation or set order.
+
+    The keys come out of a set, so only an explicit sort orders them. The runs have different course
+    codes, so a sort by run code or by creation order would not give this list, and they are created
+    out of alphabetical order so the order they were written in is not the expected one.
+    """
+    root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
+    runs = {}
+    for course_code in ("CS300", "CS100", "CS500", "CS200", "CS600", "CS400"):
+        runs[course_code] = make_course_run(organization, course_code, "2026")
+        create_course_level_group(tag, runs[course_code], root, archived=True)
+
+    tree = get_competency_criteria_tree(tag)
+
+    assert tree.archived_course_keys == [
+        runs[course_code].course_key for course_code in ("CS100", "CS200", "CS300", "CS400", "CS500", "CS600")
+    ]
 
 
 # ==============================================================================================
@@ -2287,7 +2315,7 @@ def test_find_active_groups_drops_everything_below_an_archived_course_level_grou
     assert course_level is not None
     root = course_level.parent
     assert root is not None
-    CompetencyCriteriaGroup.objects.create(tag=tag, parent=leaf_group)
+    _nested_under_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=leaf_group)
     course_level.archived = True
     course_level.save()
 
@@ -2307,7 +2335,7 @@ def test_find_active_groups_drops_an_archived_leaf_group_and_its_subtree_but_kee
     root = course_level.parent
     assert root is not None
     archived_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level, archived=True)
-    CompetencyCriteriaGroup.objects.create(tag=tag, parent=archived_leaf_group)
+    _nested_under_archived_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=archived_leaf_group)
 
     active_groups, group_id_to_branch_course_key_map = _find_active_groups(_groups_in_query_order(tag))
 
@@ -2320,7 +2348,16 @@ def test_find_active_groups_drops_an_archived_leaf_group_and_its_subtree_but_kee
 def test_find_active_groups_places_a_group_re_parented_under_a_later_id_parent_by_its_real_parent(
     tag: Tag, course_run: CourseRun,
 ) -> None:
-    """A sits under B and B under C, with ids a < b < c, so a pass in query order would judge A before B."""
+    """
+    Every group in the branch gets the course key, even when a child has a smaller id than its parent.
+
+    After the move the course-level group holds the leaf group and C, C holds B, and B holds A, while
+    the ids stay a < b < c. The groups have to be moved with ``update()``: a child gets a smaller id
+    than its parent only if it was created first and moved afterward, and ``save()`` rejects a parent
+    change. Ordering by ``parent_id`` then lists A before its parent B, so a pass in query order would
+    judge A before B. The assert on the query order checks that setup. The three final asserts show
+    that every moved group still got the right course key.
+    """
     leaf_group = _create_leaf_group(tag, course_run)
     course_level = leaf_group.parent
     assert course_level is not None
@@ -2344,9 +2381,14 @@ def test_find_active_groups_places_a_group_re_parented_under_a_later_id_parent_b
 def test_find_active_groups_returns_nothing_under_an_archived_root(
     tag: Tag, course_run: CourseRun,
 ) -> None:
-    """An archived root takes its whole tree with it, including a course-level group that is active."""
+    """
+    An archived root takes its whole tree with it, including a course-level group that is active.
+
+    The API archives a root only after its last course-level group, so this tree comes from
+    direct ORM writes.
+    """
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None, archived=True)
-    _create_course_level_group(tag, course_run, root)
+    create_course_level_group(tag, course_run, root)
 
     active_groups, group_id_to_branch_course_key_map = _find_active_groups(_groups_in_query_order(tag))
 
@@ -2357,10 +2399,15 @@ def test_find_active_groups_returns_nothing_under_an_archived_root(
 def test_scope_groups_to_requested_course_runs_keeps_groups_above_any_course_first(
     tag: Tag, course_run: CourseRun,
 ) -> None:
-    """Groups with no course on their path rank ahead of every requested branch, whatever the input order."""
+    """
+    Groups with no course on their path rank ahead of every requested branch, whatever the input order.
+
+    The tree has a group with no course between the root and the course-level group. The API never
+    creates one, so this tree cannot come from it. The test pins the rule for any group in no branch.
+    """
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
     mid = CompetencyCriteriaGroup.objects.create(tag=tag, parent=root)
-    course_level = _create_course_level_group(tag, course_run, mid)
+    course_level = create_course_level_group(tag, course_run, mid)
     group_id_to_branch_course_key_map: dict[int, CourseKey | None] = {
         root.id: None, mid.id: None, course_level.id: course_key(course_run),
     }
@@ -2378,8 +2425,8 @@ def test_scope_groups_to_requested_course_runs_drops_a_branch_whose_course_run_w
     """A branch of an unrequested run is left out, and with nothing requested only the groups above any course stay."""
     other_run = make_course_run(organization, "Python200", "Fall2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    requested_course_level = _create_course_level_group(tag, course_run, root)
-    other_course_level = _create_course_level_group(tag, other_run, root)
+    requested_course_level = create_course_level_group(tag, course_run, root)
+    other_course_level = create_course_level_group(tag, other_run, root)
     other_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=other_course_level)
     groups = [root, requested_course_level, other_course_level, other_leaf_group]
     group_id_to_branch_course_key_map: dict[int, CourseKey | None] = {
@@ -2398,13 +2445,18 @@ def test_scope_groups_to_requested_course_runs_drops_a_branch_whose_course_run_w
 def test_scope_groups_to_requested_course_runs_orders_branches_by_request_keeping_input_order_within_one(
     tag: Tag, course_run: CourseRun, organization: Organization,
 ) -> None:
-    """Branches follow the order of the request, not the input order, and each keeps its own input order."""
+    """
+    Branches follow the order of the request, not the input order, and each keeps its own input order.
+
+    The request names the other run first and then ``course_run``, so the other run's branch comes
+    first even though ``course_run``'s groups come first in the input.
+    """
     other_run = make_course_run(organization, "Python200", "Fall2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, parent=None)
-    course_level = _create_course_level_group(tag, course_run, root)
+    course_level = create_course_level_group(tag, course_run, root)
     first_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
     second_leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
-    other_course_level = _create_course_level_group(tag, other_run, root)
+    other_course_level = create_course_level_group(tag, other_run, root)
     groups = [root, course_level, other_course_level, first_leaf_group, second_leaf_group]
     group_id_to_branch_course_key_map: dict[int, CourseKey | None] = {
         root.id: None,

@@ -37,7 +37,14 @@ from openedx_learning.models import (
 )
 from openedx_tagging.models import ObjectTag, Tag, Taxonomy
 
-from .utils import make_course_run, make_leaf_criterion, make_skill_family, make_tag, usage_key
+from .utils import (
+    create_course_level_group,
+    make_course_run,
+    make_leaf_criterion,
+    make_skill_family,
+    make_tag,
+    usage_key,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -1488,7 +1495,7 @@ def test_no_view_access_to_the_taxonomy_is_403(
 ) -> None:
     """A non-staff caller may not read the tree of a competency on a disabled taxonomy, nor its archived runs."""
     root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
-    _create_course_level_group(tag, course_run, root, archived=True)
+    create_course_level_group(tag, course_run, root, archived=True)
     taxonomy = tag.taxonomy
     assert taxonomy is not None
     taxonomy.enabled = False
@@ -1538,23 +1545,14 @@ def test_view_checks_the_view_taxonomy_rule_not_view_tag(user_client: APIClient,
 # archived_course_keys
 
 
-def _create_course_level_group(
-    tag: Tag, course_run: CourseRun, root: CompetencyCriteriaGroup, *, archived: bool = False,
-) -> CompetencyCriteriaGroup:
-    """Create `course_run`'s course-level group under `root`, archived or not."""
-    return CompetencyCriteriaGroup.objects.create(
-        tag=tag, name="Course level", parent=root, course=course_run, archived=archived,
-    )
-
-
 def test_tree_response_lists_archived_course_runs_as_key_strings(
     user_client: APIClient, tag: Tag, course_run: CourseRun, organization: Organization,
 ) -> None:
     """An archived course-level group's course run is listed by key string; an active course run is not."""
     other_run = make_course_run(organization, "Python200", "Fall2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
-    _create_course_level_group(tag, course_run, root, archived=True)
-    _create_course_level_group(tag, other_run, root, archived=False)
+    create_course_level_group(tag, course_run, root, archived=True)
+    create_course_level_group(tag, other_run, root, archived=False)
 
     response = user_client.get(criteria_tree_url(tag.id))
 
@@ -1576,10 +1574,10 @@ def test_tree_response_has_an_empty_archived_course_keys_list_when_nothing_is_ar
 def test_tree_response_lists_an_archived_course_run_the_caller_cannot_author_in(
     user_client: APIClient, tag: Tag, organization: Organization,
 ) -> None:
-    """Reading the tree needs no tagging permission, so an archived course run the caller cannot author in is listed."""
+    """Listing an archived course run needs no authoring access to it, only the read permission on the competency."""
     unauthorized_run = make_course_run(organization, f"{UNAUTHORIZED_MARKER}100", "Fall2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
-    _create_course_level_group(tag, unauthorized_run, root, archived=True)
+    create_course_level_group(tag, unauthorized_run, root, archived=True)
 
     response = user_client.get(criteria_tree_url(tag.id))
 
@@ -1595,9 +1593,9 @@ def test_tree_response_archived_course_keys_follow_the_course_keys_query_param(
     run_y = make_course_run(organization, "Python200", "Fall2026")
     run_z = make_course_run(organization, "Python300", "Fall2026")
     root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
-    _create_course_level_group(tag, course_run, root, archived=True)
-    _create_course_level_group(tag, run_y, root, archived=True)
-    _create_course_level_group(tag, run_z, root, archived=False)
+    create_course_level_group(tag, course_run, root, archived=True)
+    create_course_level_group(tag, run_y, root, archived=True)
+    create_course_level_group(tag, run_z, root, archived=False)
     assert course_run.course_key is not None
     assert run_z.course_key is not None
 
@@ -1615,7 +1613,7 @@ def test_deleting_the_only_leaf_group_with_learner_progress_reports_its_course_r
 ) -> None:
     """Archiving the only leaf group cascades up to its course-level group, and the tree then lists the course run."""
     root = CompetencyCriteriaGroup.objects.create(tag=tag, name="Root", parent=None)
-    course_level = _create_course_level_group(tag, course_run, root, archived=False)
+    course_level = create_course_level_group(tag, course_run, root, archived=False)
     leaf_group = CompetencyCriteriaGroup.objects.create(tag=tag, parent=course_level)
     object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, "p1"), taxonomy=tag.taxonomy, tag=tag)
     criterion = CompetencyCriterion.objects.create(
