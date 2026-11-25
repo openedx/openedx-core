@@ -3,7 +3,12 @@ from organizations.models import Organization
 
 from openedx_catalog.models import CatalogCourse, CourseRun
 from openedx_learning.applets.cbe.api import _create_leaf_group
-from openedx_learning.models import CompetencyCriterion, CompetencyRuleProfile, CompetencyTaxonomy
+from openedx_learning.models import (
+    CompetencyCriteriaGroup,
+    CompetencyCriterion,
+    CompetencyRuleProfile,
+    CompetencyTaxonomy,
+)
 from openedx_tagging.models import ObjectTag, Tag
 
 
@@ -21,6 +26,15 @@ def make_leaf_criterion(
     leaf = _create_leaf_group(tag, course_run)
     object_tag = ObjectTag.objects.create(object_id=usage_key(course_run, block_id), taxonomy=tag.taxonomy, tag=tag)
     return CompetencyCriterion.objects.create(group=leaf, object_tag=object_tag, rule_profile=default_rule_profile)
+
+
+def create_course_level_group(
+    tag: Tag, course_run: CourseRun, root: CompetencyCriteriaGroup, *, archived: bool = False,
+) -> CompetencyCriteriaGroup:
+    """Create `course_run`'s course-level group under `root`, archived or not."""
+    return CompetencyCriteriaGroup.objects.create(
+        tag=tag, name="Course level", parent=root, course=course_run, archived=archived,
+    )
 
 
 def make_course_run(organization: Organization, course_code: str, run_code: str) -> CourseRun:
