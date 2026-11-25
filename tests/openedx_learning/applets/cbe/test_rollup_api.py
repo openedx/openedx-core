@@ -597,8 +597,8 @@ def test_a_root_raises_its_competency_from_the_stored_root_status_after_the_earn
     user, tag, or_tree,
 ) -> None:
     """
-    Like the test above, the next rollup brings an out-of-sync competency status back in sync with its root group's
-    status, but here the root is not archived and the route that earned the root's status was archived.
+    When the root group's status and the competency's status are out of sync, the next rollup brings them back in
+    sync. Here the root is not archived, and the route that earned the root's status was archived.
     """
     _record(user, or_tree.first, DEMONSTRATED)
     StudentCompetencyCriteriaGroupStatus.objects.create(
@@ -664,7 +664,12 @@ def test_an_archived_intermediate_group_cuts_its_live_subtree_off_from_the_root(
 def test_a_course_group_archived_through_the_archive_action_no_longer_holds_the_competency_back(
     user, tag, course_run, default_rule_profile,
 ) -> None:
-    """Archive a failed course's group through the real archive action, so the rollup meets the tree it leaves."""
+    """
+    Archive a failed course's group through the real archive action, so the rollup meets the tree it leaves.
+
+    The tree is deliberately simplified: a real root has no operator and a real course group holds leaf groups, but
+    an AND root is what lets an archived course group hold the competency back.
+    """
     course_b_run = CourseRun.objects.create(
         catalog_course=CatalogCourse.objects.create(org=course_run.catalog_course.org, course_code="Python200"),
         run_code="Fall2026",
