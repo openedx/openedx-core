@@ -19,6 +19,22 @@ auth.User:
   ".. pii_retirement": "consumer_api"
 contenttypes.ContentType:
   ".. no_pii:": "This model has no PII"
+openedx_content.Asset:
+  ".. no_pii:": "This model has no PII"
+openedx_content.AssetBundle:
+  ".. no_pii:": "This model has no PII"
+openedx_content.AssetBundleType:
+  ".. no_pii:": "This model has no PII"
+openedx_content.AssetBundleVersion:
+  ".. no_pii:": "This model has no PII"
+openedx_content.AssetBundleVersionAsset:
+  ".. no_pii:": "This model has no PII"
+openedx_content.AssetType:
+  ".. no_pii:": "This model has no PII"
+openedx_content.AssetVersion:
+  ".. no_pii:": "This model has no PII"
+openedx_content.AssetVersionMedia:
+  ".. no_pii:": "This model has no PII"
 openedx_content.Collection:
   ".. no_pii:": "This model has no PII"
 openedx_content.CollectionPublishableEntity:

@@ -26,6 +26,10 @@ class ContentConfig(AppConfig):
         """
         from .api import register_publishable_models
         from .models import (
+            Asset,
+            AssetBundle,
+            AssetBundleVersion,
+            AssetVersion,
             Component,
             ComponentVersion,
             Container,
@@ -37,6 +41,8 @@ class ContentConfig(AppConfig):
             Unit,
             UnitVersion,
         )
+        register_publishable_models(Asset, AssetVersion)
+        register_publishable_models(AssetBundle, AssetBundleVersion)
         register_publishable_models(Component, ComponentVersion)
         register_publishable_models(Container, ContainerVersion)
         register_publishable_models(Section, SectionVersion)
