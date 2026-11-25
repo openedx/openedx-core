@@ -2309,7 +2309,11 @@ def test_find_active_groups_maps_each_group_in_the_active_tree_to_its_branch_cou
 def test_find_active_groups_drops_everything_below_an_archived_course_level_group(
     tag: Tag, course_run: CourseRun,
 ) -> None:
-    """Groups under an archived course-level group are left out even though they are active themselves."""
+    """
+    Groups under an archived course-level group are left out even though they are active themselves.
+
+    The API cannot create this tree: it never leaves an active group under an archived one.
+    """
     leaf_group = _create_leaf_group(tag, course_run)
     course_level = leaf_group.parent
     assert course_level is not None
@@ -2328,7 +2332,11 @@ def test_find_active_groups_drops_everything_below_an_archived_course_level_grou
 def test_find_active_groups_drops_an_archived_leaf_group_and_its_subtree_but_keeps_its_active_sibling(
     tag: Tag, course_run: CourseRun,
 ) -> None:
-    """Under an active course-level group, an archived leaf group and its subtree go; an active leaf group stays."""
+    """
+    Under an active course-level group, an archived leaf group and its subtree go; an active leaf group stays.
+
+    The API cannot create this tree: it nests no group under a leaf group.
+    """
     active_leaf_group = _create_leaf_group(tag, course_run)
     course_level = active_leaf_group.parent
     assert course_level is not None

@@ -196,10 +196,10 @@ class CompetencyCriteriaTreeView(generics.GenericAPIView):
 
     The optional ``course_keys`` query parameter (comma-separated course keys) scopes the tree by
     course run. A course run's groups are its course-level group and every group nested below it.
-    Omitting the parameter returns every group in the active tree. Supplying it returns the groups
-    above any course plus the groups of the named runs, ordered with the groups above any course
-    first and then by the order requested; keys that match no run are ignored, and an empty value
-    returns only the groups above any course. The parameter may be supplied once. A key's branch
+    Omitting the parameter returns every group in the active tree. Supplying it returns the root
+    plus the groups of the named runs, ordered with the root first and then by the order requested;
+    keys that match no run are ignored, and an empty value returns only the root. The parameter may
+    be supplied once. A key's branch
     and version are ignored, and a version-only or library key is a 400.
 
     ``criteria_count`` is the number of criteria returned. ``total_criteria_count`` is the number
