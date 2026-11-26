@@ -25,16 +25,23 @@ Decisions
 
    - Each Item holds an **author-defined list of course runs** that fulfill it. Passing *any one* of them fulfills
      the Item. The runs may belong to different catalog courses.
+   - Items are never shared: each belongs to exactly one Pathway. Course runs are what Pathways share - the same run
+     may appear in the lists of Items in several Pathways.
    - The list is explicit rather than "any run of this catalog course", because we don't necessarily want every
      possible older version of a course to count.
    - "Passing" is determined by each course's own grading policy. The grade and passed/failed state are read directly
      from the course; Pathways define no grading of their own.
-   - Each Item designates a **default course run** - the one a learner is enrolled in when they begin the Item - and,
-     if that course uses multiple enrollment tracks, the track to enroll them in. The default can change over time.
+   - The list is **ordered by priority**. Priority decides which run a learner is enrolled in when they begin the Item
+     and, for a learner already enrolled in several of the runs, which one to show them. It plays no part in
+     fulfillment, which always considers every run in the list. Putting a newer run ahead of an older one is how an
+     author gives a learner who failed the older run another attempt. Each run also carries the enrollment track to
+     enroll learners in, if that course uses several. The order can change over time.
 
 2. Fulfillment types attach at this layer only. Potential future types - section completion, competency attainment,
    admin override - plug in as alternative ways to fulfill an Item, without touching Item identity, Pathway structure,
-   or Pathway completion criteria.
+   or Pathway completion criteria. An Item holds a list of generic **fulfillment options** and never refers to
+   a course run directly. Passing a course run is just the first concrete type of option. That way nothing built on
+   Items assumes that course runs are the only way to fulfill them.
 
 3. Edge cases are resolved at this layer and never leak upward. For example: multiple passed runs fulfilling the same
    Item (the Item is simply fulfilled), or one passed run fulfilling several Items simultaneously (each Item is
@@ -89,8 +96,19 @@ Consequences
 - Because passing state comes directly from course grading, there is no Pathway-side duplication of grades to keep in
   sync.
 - Only the third trigger needs an async task: the first two act on a single learner, while publishing an Item change
-  fans out across everyone enrolled in the Pathways that contain it.
+  fans out across everyone enrolled in the Pathway that contains it.
 - Publishing an Item change on a large Pathway is therefore not instantaneous. Retroactive credentials appear once the
   task completes.
 - The fulfillment mapping is the natural extension point for everything post-MVP, and the part of the model we
   expect to iterate on in code.
+
+Changelog
+---------
+
+2026-11-24:
+
+* Replaced the single default course run with a priority order over the whole list of runs, so that a learner enrolled
+  in several of an Item's runs is shown a well-defined one.
+* Stated that Items belong to exactly one Pathway, while course runs may be shared between Pathways.
+* Put a generic fulfillment option between Items and course runs, so that course runs are one type of option rather
+  than what Items are made of.
