@@ -278,6 +278,7 @@ Decision
    - When a root group is recomputed, write the competency's ``StudentCompetencyStatus`` from it, mapping ``AttemptedNotDemonstrated`` to ``PartiallyAttempted`` because that table holds only ``Demonstrated`` and ``PartiallyAttempted``.
    - Then recompute each parent competency up the taxonomy, one level at a time. A parent's status is the better of two inputs: its own criteria result, which is its root group's status mapped the same way, and its sub-competency result, which is ``Demonstrated`` when every direct sub-competency is ``Demonstrated`` and ``PartiallyAttempted`` when at least one has a status. A competency with no criteria tree of its own gets a status row only through its sub-competencies; a competency with neither a root group nor a sub-competency with a status gets no row.
    - Every write only ever raises a stored status, and each level commits before the next is read. :ref:`openedx-learning-adr-0004` records why.
+   - An archived criterion is not evaluated when a grade is recorded, and a group's status is combined from its non-archived children only. Because no write lowers a stored status, a status already earned through a child that has since been archived is kept. Archiving recomputes nothing by itself: the change reaches a learner's statuses the next time a grade raises the status of a non-archived criterion beneath the archived item's parent group, or when an operator recomputes them.
 
    1. Add new database table for ``CompetencyMasteryStatuses`` with these columns:
 
@@ -507,3 +508,5 @@ Changelog
 
 * Decision 4 states that no ancestor or descendant of a competency tag may hold live criteria
   in the same course as that tag, and why.
+* Amended Decision 6 for issue #815: a group is combined from its non-archived children only,
+  a status already earned is kept, and archiving by itself recomputes nothing.
