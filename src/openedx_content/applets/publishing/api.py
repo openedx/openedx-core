@@ -7,6 +7,7 @@ are stored in this app.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from functools import partial
@@ -61,6 +62,7 @@ __all__ = [
     "get_entities_with_unpublished_changes",
     "get_entities_with_unpublished_deletes",
     "publish_all_drafts",
+    "publish_entities",
     "publish_from_drafts",
     "get_draft_version",
     "get_published_version",
@@ -485,6 +487,56 @@ def publish_all_drafts(
     )
 
 
+def publish_entities(
+    learning_package_id: LearningPackage.ID,
+    /,
+    entity_ids: Iterable[PublishableEntity.ID],
+    message: str = "",
+    published_at: datetime | None = None,
+    published_by: int | None = None,  # User.id
+    *,
+    publish_dependencies: bool = True,
+) -> PublishLog:
+    """
+    Publish the current drafts of the given entities.
+
+    This includes soft deletes: if an entity's draft has been deleted (e.g.
+    with ``soft_delete_draft()``), publishing it deletes the published version
+    too.
+
+    By default, this also publishes all dependencies (e.g. unpinned children)
+    of the given entities, but you can opt-out of that by specifying
+    ``publish_dependencies=False``.
+
+    If an entity ID is specified explicitly but neither it nor its dependencies
+    have any unpublished changes, it will not be included in the resulting
+    ``PublishLogRecord`` nor the ``ENTITIES_PUBLISHED`` event; if you want that
+    behavior, for example to trigger post-publish tasks on ALL the entities,
+    use the more low-level ``publish_from_drafts()`` API method.
+
+    Raises ``ValidationError`` if any of the entities belong to a different
+    learning package.
+    """
+    # Unlike get_all_drafts(), this includes Drafts with a NULL version (soft
+    # deletes), which is what lets us publish deletions. Order by primary key
+    # so that the resulting PublishLogRecords come out in a consistent order.
+    #
+    # We don't filter out unchanged entities here with with_unpublished_changes(),
+    # because we still need them as roots for finding changed dependencies (e.g.
+    # an unchanged Unit with a changed Component), and to check that they're in
+    # the right learning package. _publish_from_drafts() skips them instead.
+    draft_qset = Draft.objects.filter(entity_id__in=list(entity_ids)).order_by("pk")
+    return _publish_from_drafts(
+        learning_package_id,
+        draft_qset,
+        message,
+        published_at,
+        published_by,
+        publish_dependencies=publish_dependencies,
+        skip_unchanged=True,
+    )
+
+
 def _get_dependencies_with_unpublished_changes(
     direct_drafts: list[Draft]
 ) -> list[list[Draft]]:
@@ -564,6 +616,42 @@ def publish_from_drafts(
 
     By default, this will also publish all dependencies (e.g. unpinned children)
     of the Drafts that are passed in.
+
+    Drafts without unpublished changes are NOT skipped, so if you pass them in
+    the queryset, their entities will still be included in the resulting
+    ``PublishLogRecord`` and ``ENTITIES_PUBLISHED`` event, even though this was
+    essentially a no-op. This could be useful, for example if a user wishes to
+    "re-publish" an entity in order to trigger some of the tasks that happen
+    when an entity is published (re-compute grades etc).
+    """
+    return _publish_from_drafts(
+        learning_package_id,
+        draft_qset,
+        message,
+        published_at,
+        published_by,
+        publish_dependencies=publish_dependencies,
+    )
+
+
+def _publish_from_drafts(
+    learning_package_id: LearningPackage.ID,
+    /,
+    draft_qset: QuerySet[Draft],
+    message: str = "",
+    published_at: datetime | None = None,
+    published_by: int | None = None,  # User.id
+    *,
+    publish_dependencies: bool = True,
+    skip_unchanged: bool = False,
+) -> PublishLog:
+    """
+    Implementation of ``publish_from_drafts()``.
+
+    If ``skip_unchanged`` is True, Drafts in ``draft_qset`` that have no
+    unpublished changes don't get a PublishLogRecord, but they're still checked
+    against ``learning_package_id`` and still used to find dependencies to
+    publish. (Dependencies without unpublished changes are always skipped.)
     """
     if DraftChangeLogContext.get_active_draft_change_log(learning_package_id) is not None:
         raise ValidationError(
@@ -619,6 +707,7 @@ def publish_from_drafts(
         # the ENTITIES_PUBLISHED event see.
         drafts_to_publish: dict[int, Draft] = {}  # entity_id -> Draft, in publish order
         publish_log_records: list[PublishLogRecord] = []
+        skipped_direct_entity_ids: list[PublishableEntity.ID] = []
         for group in all_draft_groups:
             for draft in group:
                 # Skip duplicates that we might get from expanding dependencies.
@@ -630,6 +719,11 @@ def publish_from_drafts(
                         f"Draft entity (id={draft.entity.id}) is from learning package "
                         f"{draft.entity.learning_package_id}; expected learning package {learning_package_id}."
                     )
+                # Dependencies were already filtered by _get_dependencies_with_unpublished_changes(), so this only
+                # skips direct Drafts. It doesn't need any queries, because entity__published__version is pre-loaded.
+                if skip_unchanged and not draft.has_unpublished_changes():
+                    skipped_direct_entity_ids.append(draft.entity_id)
+                    continue
 
                 try:
                     old_version_id = draft.entity.published.version_id
@@ -683,6 +777,13 @@ def publish_from_drafts(
             )
 
         _create_side_effects_for_change_log(publish_log)
+        if skipped_direct_entity_ids and publish_log_records:
+            # An unchanged entity that was explicitly requested (e.g. a Unit
+            # whose only change is in a child Component) may still have picked
+            # up a side-effect record above. That record defaults to
+            # direct=False, but the user asked to publish this entity, so mark
+            # it as direct.
+            publish_log.records.filter(entity_id__in=skipped_direct_entity_ids).update(direct=True)
         _emit_event_for_change_log(publish_log, timestamp=published_at, user_id=published_by)
 
     return publish_log

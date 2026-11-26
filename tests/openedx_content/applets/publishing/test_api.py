@@ -15,6 +15,7 @@ from django.test import TestCase, TransactionTestCase
 
 from openedx_content.applets.containers import api as containers_api
 from openedx_content.applets.publishing import api as publishing_api
+from openedx_content.applets.publishing import signals
 from openedx_content.applets.publishing.models import (
     Draft,
     DraftChangeLog,
@@ -28,6 +29,7 @@ from openedx_content.applets.publishing.models import (
 )
 from openedx_content.models_api import Container
 from tests.test_django_app.models import TestContainer
+from tests.utils import capture_events
 
 User = get_user_model()
 
@@ -926,6 +928,14 @@ class PublishLogTestCase(TestCase):
             created=cls.now,
         )
 
+    def setUp(self) -> None:
+        super().setUp()
+        Container.reset_cache()
+
+    def tearDown(self) -> None:
+        Container.reset_cache()  # <- needed in tests involving Container subclasses
+        super().tearDown()
+
     def test_simple_publish_log(self) -> None:
         """
         Simplest test that multiple writes make it into one PublishLog.
@@ -1042,6 +1052,188 @@ class PublishLogTestCase(TestCase):
             Draft.objects.filter(entity=entity),
         )
         assert publish_log.records.get(entity=entity).direct is True
+
+    def _create_entity_with_version(self, learning_package: LearningPackage, ref: str) -> PublishableEntity:
+        """Create an entity with one (draft) version."""
+        entity = publishing_api.create_publishable_entity(
+            learning_package.id, ref, created=self.now, created_by=None,
+        )
+        publishing_api.create_publishable_entity_version(
+            entity.id, version_num=1, title=f"{ref} v1", created=self.now, created_by=None,
+        )
+        return entity
+
+    def test_publish_entities(self) -> None:
+        """publish_entities() publishes only the given entities."""
+        entity_1 = self._create_entity_with_version(self.learning_package_1, "entity_1")
+        entity_2 = self._create_entity_with_version(self.learning_package_1, "entity_2")
+        published_by = User.objects.create(username="publisher")
+
+        publish_log = publishing_api.publish_entities(
+            self.learning_package_1.id, [entity_1.id], message="Publish one", published_by=published_by.id,
+        )
+
+        assert publish_log.message == "Publish one"
+        assert publish_log.published_by == published_by
+        assert [record.entity_id for record in publish_log.records.all()] == [entity_1.id]
+        assert publish_log.records.get().direct is True
+        assert publishing_api.get_published_version(entity_1.id) == publishing_api.get_draft_version(entity_1.id)
+        assert publishing_api.get_published_version(entity_2.id) is None
+
+    def test_publish_entities_soft_delete(self) -> None:
+        """
+        publish_entities() publishes soft deletes.
+
+        These can't be published with publish_from_drafts(get_all_drafts(...)),
+        because get_all_drafts() excludes Drafts that have been soft deleted.
+        """
+        entity = self._create_entity_with_version(self.learning_package_1, "entity")
+        entity_v1 = publishing_api.get_draft_version(entity.id)
+        publishing_api.publish_entities(self.learning_package_1.id, [entity.id])
+        publishing_api.soft_delete_draft(entity.id)
+        assert not publishing_api.get_all_drafts(self.learning_package_1.id).filter(entity=entity).exists()
+
+        publish_log = publishing_api.publish_entities(self.learning_package_1.id, [entity.id])
+
+        record = publish_log.records.get()
+        assert record.entity_id == entity.id
+        assert record.old_version == entity_v1
+        assert record.new_version is None
+        assert publishing_api.get_published_version(entity.id) is None
+
+    def test_publish_entities_skips_unchanged(self) -> None:
+        """Entities without unpublished changes don't get a PublishLogRecord."""
+        entity_1 = self._create_entity_with_version(self.learning_package_1, "entity_1")
+        entity_2 = self._create_entity_with_version(self.learning_package_1, "entity_2")
+        publishing_api.publish_entities(self.learning_package_1.id, [entity_1.id])
+
+        publish_log = publishing_api.publish_entities(self.learning_package_1.id, [entity_1.id, entity_2.id])
+
+        assert [record.entity_id for record in publish_log.records.all()] == [entity_2.id]
+        publish_log = publishing_api.publish_entities(self.learning_package_1.id, [entity_1.id, entity_2.id])
+        assert publish_log.records.count() == 0
+
+    def test_publish_from_drafts_includes_unchanged(self) -> None:
+        """
+        Unlike publish_entities(), publish_from_drafts() does NOT skip Drafts
+        without unpublished changes: they still get a (no-op) PublishLogRecord
+        and appear in the ENTITIES_PUBLISHED event.
+        """
+        entity_1 = self._create_entity_with_version(self.learning_package_1, "entity_1")
+        entity_2 = self._create_entity_with_version(self.learning_package_1, "entity_2")
+        publishing_api.publish_entities(self.learning_package_1.id, [entity_1.id])
+        entity_1_v1 = publishing_api.get_published_version(entity_1.id)
+        entity_2_v1 = publishing_api.get_draft_version(entity_2.id)
+        assert entity_1_v1 and entity_2_v1
+
+        with capture_events(signals=[signals.ENTITIES_PUBLISHED], expected_count=1) as captured:
+            with self.captureOnCommitCallbacks(execute=True):
+                publish_log = publishing_api.publish_from_drafts(
+                    self.learning_package_1.id,
+                    Draft.objects.filter(entity__in=[entity_1, entity_2]),
+                )
+
+        records = publish_log.records.order_by("entity_id")
+        assert [
+            (r.entity_id, r.old_version_id, r.new_version_id, r.direct) for r in records
+        ] == [
+            (entity_1.id, entity_1_v1.id, entity_1_v1.id, True),  # unchanged, but still recorded
+            (entity_2.id, None, entity_2_v1.id, True),
+        ]
+        assert {change.entity_id for change in captured[0].kwargs["change_log"].changes} == {entity_1.id, entity_2.id}
+
+    def test_publish_entities_other_learning_package(self) -> None:
+        """publish_entities() rejects entities from another learning package."""
+        entity = self._create_entity_with_version(self.learning_package_2, "entity")
+        with pytest.raises(ValidationError, match="expected learning package"):
+            publishing_api.publish_entities(self.learning_package_1.id, [entity.id])
+        assert publishing_api.get_published_version(entity.id) is None
+
+    def _create_unit_with_changed_component(self) -> tuple[PublishableEntity, Container]:
+        """
+        Create a published "unit" container with an unpinned "component" child,
+        then make a new draft of the component, so that only the component has
+        unpublished changes.
+        """
+        component = self._create_entity_with_version(self.learning_package_1, "component")
+        unit = containers_api.create_container(
+            self.learning_package_1.id, "unit", created=self.now, created_by=None, container_cls=TestContainer,
+        )
+        containers_api.create_container_version(
+            unit.id, 1, title="Unit", entities=[component], created=self.now, created_by=None,
+        )
+        publishing_api.publish_all_drafts(self.learning_package_1.id)
+        publishing_api.create_publishable_entity_version(
+            component.id, version_num=2, title="component v2", created=self.now, created_by=None,
+        )
+        return component, unit
+
+    def test_publish_entities_unchanged_container_with_changed_child(self) -> None:
+        """
+        Publishing an unchanged container publishes its changed children.
+
+        The container itself has no unpublished changes, so it isn't published
+        directly, but it's still where we look for dependencies. It only gets
+        the usual side-effect record for a changed child.
+        """
+        component, unit = self._create_unit_with_changed_component()
+        component_v1 = publishing_api.get_published_version(component.id)
+        component_v2 = publishing_api.get_draft_version(component.id)
+        unit_v1 = publishing_api.get_published_version(unit.id)
+        assert component_v1 and component_v2 and unit_v1
+
+        publish_log = publishing_api.publish_entities(self.learning_package_1.id, [unit.id])
+
+        assert publishing_api.get_published_version(component.id) == component_v2
+        records = publish_log.records.order_by("pk")
+        assert [(r.entity_id, r.old_version_id, r.new_version_id, r.direct) for r in records] == [
+            (component.id, component_v1.id, component_v2.id, False),  # dependency
+            (unit.id, unit_v1.id, unit_v1.id, True),  # side effect, unchanged, directly requested
+        ]
+
+    def test_publish_entities_unchanged_container_without_dependencies(self) -> None:
+        """
+        With publish_dependencies=False, publishing an unchanged container
+        doesn't publish its changed children.
+        """
+        component, unit = self._create_unit_with_changed_component()
+        component_v1 = publishing_api.get_published_version(component.id)
+
+        publish_log = publishing_api.publish_entities(
+            self.learning_package_1.id, [unit.id], publish_dependencies=False,
+        )
+
+        assert publish_log.records.count() == 0
+        assert publishing_api.get_published_version(component.id) == component_v1
+
+    def test_publish_entities_other_learning_package_unchanged(self) -> None:
+        """
+        publish_entities() rejects entities from another learning package, even
+        if they have no unpublished changes.
+        """
+        local_entity = self._create_entity_with_version(self.learning_package_1, "local_entity")
+        foreign_entity = self._create_entity_with_version(self.learning_package_2, "foreign_entity")
+        publishing_api.publish_all_drafts(self.learning_package_2.id)  # Now foreign_entity is unchanged
+
+        with pytest.raises(ValidationError, match="expected learning package"):
+            publishing_api.publish_entities(self.learning_package_1.id, [local_entity.id, foreign_entity.id])
+        assert publishing_api.get_published_version(local_entity.id) is None
+
+    def test_publish_entities_query_count(self) -> None:
+        """
+        Test how many queries publish_entities() makes.
+
+        Currently, each additional entity costs 2 queries, both from
+        _create_side_effects_for_change_log() (loading the record's entity,
+        and finding what depends on it), which all publishing APIs share.
+        """
+        entities = [self._create_entity_with_version(self.learning_package_1, f"entity_{i}") for i in range(4)]
+
+        with self.assertNumQueries(17):
+            publishing_api.publish_entities(self.learning_package_1.id, [entities[0].id])
+        with self.assertNumQueries(17 + 2 * 2):
+            publishing_api.publish_entities(self.learning_package_1.id, [entity.id for entity in entities[1:]])
+        assert all(publishing_api.get_published_version(entity.id) for entity in entities)
 
     def test_publish_mix_of_new_and_already_published(self) -> None:
         """
