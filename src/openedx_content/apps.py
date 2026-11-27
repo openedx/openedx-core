@@ -1,6 +1,7 @@
 """
 App Config for our umbrella openedx_content app.
 """
+
 from django.apps import AppConfig
 
 # pylint: disable=import-outside-toplevel
@@ -26,6 +27,8 @@ class ContentConfig(AppConfig):
         """
         from .api import register_publishable_models
         from .models import (
+            Asset,
+            AssetVersion,
             Component,
             ComponentVersion,
             Container,
@@ -37,6 +40,8 @@ class ContentConfig(AppConfig):
             Unit,
             UnitVersion,
         )
+
+        register_publishable_models(Asset, AssetVersion)
         register_publishable_models(Component, ComponentVersion)
         register_publishable_models(Container, ContainerVersion)
         register_publishable_models(Section, SectionVersion)

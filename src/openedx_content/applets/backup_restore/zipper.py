@@ -3,6 +3,7 @@ This module provides functionality to create a zip file containing the learning 
 including a TOML representation of the learning package and its entities.
 """
 
+import contextlib
 import hashlib
 import time
 import tomllib
@@ -181,8 +182,8 @@ class LearningPackageZipper:
         lp_id = self.learning_package.id
         publishable_entities: QuerySet[PublishableEntity] = publishing_api.get_publishable_entities(lp_id)
         return (
-            publishable_entities  # type: ignore[no-redef]
-            .select_related(
+            publishable_entities.select_related(  # type: ignore[no-redef]
+                "asset",
                 "container",
                 "component__component_type",
                 "draft__version__componentversion",
@@ -276,13 +277,32 @@ class LearningPackageZipper:
     def create_zip(self, path: str) -> None:
         """
         Creates a zip file containing the learning package data.
+
+        If zip creation fails partway through, the incomplete file is removed so
+        that it can't be mistaken for a valid backup.
+
         Args:
             path (str): The path where the zip file will be created.
         Raises:
             Exception: If the learning package cannot be found or if the zip creation fails.
         """
+        # Open the file outside the try block: if opening fails (e.g. an existing read-only file), that file was
+        # not touched, so it must not be deleted.
+        zipf = zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9)
+        try:
+            self._write_zip(zipf)  # closes zipf, even on error
+        except BaseException:
+            # Opening succeeded, so the file at ``path`` is one we created or truncated; it only holds partial data.
+            # Don't let a cleanup failure mask the original error.
+            with contextlib.suppress(OSError):
+                Path(path).unlink(missing_ok=True)
+            raise
 
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
+    def _write_zip(self, zipf: zipfile.ZipFile) -> None:
+        """
+        Write the learning package data into the open ``zipf``, then close it. See ``create_zip()``.
+        """
+        with zipf:
             # Add the package.toml file
             package_toml_content: str = toml_learning_package(
                 self.learning_package, self.utc_now, user=self.user, origin_server=self.origin_server
@@ -315,13 +335,13 @@ class LearningPackageZipper:
                     entity, versions_to_write, draft_version, published_version
                 )
 
-                if hasattr(entity, 'container'):
+                if hasattr(entity, "container"):
                     entity_filename = self.get_entity_toml_filename(entity.entity_ref)
                     entity_toml_filename = f"{entity_filename}.toml"
                     entity_toml_path = entities_folder / entity_toml_filename
                     self.add_file_to_zip(zipf, entity_toml_path, entity_toml_content, timestamp=latest_modified)
 
-                if hasattr(entity, 'component'):
+                if hasattr(entity, "component"):
                     # Create the component folder structure for the entity. The structure is as follows:
                     # entities/
                     #     xblock.v1/  (component namespace)
@@ -395,6 +415,11 @@ class LearningPackageZipper:
                                 # If no file and no text, we skip this media
                                 continue
                             self.add_file_to_zip(zipf, file_path, file_data, timestamp=media.created)
+
+                if hasattr(entity, "asset"):
+                    # As shared assets are new, we're holding off on defining the serialization format for them.
+                    # But we can implement this whenever it becomes needed (e.g. when libraries support assets)
+                    raise NotImplementedError("Packages with assets cannot yet be imported/exported.")
 
             # ------ COLLECTION SERIALIZATION -------------
             collections = self.get_collections()

@@ -24,7 +24,7 @@ from django.utils.translation import gettext_lazy as _
 from .collations import MultiCollationMixin
 # Re-export these fields which are in a separate file so we can use .pyi type stubs:
 from .id_fields import TypedAutoField, TypedBigAutoField  # pylint: disable=unused-import
-from .validators import validate_utc_datetime
+from .validators import INVALID_PATH_MSG, PATH_MAX_LENGTH, PATH_RE, validate_path_value, validate_utc_datetime
 
 
 def create_hash_digest(data_bytes: bytes, num_bytes=20) -> str:
@@ -180,10 +180,58 @@ def code_field_check(field_name: str, *, name: str, unicode: bool) -> models.Che
             (CODE_REGEX_UNICODE if unicode else CODE_REGEX_ASCII).pattern,
         ),
         name=name,
-        violation_error_message=(
-            _CODE_VIOLATION_MSG_UNICODE if unicode else _CODE_VIOLATION_MSG_ASCII
-        ),
+        violation_error_message=(_CODE_VIOLATION_MSG_UNICODE if unicode else _CODE_VIOLATION_MSG_ASCII),
     )
+
+
+def path_field(**kwargs) -> MultiCollationCharField:
+    """
+    Field to hold a path/filename.
+
+    You should always call :func:`normalize_unicode` before saving a path value.
+
+    Use together with :func:`path_field_checks` to enforce path value
+    requirements at the database level via a ``CheckConstraint``.
+    """
+    kwargs.setdefault("blank", False)
+    return case_sensitive_char_field(
+        max_length=PATH_MAX_LENGTH,
+        validators=[validate_path_value],
+        **kwargs,
+    )
+
+
+def path_field_checks(field_name: str, *, name: str) -> list[models.CheckConstraint]:
+    """
+    Return a ``CheckConstraint`` that enforces validation of a path/filename
+    field.
+
+    Django validators (used by :func:`code_field`) are not called on ``.save()``
+    or ``.update()``.  Adding this constraint ensures the regex is also enforced
+    by the database itself, and Django will additionally run it as a Python-level
+    validator automatically.
+
+    Usage::
+
+        class Meta:
+            constraints = [
+                *path_field_checks(
+                    "my_path_field",
+                    name="myapp_mymodel_my_path_field_regex",
+                ),
+            ]
+    """
+    return [
+        models.CheckConstraint(
+            condition=Regex(models.F(field_name), PATH_RE.pattern),
+            name=name,
+            violation_error_message=INVALID_PATH_MSG,
+        ),
+        # Make SQLite enforce a maximum path length like MySQL does
+        models.CheckConstraint(
+            condition=models.Q(**{f"{field_name}__length__lte": PATH_MAX_LENGTH}), name=f"{name}_maxlength"
+        ),
+    ]
 
 
 def ref_field(**kwargs) -> MultiCollationCharField:
