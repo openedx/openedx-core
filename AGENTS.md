@@ -242,7 +242,11 @@ actually run; `SIMPLE_HISTORY_DATE_INDEX = False` in both settings files is one 
   and `rules.permissions.ObjectPermissionBackend` in `AUTHENTICATION_BACKENDS`; without them every
   non-superuser gets 403 with nothing in the logs, and testing as a superuser hides the problem.
 - REST APIs: tagging mounts `openedx_tagging.urls` (app_name `oel_tagging`); learning mounts
-  `openedx_learning.urls`, which serves CBE at `<prefix>cbe/v1/`. The tagging app label is
+  `openedx_learning.urls`, which serves CBE authoring at `<prefix>cbe/v1/`, and
+  `openedx_learning.learner_urls` (app_name `cbe_learner`), which serves the learner routes; a host that
+  serves only learners mounts just that one. A host overrides the learner permission
+  `openedx_learning.view_course_competency_criteria` with `rules.set_perm`, because the default admits
+  any signed-in user. The tagging app label is
   `oel_tagging` (legacy prefix, so its tables are `oel_tagging_*`); `openedx_content` and
   `openedx_learning` use unprefixed labels.
 

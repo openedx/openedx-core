@@ -178,6 +178,20 @@ class CompetencyCriteriaGroupUpdateSerializer(serializers.Serializer):  # pylint
 MAX_COURSE_KEYS = 100
 
 
+def parse_plain_course_key(value: str) -> CourseKey:
+    """
+    Parse ``value`` into the plain course key the database stores, or raise InvalidKeyError.
+
+    Accepts course-v1, old slash-separated and CCX keys; library keys, usage keys and anything else are
+    rejected. Branch and version are dropped to match the database field; a version-only key has no org
+    and is rejected.
+    """
+    key = CourseKey.from_string(value)
+    if not isinstance(key, CourseLocator):
+        raise InvalidKeyError(type(key), value)
+    return key.for_branch(None)
+
+
 class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
     """Query params shared by the criteria-tree and blocked-courses read endpoints."""
 
@@ -200,14 +214,7 @@ class CompetencyCriteriaQueryParamsSerializer(serializers.Serializer):
         parsed = []
         for entry in entries:
             try:
-                key = CourseKey.from_string(entry)
-                if not isinstance(key, CourseLocator):
-                    raise InvalidKeyError(type(key), entry)
-                # A course key may carry a branch (draft or published copy) and a version (one saved
-                # snapshot). The database field stores only the plain key, so we drop both here to
-                # match what it holds. A version-only key has no org, so it can't be turned into a
-                # plain key and is rejected.
-                key = key.for_branch(None)
+                key = parse_plain_course_key(entry)
             except InvalidKeyError as exc:
                 raise serializers.ValidationError(
                     _("'%(entry)s' is not a valid course key.") % {"entry": entry}
