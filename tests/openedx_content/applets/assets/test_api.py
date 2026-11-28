@@ -760,6 +760,317 @@ def test_upload_to_placeholder(lp: LearningPackage, black_png: Media, user1: Use
     assert [v.entity_id for v in asset.publishable_entity.affects.all()] == [component.id]
 
 
+# Legacy flat paths ############################################################
+
+
+def test_legacy_flat_path_default(black: Asset) -> None:
+    """Assets have no legacy_flat_path unless one is specified."""
+    black.refresh_from_db()
+    assert black.legacy_flat_path is None
+
+
+@pytest.mark.parametrize("use_create_asset", [True, False])
+def test_create_with_legacy_flat_path(use_create_asset: bool, lp: LearningPackage, lp2: LearningPackage) -> None:
+    """
+    Test creating an asset with a ``legacy_flat_path`` that differs from its
+    ``path``, as for a file imported from a course export with a folder
+    structure, and looking it up.
+    """
+    path = "images/photo 1.jpg"
+    flat = "images_photo_1.jpg"
+    if use_create_asset:
+        asset = api.create_asset(lp.id, path=path, created=now, created_by=None, legacy_flat_path=flat)
+    else:
+        asset, _ = api.create_asset_and_version(lp.id, path=path, media=BLACK_PNG_BYTES, legacy_flat_path=flat)
+    asset.refresh_from_db()
+    assert asset.path == path
+    assert asset.legacy_flat_path == flat
+
+    assert api.get_asset_by_legacy_flat_path(lp.id, flat).id == asset.id
+    assert api.get_asset_by_legacy_flat_path(lp, flat).id == asset.id
+    # The flat path is not a path:
+    with pytest.raises(Asset.DoesNotExist):
+        api.get_asset_by_path(lp.id, flat)
+    # And the path is not a flat path:
+    with pytest.raises(Asset.DoesNotExist):
+        api.get_asset_by_legacy_flat_path(lp.id, path)
+    # Different learning package:
+    with pytest.raises(Asset.DoesNotExist):
+        api.get_asset_by_legacy_flat_path(lp2.id, flat)
+
+
+def test_legacy_flat_path_same_as_path(lp: LearningPackage) -> None:
+    """
+    Files uploaded to the legacy "Files" page only kept their flat name, so the
+    ``path`` and ``legacy_flat_path`` are often the same.
+    """
+    asset = api.create_asset(lp.id, path="photo_1.jpg", created=now, created_by=None, legacy_flat_path="photo_1.jpg")
+    assert api.get_asset_by_path(lp.id, "photo_1.jpg").id == asset.id
+    assert api.get_asset_by_legacy_flat_path(lp.id, "photo_1.jpg").id == asset.id
+
+
+def test_legacy_flat_path_unique_per_lp(lp: LearningPackage, lp2: LearningPackage) -> None:
+    """
+    Two different paths can have the same flat name, but only one asset per
+    learning package can have it.
+    """
+    flat = "images_photo_1.jpg"
+    asset1 = api.create_asset(lp.id, path="images/photo 1.jpg", created=now, created_by=None, legacy_flat_path=flat)
+
+    with pytest.raises(api.LegacyFlatPathAlreadyExists, match=f'Asset with legacy path "{flat}" already exists.'):
+        api.create_asset(lp.id, path="images photo 1.jpg", created=now, created_by=None, legacy_flat_path=flat)
+    with pytest.raises(api.LegacyFlatPathAlreadyExists) as exc_info:
+        api.create_asset_and_version(lp.id, path="images photo 1.jpg", media=BLACK_PNG_BYTES, legacy_flat_path=flat)
+    assert exc_info.value.legacy_flat_path == flat
+    # Nothing was created by the failed attempts:
+    with pytest.raises(Asset.DoesNotExist):
+        api.get_asset_by_path(lp.id, "images photo 1.jpg")
+
+    # But the same flat name in a different learning package is fine:
+    asset2 = api.create_asset(lp2.id, path="images photo 1.jpg", created=now, created_by=None, legacy_flat_path=flat)
+    assert asset2.id != asset1.id
+
+    # And the database enforces it too:
+    asset3 = api.create_asset(lp.id, path="other.jpg", created=now, created_by=None, legacy_flat_path="other.jpg")
+    with pytest.raises(IntegrityError):
+        Asset.objects.filter(pk=asset3.id).update(legacy_flat_path=flat)
+
+
+def test_legacy_flat_path_collides_with_flat_path_equal_to_path(lp: LearningPackage) -> None:
+    """
+    A new asset whose path equals an existing asset's flat name can't take that
+    flat name, which prevents ``/static/images_photo.png`` from becoming
+    ambiguous...
+    """
+    api.create_asset(lp.id, path="images/photo.png", created=now, created_by=None, legacy_flat_path="images_photo.png")
+    with pytest.raises(api.LegacyFlatPathAlreadyExists):
+        api.create_asset(
+            lp.id, path="images_photo.png", created=now, created_by=None, legacy_flat_path="images_photo.png"
+        )
+
+
+def test_legacy_flat_path_null_does_not_collide(lp: LearningPackage) -> None:
+    """
+    ...but only if the caller specifies the new asset's flat name. Assets
+    without a ``legacy_flat_path`` never collide with anything in the flat
+    namespace, so it's the caller's responsibility to always specify it in
+    learning packages that use legacy asset keys.
+    """
+    a = api.create_asset(
+        lp.id, path="images/photo.png", created=now, created_by=None, legacy_flat_path="images_photo.png"
+    )
+    b = api.create_asset(lp.id, path="images_photo.png", created=now, created_by=None)
+    c = api.create_asset(lp.id, path="images_photo2.png", created=now, created_by=None)
+    assert b.legacy_flat_path is None
+    assert c.legacy_flat_path is None  # Many assets can have NULL
+    assert api.get_asset_by_legacy_flat_path(lp.id, "images_photo.png").id == a.id
+    assert api.get_asset_by_path(lp.id, "images_photo.png").id == b.id
+
+
+def test_legacy_flat_path_case_sensitive(lp: LearningPackage) -> None:
+    """Legacy flat paths are case-sensitive, like ``AssetKey``s."""
+    lower = api.create_asset(lp.id, path="photo.png", created=now, created_by=None, legacy_flat_path="photo.png")
+    upper = api.create_asset(lp.id, path="Photo.png", created=now, created_by=None, legacy_flat_path="Photo.png")
+    assert api.get_asset_by_legacy_flat_path(lp.id, "photo.png").id == lower.id
+    assert api.get_asset_by_legacy_flat_path(lp.id, "Photo.png").id == upper.id
+    with pytest.raises(Asset.DoesNotExist):
+        api.get_asset_by_legacy_flat_path(lp.id, "PHOTO.png")
+
+
+@pytest.mark.parametrize(
+    ("flat", "valid", "db_enforced"),
+    [
+        # ✅ Valid:
+        ("images_photo_1.jpg", True, None),
+        ("python_lib.zip", True, None),
+        ("x__y.png", True, None),  # contentstore doesn't collapse repeated underscores in asset names
+        ("50%25_off.pdf", True, None),  # contentstore keeps '%', so this is a literal "%25", not an encoded "%"
+        ("a:b~c.png", True, None),  # ':' and '~' are allowed in AssetKeys, though compute_location() replaces them
+        ("caf\u00e9.png", True, None),  # café (normalized 'é')
+        ("Αθήνα.md", True, None),
+        ("Å.txt", True, None),  # Not Unicode normalized (ANGSTROM SIGN), but a valid AssetKey, so we keep it as-is
+        (".hidden.conf", True, None),
+        (".", True, None),  # Valid AssetKey names, though unlikely in practice
+        ("..", True, None),
+        ("long_path_" * 48, True, None),  # 480 characters
+        # ❌ Invalid, and the database also rejects it:
+        ("", False, True),
+        ("images/photo.png", False, True),  # a real path, not a flat one
+        ("photo 1.jpg", False, True),
+        (" photo.jpg", False, True),
+        ("tab\t.jpg", False, True),
+        ("newline.pdf\n", False, True),
+        ("nul\x00.pdf", False, True),
+        ("del\x7f.pdf", False, True),
+        ("glob*.png", False, True),
+        ("backslash\\image.jpg", False, True),
+        ("long_path_" * 50, False, True),  # 500 characters
+        # ❌ Invalid, but only checked in Python:
+        ("a+b.png", False, False),
+        ("a@b.png", False, False),
+        ("image(2).jpg", False, False),
+        ("😎.md", False, False),
+        (  # café with a combining accent, which is not a "word" character, so not allowed in AssetKeys:
+            "cafe\u0301.png",
+            False,
+            False,
+        ),
+    ],
+)
+def test_valid_invalid_legacy_flat_paths(flat: str, valid: bool, db_enforced: bool | None, lp: LearningPackage) -> None:
+    """Test validation of legacy flat paths"""
+    assert api.is_valid_legacy_flat_path(flat) is valid
+
+    def create():
+        return api.create_asset(lp.id, path="example.jpg", created=now, created_by=None, legacy_flat_path=flat)
+
+    if valid:
+        asset = create()
+        asset.refresh_from_db()
+        assert asset.legacy_flat_path == flat
+        assert api.get_asset_by_legacy_flat_path(lp.id, flat).id == asset.id
+    else:
+        with pytest.raises(ValidationError, match="Legacy path is invalid or contains invalid characters."):
+            create()
+
+        # Same for setting it later:
+        asset = api.create_asset(lp.id, path="temp_path", created=now, created_by=None)
+        with pytest.raises(ValidationError, match="Legacy path is invalid or contains invalid characters."):
+            api.update_asset(asset, legacy_flat_path=flat)
+
+        # Also test the raw database constraint, bypassing python checks:
+        if db_enforced:
+            # DataError is raised by MySQL if the string is to long; everything else is IntegrityError
+            with pytest.raises((IntegrityError, DataError)):
+                Asset.objects.filter(pk=asset.id).update(legacy_flat_path=flat)
+
+
+def test_set_legacy_flat_path_later(lp: LearningPackage, black: Asset) -> None:
+    """
+    ``update_asset`` can set the legacy flat path of an asset that doesn't have
+    one, e.g. when the contentstore shim takes over an existing asset, or to
+    correct a migration that somehow missed setting this; but it can't change it
+    afterwards.
+    """
+    api.update_asset(black, legacy_flat_path="black.png")
+    black.refresh_from_db()
+    assert black.legacy_flat_path == "black.png"
+    assert api.get_asset_by_legacy_flat_path(lp.id, "black.png").id == black.id
+
+    # Setting the same value again, or passing None, is a no-op:
+    api.update_asset(black, legacy_flat_path="black.png")
+    api.update_asset(black, legacy_flat_path=None, allow_scripts=True)
+    black.refresh_from_db()
+    assert black.legacy_flat_path == "black.png"
+    assert black.allow_scripts
+
+    # But it can't be changed:
+    with pytest.raises(ValidationError, match="Cannot change the legacy path"):
+        api.update_asset(black, legacy_flat_path="other.png")
+    black.refresh_from_db()
+    assert black.legacy_flat_path == "black.png"
+
+
+def test_set_legacy_flat_path_later_collision(black: Asset, grey: Asset) -> None:
+    """``update_asset`` can't give an asset a flat name that another asset has."""
+    api.update_asset(black, legacy_flat_path="black.png")
+    with pytest.raises(api.LegacyFlatPathAlreadyExists):
+        api.update_asset(grey, legacy_flat_path="black.png")
+    grey.refresh_from_db()
+    assert grey.legacy_flat_path is None
+
+
+def test_deleted_asset_keeps_legacy_flat_path(lp: LearningPackage) -> None:
+    """
+    A deleted asset keeps its flat name, so a different asset can't take it
+    (it would make legacy references to the deleted file resolve to a different
+    file), and it can still be looked up.
+    """
+    asset, _ = api.create_asset_and_version(
+        lp.id, path="images/photo.png", media=BLACK_PNG_BYTES, legacy_flat_path="images_photo.png"
+    )
+    publishing_api.soft_delete_draft(asset.id)
+
+    assert api.get_asset_by_legacy_flat_path(lp.id, "images_photo.png").id == asset.id
+    with pytest.raises(api.LegacyFlatPathAlreadyExists):
+        api.create_asset_and_version(
+            lp.id, path="images_photo.png", media=BLACK_PNG_BYTES, legacy_flat_path="images_photo.png"
+        )
+
+
+@pytest.mark.parametrize(
+    ("old_flat", "new_flat", "expected_flat"),
+    [
+        ("black.png", "black.png", "black.png"),  # Same value: fine
+        ("black.png", None, "black.png"),  # Not specified: keep the existing value
+        (None, "black.png", "black.png"),  # Not set yet: set it
+        (None, None, None),
+    ],
+)
+def test_undelete_legacy_flat_path(
+    old_flat: str | None, new_flat: str | None, expected_flat: str | None, lp: LearningPackage, grey_png: Media
+) -> None:
+    """
+    Re-creating a deleted asset keeps or sets its legacy flat path.
+    """
+    old, _ = api.create_asset_and_version(lp.id, path="black.png", media=BLACK_PNG_BYTES, legacy_flat_path=old_flat)
+    publishing_api.soft_delete_draft(old.id)
+
+    new, v2 = api.create_asset_and_version(lp.id, path="black.png", media=grey_png, legacy_flat_path=new_flat)
+    assert new.id == old.id
+    assert v2.version_num == 2
+    new.refresh_from_db()
+    assert new.legacy_flat_path == expected_flat
+
+
+def test_undelete_legacy_flat_path_mismatch(lp: LearningPackage, grey_png: Media) -> None:
+    """
+    Re-creating a deleted asset with a different legacy flat path is an error,
+    and nothing is changed.
+    """
+    old, _ = api.create_asset_and_version(lp.id, path="black.png", media=BLACK_PNG_BYTES, legacy_flat_path="black.png")
+    publishing_api.soft_delete_draft(old.id)
+
+    with pytest.raises(ValidationError, match="Cannot change the legacy path"):
+        api.create_asset_and_version(lp.id, path="black.png", media=grey_png, legacy_flat_path="other.png")
+    old.refresh_from_db()
+    assert old.legacy_flat_path == "black.png"
+    assert old.versioning.latest.version_num == 1
+    assert old.versioning.draft is None
+
+
+def test_undelete_legacy_flat_path_taken(lp: LearningPackage, grey_png: Media) -> None:
+    """
+    Re-creating a deleted asset (with no legacy flat path) using a legacy flat
+    path that another asset has is an error, and nothing is changed.
+    """
+    old, _ = api.create_asset_and_version(lp.id, path="images_photo.png", media=BLACK_PNG_BYTES)
+    publishing_api.soft_delete_draft(old.id)
+    api.create_asset(lp.id, path="images/photo.png", created=now, created_by=None, legacy_flat_path="images_photo.png")
+
+    with pytest.raises(api.LegacyFlatPathAlreadyExists):
+        api.create_asset_and_version(
+            lp.id, path="images_photo.png", media=grey_png, legacy_flat_path="images_photo.png"
+        )
+    old.refresh_from_db()
+    assert old.legacy_flat_path is None
+    assert old.versioning.latest.version_num == 1
+    assert old.versioning.draft is None
+
+
+def test_upload_to_placeholder_legacy_flat_path(lp: LearningPackage, black_png: Media) -> None:
+    """
+    Uploading a file to a placeholder asset (with no versions) sets its legacy
+    flat path.
+    """
+    placeholder = api.create_asset(lp.id, path="images/later.png", created=now, created_by=None)
+    asset, _ = api.create_asset_and_version(
+        lp.id, path="images/later.png", media=black_png, legacy_flat_path="images_later.png"
+    )
+    assert asset.id == placeholder.id
+    assert api.get_asset_by_legacy_flat_path(lp.id, "images_later.png").id == placeholder.id
+
+
 # Detecting asset usage ########################################################
 
 

@@ -86,6 +86,7 @@ class CourseRunAdmin(admin.ModelAdmin):
 
     list_display = ["title", "created_date", "catalog_course", "org_code", "course_code", "run_code", "warnings"]
     readonly_fields = ("course_key",)
+    search_fields = ["title", "course_code", "run_code", "org_code"]
     # There may be thousands of catalog courses, so don't use <select>
     raw_id_fields = ["catalog_course"]
 

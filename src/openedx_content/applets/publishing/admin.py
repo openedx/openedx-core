@@ -1,11 +1,14 @@
 """
 Django admin for publishing models
 """
+
 from __future__ import annotations
 
 from django.contrib import admin
 from django.db.models import Count, F
+from django.urls import reverse
 from django.utils.html import format_html
+from django.utils.http import urlencode
 
 from openedx_django_lib.admin_utils import ReadOnlyModelAdmin, one_to_one_related_model_html
 
@@ -26,10 +29,19 @@ class LearningPackageAdmin(ReadOnlyModelAdmin):
     """
     Read-only admin for LearningPackage model
     """
-    fields = ["package_ref", "title", "uuid", "created", "updated"]
-    readonly_fields = ["package_ref", "title", "uuid", "created", "updated"]
+
+    fields = ["package_ref", "title", "uuid", "created", "updated", "entities_link"]
+    readonly_fields = ["package_ref", "title", "uuid", "created", "updated", "entities_link"]
     list_display = ["package_ref", "title", "uuid", "created", "updated"]
     search_fields = ["package_ref", "title", "uuid"]
+
+    @admin.display(description="Entities")
+    def entities_link(self, obj: LearningPackage) -> str | None:
+        """A link to the entities in the package"""
+        count = obj.publishable_entities.count()
+        url = reverse("admin:openedx_content_publishableentity_changelist")
+        query = urlencode({"learning_package__id__exact": obj.id})
+        return format_html('<a href="{}?{}">{}</a>', url, query, count)
 
 
 class PublishLogRecordTabularInline(admin.TabularInline):
