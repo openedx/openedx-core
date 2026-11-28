@@ -16,9 +16,18 @@ class AssetAdmin(ReadOnlyModelAdmin):
     Django admin for Asset model
     """
 
-    list_display = ("id", "path", "learning_package", "permissions", "allow_scripts", "created", "created_by")
+    list_display = (
+        "id",
+        "path",
+        "legacy_flat_path",
+        "learning_package",
+        "permissions",
+        "allow_scripts",
+        "created",
+        "created_by",
+    )
     list_filter = ("learning_package",)
-    search_fields = ("path",)
+    search_fields = ("path", "legacy_flat_path")
 
     def get_queryset(self, request):
         queryset = super().get_queryset(request)

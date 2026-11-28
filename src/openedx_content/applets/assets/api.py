@@ -22,7 +22,14 @@ from ..media import api as media_api
 from ..media.models import Media
 from ..publishing import api as publishing_api
 from ..publishing.models import LearningPackage, PublishableEntityVersion
-from .models import INTERNAL_API, Asset, AssetPermissions, AssetVersion
+from .models import (
+    INTERNAL_API,
+    Asset,
+    AssetPermissions,
+    AssetVersion,
+    is_valid_legacy_flat_path,
+    validate_legacy_flat_path,
+)
 
 ASSET_PATH_MAX_LENGTH = PATH_MAX_LENGTH
 
@@ -35,14 +42,17 @@ __all__ = [
     "ASSET_PATH_MAX_LENGTH",
     "AssetAlreadyExists",
     "AssetPermissions",
+    "LegacyFlatPathAlreadyExists",
     "create_asset",
     "create_asset_and_version",
     "create_next_asset_version",
     "get_asset",
+    "get_asset_by_legacy_flat_path",
     "get_asset_by_path",
     "get_assets",
     "get_missing_asset_dependencies",
     "is_valid_asset_path",
+    "is_valid_legacy_flat_path",
     "update_asset",
 ]
 
@@ -70,6 +80,20 @@ class AssetAlreadyExists(ValidationError):
         super().__init__(f'Asset with path "{path}" already exists.')
 
 
+class LegacyFlatPathAlreadyExists(ValidationError):
+    """
+    Exception raised when trying to give an asset a ``legacy_flat_path`` that
+    another asset in the same learning package already has, including deleted
+    assets.
+    """
+
+    legacy_flat_path: str
+
+    def __init__(self, legacy_flat_path: str):
+        self.legacy_flat_path = legacy_flat_path
+        super().__init__(f'Asset with legacy path "{legacy_flat_path}" already exists.')
+
+
 def is_valid_asset_path(path: str) -> bool:
     """
     Check if ``path`` is a valid ``Asset.path``, e.g. ``"image.png"`` or
@@ -95,6 +119,7 @@ def create_asset(
     *,
     permissions: AssetPermissions | None = None,
     allow_scripts: bool = False,
+    legacy_flat_path: str | None = None,
 ) -> Asset:
     """
     Create a new Asset (a shared file, like an image or a PDF document).
@@ -107,9 +132,13 @@ def create_asset(
         but may change in the future).
     allow_scripts: for HTML assets only, set this ``True`` to serve the asset in
         a more permissive sandbox that allows referencing JavaScript files.
+    legacy_flat_path: the exact name that the legacy contentstore uses for this
+        asset in its ``AssetKey``, e.g. ``"images_tomato.jpg"``, or ``None``.
+        See ``Asset.legacy_flat_path``. This is not computed for you.
 
     Raises AssetAlreadyExists if an Asset exists with the same ``path``, including ones
-    which have been deleted.
+    which have been deleted. Raises LegacyFlatPathAlreadyExists if a different Asset
+    exists with the same ``legacy_flat_path``, including ones which have been deleted.
     """
     learning_package_id = _get_learning_package_id(learning_package)
     # Label this asset with a unique, semi-human-readable reference string.
@@ -121,6 +150,8 @@ def create_asset(
     # but it wraps each check in a savepoint, so adds a lot of queries. The DB constraints remain as a backstop against
     # things like `Asset.objects.update(...)`, which bypass all other validation.
     validate_path_value(path)
+    if legacy_flat_path is not None:
+        validate_legacy_flat_path(legacy_flat_path)
     if permissions not in AssetPermissions.values:
         raise RuntimeError("Invalid permissions enum value.")  # This is a coding error, not a user input error
     try:
@@ -134,13 +165,22 @@ def create_asset(
                 path=path,
                 permissions=permissions,
                 allow_scripts=allow_scripts,
+                legacy_flat_path=legacy_flat_path,
             )
             asset.save(force_insert=True, saved_from=INTERNAL_API)
     except IntegrityError as e:
-        # The only expected failure here is that an asset with this path already exists (possibly created
-        # concurrently; at READ COMMITTED we can see the other transaction's committed row).
+        # The only expected failures here are that an asset with this path or legacy_flat_path already exists
+        # (possibly created concurrently; at READ COMMITTED we can see the other transaction's committed row).
+        # Check the path first, so that create_asset_and_version() can restore a deleted asset with this path.
         if Asset.objects.filter(learning_package_id=learning_package_id, path=path).exists():
             raise AssetAlreadyExists(path=path) from e
+        if (
+            legacy_flat_path is not None
+            and Asset.objects.filter(
+                learning_package_id=learning_package_id, legacy_flat_path=legacy_flat_path
+            ).exists()
+        ):
+            raise LegacyFlatPathAlreadyExists(legacy_flat_path) from e
         raise
     return asset
 
@@ -235,6 +275,7 @@ def create_asset_and_version(
     permissions: AssetPermissions | None = None,
     allow_scripts: bool = False,
     overwrite_deleted: bool = True,
+    legacy_flat_path: str | None = None,
 ) -> tuple[Asset, AssetVersion]:
     """
     Create an Asset and associated AssetVersion atomically.
@@ -252,6 +293,15 @@ def create_asset_and_version(
     overwrite_deleted: if this asset has the same name as a deleted asset or a
         "placeholder" asset (an asset with no versions at all), then un-delete
         it and create a new version of it. Otherwise, raise AssetAlreadyExists.
+    legacy_flat_path: the exact name that the legacy contentstore uses for this
+        asset in its ``AssetKey``, e.g. ``"images_tomato.jpg"``, or ``None``.
+        See ``Asset.legacy_flat_path``. This is not computed for you. When
+        overwriting a deleted or placeholder asset, ``None`` keeps its existing
+        ``legacy_flat_path`` (if any), and any other value is set on it if it
+        doesn't have one yet, or else must match the existing value.
+
+    Raises LegacyFlatPathAlreadyExists if a different Asset exists with the same
+    ``legacy_flat_path``, including ones which have been deleted.
     """
     learning_package_id = _get_learning_package_id(learning_package)
     if created is None:
@@ -261,7 +311,13 @@ def create_asset_and_version(
     with atomic():
         try:
             asset = create_asset(
-                learning_package_id, path, created, created_by, permissions=permissions, allow_scripts=allow_scripts
+                learning_package_id,
+                path,
+                created,
+                created_by,
+                permissions=permissions,
+                allow_scripts=allow_scripts,
+                legacy_flat_path=legacy_flat_path,
             )
             asset_version = create_asset_version(
                 asset, version_num=1, title=title, created=created, created_by=created_by, media=media
@@ -277,8 +333,11 @@ def create_asset_and_version(
                     # and v3 to replace v2 immediately.)
                     next_version = asset.versioning.latest.version_num + 1 if asset.versioning.latest else 1
 
-                    # Reset 'allow_scripts' to False unless specified, and update permissions iff specified:
-                    update_asset(asset, permissions=permissions, allow_scripts=allow_scripts)
+                    # Reset 'allow_scripts' to False unless specified, and update permissions iff specified.
+                    # Set legacy_flat_path if specified and the asset doesn't have one yet (or raise if it differs).
+                    update_asset(
+                        asset, permissions=permissions, allow_scripts=allow_scripts, legacy_flat_path=legacy_flat_path
+                    )
                     try:
                         asset_version = create_asset_version(
                             asset,
@@ -347,12 +406,25 @@ def _create_version_media(
 
 
 def update_asset(
-    asset_id: Asset | Asset.ID, /, *, permissions: AssetPermissions | None = None, allow_scripts: bool | None = None
+    asset_id: Asset | Asset.ID,
+    /,
+    *,
+    permissions: AssetPermissions | None = None,
+    allow_scripts: bool | None = None,
+    legacy_flat_path: str | None = None,
 ) -> Asset:
     """
     Update an asset.
 
     Any fields passed as ``None`` will keep their existing value.
+
+    legacy_flat_path: can only be set on an asset that doesn't have one yet,
+        e.g. when the contentstore shim takes over an asset that was created
+        without one, or to correct a migration that forgot to set these values.
+        Passing the asset's existing value is a no-op; passing a
+        different value raises ``ValidationError``. Raises
+        ``LegacyFlatPathAlreadyExists`` if another asset in the learning package
+        already has this value.
     """
     asset = get_asset(asset_id)
     fields: list[str] = []
@@ -362,9 +434,32 @@ def update_asset(
     if allow_scripts is not None:
         asset.allow_scripts = allow_scripts
         fields.append("allow_scripts")
+    if legacy_flat_path is not None and legacy_flat_path != asset.legacy_flat_path:
+        if asset.legacy_flat_path is not None:
+            raise ValidationError(
+                f'Cannot change the legacy path of asset "{asset.path}" from "{asset.legacy_flat_path}" '
+                f'to "{legacy_flat_path}".'
+            )
+        validate_legacy_flat_path(legacy_flat_path)
+        asset.legacy_flat_path = legacy_flat_path
+        fields.append("legacy_flat_path")
     if fields:
-        asset.full_clean()
-        asset.save(update_fields=fields, saved_from=INTERNAL_API)
+        # legacy_flat_path is validated above, and its uniqueness is left to the database (to catch races).
+        asset.full_clean(exclude=["legacy_flat_path"])
+        try:
+            with atomic():
+                asset.save(update_fields=fields, saved_from=INTERNAL_API)
+        except IntegrityError as e:
+            if (
+                legacy_flat_path is not None
+                and "legacy_flat_path" in fields
+                and Asset.objects
+                .filter(learning_package_id=asset.learning_package_id, legacy_flat_path=legacy_flat_path)
+                .exclude(pk=asset.id)
+                .exists()
+            ):
+                raise LegacyFlatPathAlreadyExists(legacy_flat_path) from e
+            raise
     return asset
 
 
@@ -389,6 +484,26 @@ def get_asset_by_path(
     """
     learning_package_id = _get_learning_package_id(learning_package)
     return Asset.with_publishing_relations.get(learning_package_id=learning_package_id, path=path)
+
+
+def get_asset_by_legacy_flat_path(
+    learning_package: LearningPackage | LearningPackage.ID,
+    /,
+    legacy_flat_path: str,
+) -> Asset:
+    """
+    Get an Asset by its ``legacy_flat_path``, i.e. the name used in its legacy
+    ``AssetKey`` (e.g. ``"images_photo.jpg"``). The match is exact and
+    case-sensitive; the value is not normalized or computed for you.
+
+    Like ``get_asset_by_path``, this can return deleted or placeholder assets.
+
+    Raises ``Asset.DoesNotExist`` if there's no such asset.
+    """
+    learning_package_id = _get_learning_package_id(learning_package)
+    return Asset.with_publishing_relations.get(
+        learning_package_id=learning_package_id, legacy_flat_path=legacy_flat_path
+    )
 
 
 def get_assets(

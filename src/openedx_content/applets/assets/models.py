@@ -7,13 +7,17 @@ The model hierarchy is :class:`Asset` → :class:`AssetVersion` → :class:`Medi
 
 from __future__ import annotations
 
+import re
 from typing import NewType, cast
 
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.lookups import Regex
 from typing_extensions import Sentinel, deprecated
 
-from openedx_django_lib.fields import path_field, path_field_checks
+from openedx_django_lib.fields import case_sensitive_char_field, path_field, path_field_checks
 from openedx_django_lib.managers import WithRelationsManager
+from openedx_django_lib.validators import PATH_MAX_LENGTH
 
 from ..media.models import Media
 from ..publishing.models import (
@@ -32,6 +36,33 @@ __all__ = [
 
 # Sentinel value used so only internal APIs can call `Asset.save()`
 INTERNAL_API = Sentinel("INTERNAL_API")
+
+# The characters that opaque-keys allows in the name of an AssetKey (``AssetLocator.ALLOWED_ID_RE``). Python's ``\w``
+# is Unicode-aware, e.g. "é" matches but a combining accent does not.
+_LEGACY_FLAT_PATH_RE = re.compile(r"[\w\-~.:%]+")
+
+# A looser version of the above, for a DB CheckConstraint. ``\w`` means different things in the regex engines of
+# Python, MySQL (ICU) and PostgreSQL (ARE), so this only rules out characters that are never allowed, mainly to make
+# sure that nobody stores a real path (with folders or spaces) here by mistake. Python validation does the rest.
+# Like ``PATH_RE``, it uses a lookahead to rule out control characters, because ``$`` can match before a final "\n".
+_LEGACY_FLAT_PATH_DB_RE = r"^(?![^\x00-\x1f\x7f]*[\x00-\x1f\x7f])[^/\\*\s]+$"
+
+INVALID_LEGACY_FLAT_PATH_MSG = "Legacy path is invalid or contains invalid characters."
+
+
+def is_valid_legacy_flat_path(value: str) -> bool:
+    """
+    Check if ``value`` is a valid ``Asset.legacy_flat_path``, i.e. a valid
+    ``AssetKey`` name like ``images_photo_1.jpg``.
+    """
+    # Legacy flat paths are derived from paths without ever getting longer, so they fit in the same length.
+    return len(value) <= PATH_MAX_LENGTH and _LEGACY_FLAT_PATH_RE.fullmatch(value) is not None
+
+
+def validate_legacy_flat_path(value: str) -> None:
+    """Validate an ``Asset.legacy_flat_path`` value, raising ``ValidationError`` if invalid."""
+    if not is_valid_legacy_flat_path(value):
+        raise ValidationError(INVALID_LEGACY_FLAT_PATH_MSG)
 
 
 class AssetPermissions(models.TextChoices):
@@ -117,6 +148,78 @@ class Asset(PublishableEntityMixin):
     name.
     """
 
+    legacy_flat_path = case_sensitive_char_field(
+        max_length=PATH_MAX_LENGTH,
+        null=True,
+        blank=False,
+        validators=[validate_legacy_flat_path],
+    )
+    """
+    The name that the legacy (MongoDB) contentstore used to identify this
+    asset, if any, e.g. ``images_photo_1.jpg``. ``NULL`` for assets that never
+    had one.
+
+    In the legacy contentstore, every file in a course is identified by an
+    ``AssetKey`` such as
+    ``asset-v1:Org+Course+Run+type@asset+block@images_photo_1.jpg``. The last
+    part (which opaque-keys calls ``AssetKey.path``) is a "flat" name with no
+    folders, which is usually derived from the file's real path by replacing
+    ``/`` and any other character that's not allowed in an ``AssetKey`` with
+    ``_``. For example, ``images/photo 1.jpg`` becomes ``images_photo_1.jpg``.
+    That conversion is lossy (``images/photo 1.jpg`` and ``images photo
+    1.jpg`` have the same flat name), and some flat names were created in other
+    ways, so this field always holds the exact name that the contentstore used,
+    which can't reliably be re-computed from ``path``. Computing it is the
+    responsibility of the caller (the contentstore shim in openedx-platform),
+    not of this app.
+
+    Often ``legacy_flat_path`` and ``path`` are equal: files uploaded to the
+    legacy "Files" page only kept their flat name, so ``path`` is the flat name
+    too. They differ for files that were imported from a course export with a
+    real folder structure, where ``path`` is e.g. ``images/photo 1.jpg``.
+
+    Content created with the legacy contentstore can reference such an asset in
+    several ways, including:
+
+    - ``/static/images/photo 1.jpg``
+    - ``/static/images_photo_1.jpg``
+    - ``/asset-v1:Org+Course+Run+type@asset+block@images_photo_1.jpg``
+    - ``/c4x/Org/Course/asset/images_photo_1.jpg``
+    - and more (e.g. absolute URLs of several forms)
+
+    This field exists for two reasons:
+
+    1. To make sure there are no collisions in this flat namespace: it is
+       unique (and case-sensitive) within a Learning Package. Deleted assets
+       keep their flat name, so it can't be reused by a different asset.
+    2. To provide a fast, indexed lookup by flat name (see
+       ``get_asset_by_legacy_flat_path()``), e.g. for resolving legacy
+       references or emulating the legacy contentstore API.
+
+    The value must be a valid ``AssetKey`` name: one or more Unicode word
+    characters or ``-``, ``~``, ``.``, ``:``, ``%``. Unlike ``path``, it is not
+    required to be Unicode normalized, because it must match the existing
+    ``AssetKey`` exactly.
+
+    Once set, the value can't be changed or cleared, but it can be set later on
+    an asset that doesn't have one yet (``update_asset()``).
+
+    ⚠️ Collisions are only detected between assets that both have a
+    ``legacy_flat_path``. If a course has any assets with a
+    ``legacy_flat_path``, then all new assets in that course should get one
+    too. Otherwise, e.g., a new asset with ``path="images_photo_1.jpg"`` and no
+    ``legacy_flat_path`` can be created alongside an existing asset with
+    ``path="images/photo 1.jpg"`` and ``legacy_flat_path="images_photo_1.jpg"``,
+    which makes ``/static/images_photo_1.jpg`` ambiguous.
+
+    In the future, we hope that new assets will only be referenced in the
+    recommended format (``/static/images/photo 1.jpg``) and won't need a
+    ``legacy_flat_path``. However, content (and links to it from elsewhere) is
+    forever, so we'll need to keep storing and using this field in older
+    courses indefinitely, even long after the contentstore API/shim has been
+    removed from the platform (see ADR 0014).
+    """
+
     permissions = models.CharField(
         max_length=12,
         blank=False,
@@ -136,6 +239,23 @@ class Asset(PublishableEntityMixin):
                 name="oe_content_asset_uniq_path",
             ),
             *path_field_checks("path", name="oe_content_asset_valid_path"),
+            # legacy_flat_path is unique within the learning package (NULL is exempt)
+            models.UniqueConstraint(
+                fields=["learning_package", "legacy_flat_path"],
+                name="oe_content_asset_uniq_legacy_flat_path",
+            ),
+            models.CheckConstraint(
+                condition=Regex(models.F("legacy_flat_path"), _LEGACY_FLAT_PATH_DB_RE)
+                | models.Q(legacy_flat_path__isnull=True),
+                name="oe_content_asset_valid_legacy_flat_path",
+                violation_error_message=INVALID_LEGACY_FLAT_PATH_MSG,
+            ),
+            # Make SQLite enforce a maximum length like MySQL does
+            models.CheckConstraint(
+                condition=models.Q(legacy_flat_path__length__lte=PATH_MAX_LENGTH)
+                | models.Q(legacy_flat_path__isnull=True),
+                name="oe_content_asset_legacy_flat_path_maxlength",
+            ),
             models.CheckConstraint(
                 condition=models.Q(permissions__in=AssetPermissions.values), name="oe_content_asset_permissions_enum"
             ),
